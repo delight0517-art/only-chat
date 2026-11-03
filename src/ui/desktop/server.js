@@ -30,6 +30,7 @@ const { parseReasoningEffort } = require('../../core/ReasoningEffort.js');
 const { EvolutionInbox } = require('../../sync/EvolutionInbox.js');
 const { RecurringScheduleStore } = require('../../scheduler/RecurringScheduleStore.js');
 const { RecurringScheduleService } = require('../../scheduler/RecurringScheduleService.js');
+const { TaskRegistryStore } = require('../../core/TaskRegistryStore.js');
 
 const QUOTA_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 const SESSION_SEARCH_TIMEOUT_MS = 20000;
@@ -140,6 +141,7 @@ class DesktopServer {
       browser: this.isolated ? null : engineOptions.browser
     });
     this.engine = new AgentEngine(engineOptions);
+    this.taskRegistryStore = this.isolated ? null : new TaskRegistryStore({ dataDir: this.dataDir });
     this.scheduleStore = options.scheduleStore || new RecurringScheduleStore({ dataDir: this.dataDir });
     this.scheduleService = options.scheduleService || new RecurringScheduleService({
       store: this.scheduleStore,
@@ -321,9 +323,9 @@ class DesktopServer {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
     const pathname = url.pathname;
 
-    if (this.isolated && (pathname.startsWith('/api/connectors/') || pathname.startsWith('/api/sync/'))) {
+    if (this.isolated && (pathname.startsWith('/api/connectors/') || pathname.startsWith('/api/sync/') || pathname.startsWith('/api/task-registry/'))) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'External providers and Drive sync are disabled in isolated mode.' }));
+      res.end(JSON.stringify({ error: 'External providers, Drive sync, and shared task coordination are disabled in isolated mode.' }));
       return;
     }
     if (pathname.startsWith('/api/sync/') && !this.syncEnabled) {
@@ -354,6 +356,65 @@ class DesktopServer {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    if (pathname === '/api/task-registry/tasks' && req.method === 'GET') {
+      if (!this.taskRegistryStore) return this._respondJson(res, { error: 'task_registry_unavailable' }, 503);
+      const rawLimit = url.searchParams.get('limit');
+      const limit = rawLimit === null ? undefined : Number(rawLimit);
+      try {
+        return this._respondJson(res, { tasks: this.taskRegistryStore.listTasks({
+          status: url.searchParams.get('status') || undefined,
+          ownerChatId: url.searchParams.get('ownerChatId') || undefined,
+          limit
+        }) });
+      } catch (error) { return this._respondJson(res, { error: error.message || 'task_registry_query_invalid' }, 400); }
+    }
+
+    if (pathname === '/api/task-registry/tasks' && req.method === 'POST') {
+      if (!this.taskRegistryStore) return this._respondJson(res, { error: 'task_registry_unavailable' }, 503);
+      const body = await this._readLimitedBody(req, 64 * 1024);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return this._respondJson(res, { error: 'task_registry_body_invalid' }, 400);
+      try {
+        const result = await this.taskRegistryStore.createTask({
+          taskKey: body.taskKey, title: body.title, creatorChatId: body.creatorChatId,
+          repositoryPath: body.repositoryPath, baseSha: body.baseSha, paths: body.paths,
+          nextAction: body.nextAction, idempotencyKey: body.idempotencyKey
+        });
+        return this._respondJson(res, result, result.created ? 201 : 200);
+      } catch (error) {
+        const conflict = /already exists|idempotency key was reused/.test(error.message || '');
+        return this._respondJson(res, { error: error.message || 'task_registry_create_failed' }, conflict ? 409 : 400);
+      }
+    }
+
+    const taskRegistryMatch = /^\/api\/task-registry\/tasks\/([^/]+)(?:\/(claim|checkpoint))?$/.exec(pathname);
+    if (taskRegistryMatch) {
+      if (!this.taskRegistryStore) return this._respondJson(res, { error: 'task_registry_unavailable' }, 503);
+      let taskKey;
+      try { taskKey = decodeURIComponent(taskRegistryMatch[1]); }
+      catch (_) { return this._respondJson(res, { error: 'task_key_invalid' }, 400); }
+      const operation = taskRegistryMatch[2];
+      if (!operation && req.method === 'GET') {
+        const task = this.taskRegistryStore.getTask(taskKey);
+        return task ? this._respondJson(res, { task }) : this._respondJson(res, { error: 'task_not_found' }, 404);
+      }
+      if ((operation === 'claim' || operation === 'checkpoint') && req.method === 'POST') {
+        const body = await this._readLimitedBody(req, 64 * 1024);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return this._respondJson(res, { error: 'task_registry_body_invalid' }, 400);
+        try {
+          const result = operation === 'claim'
+            ? await this.taskRegistryStore.claimTask({ taskKey, ownerChatId: body.ownerChatId, idempotencyKey: body.idempotencyKey, leaseMs: body.leaseMs })
+            : await this.taskRegistryStore.updateCheckpoint({ taskKey, ownerChatId: body.ownerChatId, idempotencyKey: body.idempotencyKey,
+              status: body.status, nextAction: body.nextAction, blocker: body.blocker, evidenceRefs: body.evidenceRefs });
+          const accepted = operation === 'claim' ? result.accepted : result.updated;
+          const missing = result.reason === 'task_not_found';
+          return this._respondJson(res, result, accepted ? 200 : missing ? 404 : 409);
+        } catch (error) {
+          const conflict = /invalid task transition|completion requires|blocked status requires|claim/.test(error.message || '');
+          return this._respondJson(res, { error: error.message || 'task_registry_update_failed' }, conflict ? 409 : 400);
+        }
+      }
     }
 
     if (pathname === '/api/schedules' && req.method === 'GET') {
