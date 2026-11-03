@@ -3831,6 +3831,14 @@ async function refreshJointDevelopment() {
       }
       const drive = document.createElement('p'); drive.className = 'joint-dev-drive';
       drive.textContent = `Drive: ${task.drive.state} · readback ${task.drive.readback} · receiver read ${task.drive.receiverRead || 'not-checked'} · 적용·상대 확인 별도`; card.append(drive);
+      for (const receipt of task.remoteReceipts || []) {
+        const remote = document.createElement('p'); remote.className = 'joint-dev-drive';
+        remote.textContent = `${receipt.fromPlatform} ACK · ${receipt.state} · packet ${receipt.patchFileId} · 받은 시각 ${new Date(receipt.receivedAt).toLocaleString('ko-KR')}`; card.append(remote);
+      }
+      for (const receipt of task.publishedReceipts || []) {
+        const published = document.createElement('p'); published.className = 'joint-dev-drive';
+        published.textContent = `내 ACK · ${receipt.state} · Drive readback ${receipt.readback}`; card.append(published);
+      }
       const localSide = task[jointDevLocalPlatform];
       if (localSide.state === 'active' && !localSide.patch?.fileId) {
         const exportButton = document.createElement('button'); exportButton.type = 'button'; exportButton.textContent = '내 담당 파일 변경을 패킷으로 Drive에 게시';
@@ -3868,6 +3876,17 @@ async function refreshJointDevelopment() {
               applyButton.textContent = '적용됨 · 커밋과 통합 검증은 별도'; await refreshJointDevelopment();
             } catch (error) { applyButton.disabled = false; applyButton.textContent = error.message || '적용 거부'; }
           }); card.append(applyButton);
+        }
+        if (patch.state === 'applied' && !(task.publishedReceipts || []).some(item => item.patchFileId === patch.fileId)) {
+          const ackButton = document.createElement('button'); ackButton.type = 'button'; ackButton.textContent = '상대 기기에 적용 ACK를 Drive로 전송';
+          ackButton.addEventListener('click', async () => {
+            ackButton.disabled = true; ackButton.textContent = 'ACK 게시·readback 확인 중';
+            try {
+              const response = await fetch(`/api/joint-development/tasks/${encodeURIComponent(task.taskKey)}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId: patch.fileId }) });
+              const data = await response.json(); if (!response.ok) throw new Error(data.error || 'ACK 게시 실패');
+              ackButton.textContent = `적용 ACK 완료 · ${data.receipt.readback}`; await refreshJointDevelopment();
+            } catch (error) { ackButton.disabled = false; ackButton.textContent = error.message || 'ACK 게시 실패'; }
+          }); card.append(ackButton);
         }
       }
       if (!task.drive.fileId) {
