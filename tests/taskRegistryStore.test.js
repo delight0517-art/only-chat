@@ -35,6 +35,70 @@ async function createAndClaim(store, repo, taskKey = 'slice-1', ownerChatId = 'c
   return store.claimTask({ taskKey, ownerChatId, idempotencyKey: `claim-${taskKey}` });
 }
 
+async function raceProcessClaims({ root, repo, dataDir, store, claims, name }) {
+  const barrierPath = path.join(root, `claim-barrier-${name}`);
+  const modulePath = path.resolve(__dirname, '../src/core/TaskRegistryStore.js');
+  const workerSource = `
+    const fs = require('node:fs');
+    const { TaskRegistryStore } = require(${JSON.stringify(modulePath)});
+    const [dataDir, repo, taskKey, ownerChatId, barrierPath, idempotencyKey] = process.argv.slice(1);
+    const store = new TaskRegistryStore({ dataDir, lockWaitMs: 5000 });
+    process.stdout.write('READY\\n');
+    const deadline = Date.now() + 5000;
+    const waitForBarrier = async () => {
+      while (!fs.existsSync(barrierPath)) {
+        if (Date.now() >= deadline) throw new Error('claim barrier timed out');
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+    };
+    waitForBarrier()
+      .then(() => store.claimTask({ taskKey, ownerChatId, idempotencyKey }))
+      .then(result => process.stdout.write(JSON.stringify(result) + '\\n'))
+      .catch(error => { process.stderr.write((error.stack || error.message) + '\\n'); process.exitCode = 1; });
+  `;
+  const workers = claims.map(({ taskKey, ownerChatId, idempotencyKey }) => {
+    const child = spawn(process.execPath, ['-e', workerSource, dataDir, repo, taskKey, ownerChatId, barrierPath, idempotencyKey], {
+      cwd: repo,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    let ready = false;
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+      if (stdout.split(/\r?\n/u).includes('READY')) ready = true;
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    const result = new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', code => {
+        if (code !== 0) return reject(new Error(stderr || `claim worker exited ${code}`));
+        const line = stdout.split(/\r?\n/u).filter(Boolean).at(-1);
+        try { resolve(JSON.parse(line)); } catch (error) { reject(error); }
+      });
+    });
+    return { child, result, isReady: () => ready };
+  });
+
+  try {
+    const deadline = Date.now() + 5000;
+    while (workers.some(worker => !worker.isReady())) {
+      if (Date.now() >= deadline) throw new Error('claim workers did not reach the barrier');
+      if (workers.some(worker => worker.child.exitCode !== null)) throw new Error('claim worker exited before the barrier');
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    fs.writeFileSync(barrierPath, 'start', { mode: 0o600 });
+    return await Promise.all(workers.map(worker => worker.result));
+  } finally {
+    for (const worker of workers) {
+      if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill('SIGTERM');
+    }
+    await Promise.all(workers.map(worker => worker.result.catch(() => undefined)));
+  }
+}
+
 test('creates durable tasks and replays idempotent create and claim requests', async () => {
   await withFixture(async ({ repo, dataDir, store }) => {
     const input = taskInput(repo);
@@ -200,70 +264,26 @@ test('allows only one concurrent owner and rejects overlapping active path scope
 test('allows exactly one task owner when separate processes claim the same task at once', async () => {
   await withFixture(async ({ root, repo, dataDir, store }) => {
     await store.createTask(taskInput(repo, { idempotencyKey: 'create-process-race' }));
-    const barrierPath = path.join(root, 'claim-barrier');
-    const modulePath = path.resolve(__dirname, '../src/core/TaskRegistryStore.js');
-    const workerSource = `
-      const fs = require('node:fs');
-      const { TaskRegistryStore } = require(${JSON.stringify(modulePath)});
-      const [dataDir, repo, ownerChatId, barrierPath, idempotencyKey] = process.argv.slice(1);
-      const store = new TaskRegistryStore({ dataDir, lockWaitMs: 5000 });
-      process.stdout.write('READY\\n');
-      const deadline = Date.now() + 5000;
-      const waitForBarrier = async () => {
-        while (!fs.existsSync(barrierPath)) {
-          if (Date.now() >= deadline) throw new Error('claim barrier timed out');
-          await new Promise(resolve => setTimeout(resolve, 5));
-        }
-      };
-      waitForBarrier()
-        .then(() => store.claimTask({ taskKey: 'slice-1', ownerChatId, idempotencyKey }))
-        .then(result => process.stdout.write(JSON.stringify(result) + '\\n'))
-        .catch(error => { process.stderr.write((error.stack || error.message) + '\\n'); process.exitCode = 1; });
-    `;
-    const workers = ['chat-process-a', 'chat-process-b'].map((ownerChatId, index) => {
-      const child = spawn(process.execPath, ['-e', workerSource, dataDir, repo, ownerChatId, barrierPath, `claim-process-${index}`], {
-        cwd: repo,
-        stdio: ['ignore', 'pipe', 'pipe']
-      });
-      let stdout = '';
-      let stderr = '';
-      let ready = false;
-      child.stdout.setEncoding('utf8');
-      child.stderr.setEncoding('utf8');
-      child.stdout.on('data', chunk => {
-        stdout += chunk;
-        if (stdout.split(/\r?\n/u).includes('READY')) ready = true;
-      });
-      child.stderr.on('data', chunk => { stderr += chunk; });
-      const result = new Promise((resolve, reject) => {
-        child.once('error', reject);
-        child.once('close', code => {
-          if (code !== 0) return reject(new Error(stderr || `claim worker exited ${code}`));
-          const line = stdout.split(/\r?\n/u).filter(Boolean).at(-1);
-          try { resolve(JSON.parse(line)); } catch (error) { reject(error); }
-        });
-      });
-      return { child, result, isReady: () => ready };
-    });
+    const sameTaskResults = await raceProcessClaims({ root, repo, dataDir, store, name: 'same-task', claims: [
+      { taskKey: 'slice-1', ownerChatId: 'chat-process-a', idempotencyKey: 'claim-process-a' },
+      { taskKey: 'slice-1', ownerChatId: 'chat-process-b', idempotencyKey: 'claim-process-b' }
+    ] });
+    assert.equal(sameTaskResults.filter(result => result.accepted).length, 1);
+    assert.equal(sameTaskResults.filter(result => result.reason === 'owned_by_other_chat').length, 1);
+    assert.equal(store.getTask('slice-1').ownerChatId, sameTaskResults.find(result => result.accepted).ownerChatId);
 
-    try {
-      const deadline = Date.now() + 5000;
-      while (workers.some(worker => !worker.isReady())) {
-        if (Date.now() >= deadline) throw new Error('claim workers did not reach the barrier');
-        if (workers.some(worker => worker.child.exitCode !== null)) throw new Error('claim worker exited before the barrier');
-        await new Promise(resolve => setTimeout(resolve, 5));
-      }
-      fs.writeFileSync(barrierPath, 'start', { mode: 0o600 });
-      const results = await Promise.all(workers.map(worker => worker.result));
-      assert.equal(results.filter(result => result.accepted).length, 1);
-      assert.equal(results.filter(result => result.reason === 'owned_by_other_chat').length, 1);
-      assert.equal(store.getTask('slice-1').ownerChatId, results.find(result => result.accepted).ownerChatId);
-    } finally {
-      for (const worker of workers) {
-        if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill('SIGTERM');
-      }
-      await Promise.all(workers.map(worker => worker.result.catch(() => undefined)));
-    }
+    await store.createTask(taskInput(repo, { taskKey: 'overlap-a', paths: ['src/shared.js'], idempotencyKey: 'create-overlap-a' }));
+    await store.createTask(taskInput(repo, { taskKey: 'overlap-b', paths: ['src/shared.js'], idempotencyKey: 'create-overlap-b' }));
+    const overlapResults = await raceProcessClaims({ root, repo, dataDir, store, name: 'overlapping-paths', claims: [
+      { taskKey: 'overlap-a', ownerChatId: 'chat-path-a', idempotencyKey: 'claim-path-a' },
+      { taskKey: 'overlap-b', ownerChatId: 'chat-path-b', idempotencyKey: 'claim-path-b' }
+    ] });
+    const accepted = overlapResults.find(result => result.accepted);
+    const rejected = overlapResults.find(result => !result.accepted);
+    assert.ok(accepted);
+    assert.equal(rejected.reason, 'path_scope_conflict');
+    assert.equal(rejected.blockingTaskKey, accepted.taskKey);
+    assert.equal([store.getTask('overlap-a'), store.getTask('overlap-b')].filter(task => task.ownerChatId).length, 1);
   });
 });
 
