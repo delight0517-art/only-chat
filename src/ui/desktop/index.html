@@ -297,6 +297,25 @@
       <aside class="workbench-panel" id="workbenchPanel" aria-labelledby="workbenchPanelTitle">
         <header class="workbench-panel-header"><div><span class="workbench-eyebrow">WORK MAP</span><h2 id="workbenchPanelTitle">변화가 이어지는 곳</h2></div><button class="workbench-icon-button" id="btnRefreshWorkbench" type="button" aria-label="작업 지도 새로고침">↻</button></header>
         <p class="workbench-intro">앱별 변화가 어디까지 왔는지, 다음에 무엇을 확인할지 한눈에.</p>
+        <section class="joint-dev-card" aria-labelledby="jointDevTitle">
+          <div class="workbench-section-title"><h3 id="jointDevTitle">Mac · Windows 공동 개발</h3><button type="button" class="workbench-text-button" id="btnRefreshJointDev">새로고침 ↻</button></div>
+          <p class="workbench-footnote">같은 앱의 기준 커밋과 파일 소유권을 먼저 고정합니다. Drive는 명시적으로 게시하며, 읽기 확인과 상대 기기 적용은 별도 단계입니다.</p>
+          <details class="joint-dev-create"><summary>공동 개발 계획 만들기</summary>
+            <form id="jointDevForm">
+              <label>작업 키<input name="taskKey" required maxlength="80" placeholder="detox-youtube-ads"></label>
+              <label>앱<input name="app" required maxlength="120" placeholder="Detox"></label>
+              <label>목표 제목<input name="title" required maxlength="160"></label>
+              <label>완료 목표<textarea name="goal" required maxlength="2000" rows="2"></textarea></label>
+              <label>통합 기준 커밋<input name="integrationBase" required pattern="[a-fA-F0-9]{40}|[a-fA-F0-9]{64}" placeholder="40자리 Git 커밋"></label>
+              <fieldset><legend>Mac 담당</legend><input name="macOwner" required placeholder="담당자/세션"><input name="macSource" required placeholder="정본 저장소 위치"><input name="macBase" required pattern="[a-fA-F0-9]{40}|[a-fA-F0-9]{64}" placeholder="기준 커밋"><textarea name="macPaths" required rows="2" placeholder="소유 파일 경로 (줄마다 하나)"></textarea></fieldset>
+              <fieldset><legend>Windows 담당</legend><input name="windowsOwner" required placeholder="담당자/세션"><input name="windowsSource" required placeholder="정본 저장소 위치"><input name="windowsBase" required pattern="[a-fA-F0-9]{40}|[a-fA-F0-9]{64}" placeholder="기준 커밋"><textarea name="windowsPaths" required rows="2" placeholder="소유 파일 경로 (줄마다 하나)"></textarea></fieldset>
+              <button type="submit">공동 작업 등록</button><p id="jointDevFormStatus" role="status"></p>
+            </form>
+          </details>
+          <button type="button" class="workbench-text-button" id="btnJointDevDriveInbox">Drive 패킷 확인</button>
+          <div id="jointDevDriveInbox" class="joint-dev-list" aria-live="polite"></div>
+          <div id="jointDevTasks" class="joint-dev-list" aria-live="polite">공동 작업을 불러오는 중</div>
+        </section>
         <div class="workbench-metrics"><div><strong id="workbenchAppCount">—</strong><span>등록 앱</span></div><div><strong id="workbenchActiveCount">—</strong><span>진행 기록</span></div><div><strong id="workbenchAttentionCount">—</strong><span>확인 필요</span></div></div>
         <div class="workbench-filter" role="group" aria-label="작업 지도 필터"><button type="button" data-workbench-filter="open" aria-pressed="true">진행·대기</button><button type="button" data-workbench-filter="all" aria-pressed="false">완료 포함</button></div>
         <p id="workbenchReadStatus" class="workbench-read-status" role="status">작업 기록을 확인하고 있습니다.</p>

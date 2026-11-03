@@ -3722,6 +3722,7 @@ function initWorkbench() {
     toggle.focus();
   });
   document.getElementById('btnRefreshWorkbench')?.addEventListener('click', () => { void refreshWorkbench(); });
+  initJointDevelopment();
   document.getElementById('btnWorkbenchSource')?.addEventListener('click', () => openSettingsStage('general'));
   document.getElementById('btnWorkbenchModules')?.addEventListener('click', () => document.getElementById('railGridBtn')?.click());
   document.querySelectorAll('[data-workbench-filter]').forEach(button => button.addEventListener('click', () => {
@@ -3732,6 +3733,117 @@ function initWorkbench() {
   window.addEventListener('focus', () => {
     if (!document.hidden && !panel.hidden && !panel.contains(document.activeElement)) void refreshWorkbench();
   });
+}
+
+function initJointDevelopment() {
+  const list = document.getElementById('jointDevTasks');
+  const form = document.getElementById('jointDevForm');
+  if (!list || !form) return;
+  document.getElementById('btnRefreshJointDev')?.addEventListener('click', () => { void refreshJointDevelopment(); });
+  document.getElementById('btnJointDevDriveInbox')?.addEventListener('click', () => { void refreshJointDevelopmentDriveInbox(); });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const status = document.getElementById('jointDevFormStatus');
+    const values = Object.fromEntries(new FormData(form).entries());
+    const lines = value => value.split(/\r?\n/u).map(item => item.trim()).filter(Boolean);
+    const body = {
+      taskKey: values.taskKey, app: values.app, title: values.title, goal: values.goal,
+      integrationBase: values.integrationBase,
+      mac: { owner: values.macOwner, source: values.macSource, baseCommit: values.macBase, paths: lines(values.macPaths) },
+      windows: { owner: values.windowsOwner, source: values.windowsSource, baseCommit: values.windowsBase, paths: lines(values.windowsPaths) }
+    };
+    status.textContent = '소유 경로 겹침과 기준 커밋을 확인하는 중';
+    try {
+      const response = await fetch('/api/joint-development/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '공동 작업 등록 실패');
+      status.textContent = result.created ? '등록됨 · 양쪽 작업은 아직 시작되지 않았습니다.' : '같은 공동 작업이 이미 등록되어 있습니다.';
+      await refreshJointDevelopment();
+    } catch (error) { status.textContent = error.message || '공동 작업을 등록할 수 없습니다.'; }
+  });
+  void refreshJointDevelopment();
+}
+
+async function refreshJointDevelopmentDriveInbox() {
+  const inbox = document.getElementById('jointDevDriveInbox');
+  if (!inbox) return;
+  inbox.textContent = 'Google Drive 패킷 목록을 요청하는 중';
+  try {
+    const response = await fetch('/api/joint-development/drive-inbox', { cache: 'no-store' });
+    const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Drive 목록을 읽지 못했습니다.');
+    inbox.replaceChildren();
+    if (!data.files.length) { inbox.textContent = '새 공동 개발 패킷 없음'; return; }
+    for (const file of data.files) {
+      const row = document.createElement('div'); row.className = 'joint-dev-task';
+      const name = document.createElement('span'); name.textContent = file.name; row.append(name);
+      const receive = document.createElement('button'); receive.type = 'button'; receive.textContent = '읽고 Only Chat에 등록';
+      receive.addEventListener('click', async () => {
+        receive.disabled = true; receive.textContent = '패킷 검증 중';
+        try {
+          const result = await fetch('/api/joint-development/receive', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId: file.id }) });
+          const data = await result.json(); if (!result.ok) throw new Error(data.error || '수신에 실패했습니다.');
+          receive.textContent = '패킷 읽기 확인됨'; await refreshJointDevelopment();
+        } catch (error) { receive.disabled = false; receive.textContent = error.message || '수신 실패'; }
+      }); row.append(receive); inbox.append(row);
+    }
+  } catch (error) { inbox.textContent = error.message || 'Drive 연결 상태를 확인하세요.'; }
+}
+
+async function refreshJointDevelopment() {
+  const list = document.getElementById('jointDevTasks');
+  if (!list) return;
+  try {
+    const response = await fetch('/api/joint-development/tasks?limit=50', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error('공동 작업 기록을 읽을 수 없습니다.');
+    list.replaceChildren();
+    if (!data.tasks.length) { list.textContent = '등록된 공동 개발 작업 없음'; return; }
+    for (const task of data.tasks) {
+      const card = document.createElement('article'); card.className = 'joint-dev-task';
+      const title = document.createElement('strong'); title.textContent = `${task.app} · ${task.title}`; card.append(title);
+      const goal = document.createElement('p'); goal.textContent = task.goal; card.append(goal);
+      const base = document.createElement('small'); base.textContent = `공통 기준 ${task.integrationBase.slice(0, 12)} · ${task.policy}`; card.append(base);
+      for (const platform of ['mac', 'windows']) {
+        const side = task[platform]; const row = document.createElement('p'); row.className = 'joint-dev-side';
+        row.textContent = `${platform === 'mac' ? 'Mac' : 'Windows'} · ${side.owner} · ${side.state} · ${side.paths.join(', ')}`; card.append(row);
+        const report = document.createElement('details'); report.className = 'joint-dev-report';
+        const summary = document.createElement('summary'); summary.textContent = `${platform === 'mac' ? 'Mac' : 'Windows'} 담당 진행 기록`; report.append(summary);
+        const form = document.createElement('form');
+        const select = document.createElement('select'); select.name = 'state';
+        for (const state of ['active', 'ready-to-share', 'drive-readback', 'receiver-read', 'applied', 'tested', 'integrated', 'blocked']) {
+          const option = document.createElement('option'); option.value = state; option.textContent = state; select.append(option);
+        }
+        const evidence = document.createElement('input'); evidence.name = 'evidence'; evidence.placeholder = '증거 참조 (경로, 로그, 결과)'; evidence.maxLength = 1000;
+        const commit = document.createElement('input'); commit.name = 'commit'; commit.placeholder = '통합 시 canonical main 커밋'; commit.maxLength = 64;
+        const submit = document.createElement('button'); submit.type = 'submit'; submit.textContent = '진행 상태 기록';
+        form.append(select, evidence, commit, submit);
+        form.addEventListener('submit', async event => {
+          event.preventDefault(); submit.disabled = true;
+          try {
+            const result = await fetch(`/api/joint-development/tasks/${encodeURIComponent(task.taskKey)}/${platform}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: select.value, evidence: evidence.value, commit: commit.value }) });
+            const payload = await result.json(); if (!result.ok) throw new Error(payload.error || '상태를 기록하지 못했습니다.');
+            await refreshJointDevelopment();
+          } catch (error) { submit.disabled = false; submit.textContent = error.message || '기록 실패'; }
+        });
+        report.append(form); card.append(report);
+      }
+      const drive = document.createElement('p'); drive.className = 'joint-dev-drive';
+      drive.textContent = `Drive: ${task.drive.state} · readback ${task.drive.readback} · receiver read ${task.drive.receiverRead || 'not-checked'} · 적용·상대 확인 별도`; card.append(drive);
+      if (!task.drive.fileId) {
+        const publish = document.createElement('button'); publish.type = 'button'; publish.textContent = '공동 작업 패킷을 Drive에 게시';
+        publish.addEventListener('click', async () => {
+          publish.disabled = true; publish.textContent = '게시·읽기 확인 중';
+          try {
+            const result = await fetch(`/api/joint-development/tasks/${encodeURIComponent(task.taskKey)}/publish`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+            const payload = await result.json(); if (!result.ok) throw new Error(payload.error || 'Drive 게시 실패');
+            publish.textContent = payload.drive.readback === 'verified' ? 'Drive 업로드·읽기 확인 완료' : '읽기 확인 불일치';
+            await refreshJointDevelopment();
+          } catch (error) { publish.disabled = false; publish.textContent = error.message || 'Drive 게시 실패'; }
+        }); card.append(publish);
+      }
+      list.append(card);
+    }
+  } catch (error) { list.textContent = error.message || '공동 작업 기록 연결 실패'; }
 }
 
 async function readWorkbenchSnapshot(url) {

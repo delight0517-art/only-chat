@@ -213,6 +213,11 @@
   - Windows 쪽은 변경 작업을 마칠 때 allowlisted hot-reload packet 또는 core 변경용 `needs-agent` packet을 게시해야 합니다. Windows의 app service가 실제 동일 폴더에 게시하는지, Mac 설치 앱이 수신하는지, 적용 결과가 양쪽에서 확인되는지는 아직 별도 검증이 필요합니다.
   - 자동 Git commit은 지원하지 않습니다. 현재 Mac canonical source는 Git 저장소가 아니므로, 이 수신함은 반영 작업을 잊지 않게 추적하고 실제 소스 반영·검증 뒤에만 완료 상태로 취급합니다.
 
+- [ ] **TODO-OC-JOINT-DEV-01. Mac·Windows 공동 개발을 Drive로 조정하고 실제 변경 패킷까지 적용/통합**:
+  - 진행 (2026-11-03): Only Chat에 공동 작업 계약과 UI 등록 목록을 추가했습니다. 공통 통합 기준, 각 기기 정본 위치·기준 커밋·담당자·소유 경로를 저장하고 겹치는 파일 범위는 등록 시 거부합니다. Git 브랜치를 만들지 않는 `canonical-main-no-branches` 정책을 기록합니다. 사용자가 누를 때 Drive에 계약 JSON을 게시하고 file ID를 읽어 같은 내용/SHA-256인지 확인합니다.
+  - 아직 전달하는 것은 작업 계약 메타데이터뿐이며 소스 diff/patch 업로드, Windows 수신기 import/ACK, 양쪽 테스트·통합 커밋 검증은 구현되지 않았습니다. Drive 업로드/readback을 Windows 수신·적용으로 표시하지 않습니다.
+  - 다음: 체크섬이 있는 변경 패킷 형식(소스 경로 allowlist, patch/diff, base commit, 검증 명령·결과)을 추가하고, 수신 측이 base/dirty state/lease/path 충돌을 검증해 명시 승인 전 적용하지 않도록 합니다. 적용·테스트·canonical main 커밋·상대 기기 readback을 따로 기록합니다. 알림·백그라운드 watcher·강제 merge/overwrite는 금지합니다.
+
 ### 3F Browser 연결 및 실제 제어 검증 미완료
 - [ ] **TODO-3FBROWSER-01. Only Chat과 3F Browser가 실제 연결되어 탐색·페이지 읽기를 수행하는지 end-to-end 확인**:
   - 3F 기본 브라우저 및 Only Chat 연결 fresh readback (2026-11-01 KST): macOS LaunchServices의 기본 웹 브라우저·`http`·`https` handler는 `com.rogan.threef.browser`이고, 사용자의 설치 앱 서명은 유효합니다. 같은 bundle ID의 여러 앱 등록 때문에 URL resolver는 canonical `/Users/rogan/Applications/3F Browser.app` 대신 `.build/install-candidate-20261031/3F Browser.app`를 먼저 선택합니다. Only Chat 설치 `/api/browser/status`는 HTTP 200이지만 `controlAvailable:false`, `isOpen:false`입니다. 따라서 시스템 기본 앱 등록은 3F지만 현재 Only Chat의 실제 제어는 사용할 수 있다고 말할 수 없습니다. URL을 열거나 실행 프로세스를 종료하지 않았습니다.

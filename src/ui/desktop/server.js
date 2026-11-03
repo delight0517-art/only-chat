@@ -31,6 +31,7 @@ const { EvolutionInbox } = require('../../sync/EvolutionInbox.js');
 const { RecurringScheduleStore } = require('../../scheduler/RecurringScheduleStore.js');
 const { RecurringScheduleService } = require('../../scheduler/RecurringScheduleService.js');
 const { TaskRegistryStore } = require('../../core/TaskRegistryStore.js');
+const { MacWindowsDevelopment } = require('../../core/MacWindowsDevelopment.js');
 
 const QUOTA_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 const SESSION_SEARCH_TIMEOUT_MS = 20000;
@@ -142,6 +143,7 @@ class DesktopServer {
     });
     this.engine = new AgentEngine(engineOptions);
     this.taskRegistryStore = this.isolated ? null : new TaskRegistryStore({ dataDir: this.dataDir });
+    this.macWindowsDevelopment = this.isolated ? null : new MacWindowsDevelopment({ dataDir: this.dataDir });
     this.scheduleStore = options.scheduleStore || new RecurringScheduleStore({ dataDir: this.dataDir });
     this.scheduleService = options.scheduleService || new RecurringScheduleService({
       store: this.scheduleStore,
@@ -323,7 +325,7 @@ class DesktopServer {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
     const pathname = url.pathname;
 
-    if (this.isolated && (pathname.startsWith('/api/connectors/') || pathname.startsWith('/api/sync/') || pathname.startsWith('/api/task-registry/'))) {
+    if (this.isolated && (pathname.startsWith('/api/connectors/') || pathname.startsWith('/api/sync/') || pathname.startsWith('/api/task-registry/') || pathname.startsWith('/api/joint-development/'))) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'External providers, Drive sync, and shared task coordination are disabled in isolated mode.' }));
       return;
@@ -369,6 +371,73 @@ class DesktopServer {
           limit
         }) });
       } catch (error) { return this._respondJson(res, { error: error.message || 'task_registry_query_invalid' }, 400); }
+    }
+
+    if (pathname === '/api/joint-development/tasks' && req.method === 'GET') {
+      if (!this.macWindowsDevelopment) return this._respondJson(res, { error: 'joint_development_unavailable' }, 503);
+      return this._respondJson(res, { tasks: this.macWindowsDevelopment.list(url.searchParams.get('limit')) });
+    }
+
+    if (pathname === '/api/joint-development/tasks' && req.method === 'POST') {
+      if (!this.macWindowsDevelopment) return this._respondJson(res, { error: 'joint_development_unavailable' }, 503);
+      const body = await this._readLimitedBody(req, 64 * 1024);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return this._respondJson(res, { error: 'joint_development_body_invalid' }, 400);
+      try {
+        const result = this.macWindowsDevelopment.create(body);
+        return this._respondJson(res, result, result.created ? 201 : 200);
+      } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_contract_invalid' }, 400); }
+    }
+
+    if (pathname === '/api/joint-development/drive-inbox' && req.method === 'GET') {
+      try {
+        const result = await this.engine.tools.google.driveListFiles({ q: "name contains 'OnlyChat-JointDev-' and trashed = false", pageSize: 50 });
+        return this._respondJson(res, { files: (result?.files || []).filter(file => file.mimeType === 'application/json').map(file => ({ id: file.id, name: file.name, modifiedTime: file.modifiedTime })) });
+      } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_drive_list_failed' }, 502); }
+    }
+
+    if (pathname === '/api/joint-development/receive' && req.method === 'POST') {
+      const body = await this._readLimitedBody(req, 4096);
+      if (!body || typeof body.fileId !== 'string' || !body.fileId.trim() || body.fileId.length > 256) return this._respondJson(res, { error: 'joint_development_drive_file_id_invalid' }, 400);
+      try {
+        const read = await this.engine.tools.google.driveReadFile(body.fileId.trim());
+        if (typeof read?.content !== 'string' || Buffer.byteLength(read.content, 'utf8') > 100 * 1024) throw new Error('joint development packet is missing or exceeds 100 KiB');
+        const packet = JSON.parse(read.content);
+        const sha256 = crypto.createHash('sha256').update(read.content).digest('hex');
+        const task = this.macWindowsDevelopment.importPacket(packet, body.fileId.trim(), sha256);
+        return this._respondJson(res, { task, drive: { fileId: body.fileId.trim(), sha256, readback: 'verified', receiverRead: 'verified' } }, 200);
+      } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_packet_receive_failed' }, 400); }
+    }
+
+    const jointTaskMatch = /^\/api\/joint-development\/tasks\/([a-z0-9._-]+)(?:\/(mac|windows|publish))?$/i.exec(pathname);
+    if (jointTaskMatch && req.method === 'POST') {
+      if (!this.macWindowsDevelopment) return this._respondJson(res, { error: 'joint_development_unavailable' }, 503);
+      const body = await this._readLimitedBody(req, 16 * 1024);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return this._respondJson(res, { error: 'joint_development_body_invalid' }, 400);
+      const [, taskKey, action] = jointTaskMatch;
+      const task = this.macWindowsDevelopment.get(taskKey);
+      if (!task) return this._respondJson(res, { error: 'joint_development_task_not_found' }, 404);
+      if (action === 'publish') {
+        try {
+          if (task.drive.fileId) return this._respondJson(res, { error: 'joint_development_packet_already_uploaded', drive: task.drive }, 409);
+          const packet = { schema: 'only-chat-joint-development/v1', taskKey: task.taskKey, title: task.title, app: task.app,
+            goal: task.goal, integrationBase: task.integrationBase, policy: task.policy,
+            mac: task.mac, windows: task.windows, publishedAt: new Date().toISOString() };
+          const content = JSON.stringify(packet);
+          const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+          const created = await this.engine.tools.google.driveCreateFile(`OnlyChat-JointDev-${task.taskKey}-${Date.now()}.json`, 'application/json', content);
+          const fileId = String(created?.id || '');
+          if (!fileId) throw new Error('Drive created a packet without returning a file ID');
+          this.macWindowsDevelopment.recordPublished(taskKey, { fileId, sha256, readback: null });
+          const readback = await this.engine.tools.google.driveReadFile(fileId);
+          const verified = readback?.content === content && crypto.createHash('sha256').update(readback.content).digest('hex') === sha256;
+          const updated = this.macWindowsDevelopment.recordPublished(taskKey, { fileId, sha256, readback: verified });
+          return this._respondJson(res, { task: updated, drive: { state: 'uploaded', fileId, sha256, readback: verified ? 'verified' : 'mismatch' } }, verified ? 200 : 502);
+        } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_drive_publish_failed', drive: this.macWindowsDevelopment.get(taskKey)?.drive || null }, 502); }
+      }
+      try {
+        const updated = this.macWindowsDevelopment.updateSide(taskKey, action, body);
+        return this._respondJson(res, { task: updated });
+      } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_update_invalid' }, 400); }
     }
 
     if (pathname === '/api/task-registry/tasks' && req.method === 'POST') {
