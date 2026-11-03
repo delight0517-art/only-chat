@@ -85,6 +85,36 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function normalizeExecutionPlan(value) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).some(key => !['kind', 'summary', 'tasks'].includes(key))
+    || value.kind !== 'executor-plan' || !Array.isArray(value.tasks)
+    || value.tasks.length < 1 || value.tasks.length > 5) {
+    throw new TypeError('execution must be a validated executor plan');
+  }
+  const summary = printableString(value.summary, 'execution.summary', 1000);
+  const ownedPaths = [];
+  const tasks = value.tasks.map((task, index) => {
+    if (!task || typeof task !== 'object' || Array.isArray(task)
+      || Object.keys(task).some(key => !['title', 'prompt', 'files', 'allowedTools'].includes(key))) {
+      throw new TypeError(`execution.tasks[${index}] is invalid`);
+    }
+    const title = printableString(task.title, `execution.tasks[${index}].title`, 120);
+    const prompt = printableString(task.prompt, `execution.tasks[${index}].prompt`, 4000);
+    const paths = normalizePaths(task.files);
+    const allowedTools = task.allowedTools;
+    if (!Array.isArray(allowedTools) || allowedTools.length < 1 || allowedTools.length > 32
+      || allowedTools.some(name => typeof name !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/i.test(name))) {
+      throw new TypeError(`execution.tasks[${index}].allowedTools is invalid`);
+    }
+    if (pathsOverlap(ownedPaths, paths)) throw new TypeError('execution task file scopes overlap');
+    ownedPaths.push(...paths);
+    return { title, prompt, files: paths, allowedTools: [...new Set(allowedTools)] };
+  });
+  return { kind: 'executor-plan', summary, tasks };
+}
+
 function operationHash(operation, input) {
   return crypto.createHash('sha256').update(`${operation}\0${JSON.stringify(input)}`).digest('hex');
 }
@@ -150,6 +180,15 @@ class TaskRegistryStore {
         || !Number.isSafeInteger(task.revision) || task.revision < 1
         || !Array.isArray(task.paths) || typeof task.repositoryPath !== 'string') {
         throw new Error('invalid task registry record');
+      }
+      if (task.execution !== undefined) {
+        try {
+          if (JSON.stringify(normalizeExecutionPlan(task.execution)) !== JSON.stringify(task.execution)) {
+            throw new Error('execution plan is not normalized');
+          }
+        } catch (_) {
+          throw new Error('invalid task registry execution plan');
+        }
       }
       if (ACTIVE_STATUSES.has(task.status) && (typeof task.ownerChatId !== 'string'
         || !task.ownerChatId || typeof task.leaseExpiresAt !== 'string' || !Number.isFinite(Date.parse(task.leaseExpiresAt)))) {
@@ -255,6 +294,7 @@ class TaskRegistryStore {
       repositoryPath: normalizeRepositoryPath(input.repositoryPath),
       baseSha: printableString(input.baseSha, 'baseSha', 64).toLowerCase(),
       paths: normalizePaths(input.paths),
+      execution: normalizeExecutionPlan(input.execution),
       nextAction: printableString(input.nextAction || '', 'nextAction', 2000, false),
       idempotencyKey: printableString(input.idempotencyKey, 'idempotencyKey', 160)
     };
@@ -265,12 +305,13 @@ class TaskRegistryStore {
     return this._withWriteLock(`task-registry:create:${normalized.taskKey}`, async () => {
       const state = this._loadState();
       const replay = this._idempotencyReplay(state, 'create', normalized.idempotencyKey, request);
-      if (replay.result) return replay.result;
+      if (replay.result) return { ...replay.result, created: false, replayed: true };
       const existing = state.tasks.find(task => task.taskKey === normalized.taskKey);
       if (existing) {
         const same = existing.title === normalized.title && existing.creatorChatId === normalized.creatorChatId
           && existing.repositoryPath === normalized.repositoryPath && existing.baseSha === normalized.baseSha
           && JSON.stringify(existing.paths) === JSON.stringify(normalized.paths)
+          && JSON.stringify(existing.execution) === JSON.stringify(normalized.execution)
           && existing.checkpoint.nextAction === normalized.nextAction;
         if (!same) throw new Error('task key already exists with different source or scope');
         const result = { created: false, task: clone(existing) };
@@ -295,6 +336,7 @@ class TaskRegistryStore {
         createdAt: now,
         updatedAt: now
       };
+      if (normalized.execution !== undefined) task.execution = normalized.execution;
       state.tasks.push(task);
       const result = { created: true, task: clone(task) };
       this._remember(state, replay, result);

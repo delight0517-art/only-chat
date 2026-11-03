@@ -19,8 +19,25 @@ const { TaskRegistryStore } = require('./TaskRegistryStore.js');
 const { HandoffAdapter } = require('./HandoffAdapter.js');
 const { parseReasoningEffort } = require('./ReasoningEffort.js');
 const { AccountRouterModuleSlot } = require('../features/provider/AccountRouterModuleSlot.js');
+const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const os = require('node:os');
+
+function managerRepositoryIdentity(workspaceDir) {
+  try {
+    const repositoryPath = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: workspaceDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 4096
+    }).trim();
+    const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repositoryPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000, maxBuffer: 4096
+    }).trim().toLowerCase();
+    if (!repositoryPath || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(baseSha)) throw new Error('Git repository has no valid HEAD.');
+    return { repositoryPath, baseSha };
+  } catch (_) {
+    throw new Error('지속형 작업 계획을 만들려면 현재 작업공간이 유효한 Git 저장소와 커밋에 연결되어 있어야 합니다. 파일은 변경하지 않았습니다.');
+  }
+}
 
 const MUTATION_TOOL_NAMES = new Set([
   'exec_command', 'bash', 'write_file', 'edit_file', 'apply_patch',
@@ -82,7 +99,7 @@ class AgentEngine {
       notionReaBrowser: options.notionReaBrowser,
       browserEnabled: !this.isolated,
       providerConnectionsEnabled: !this.isolated,
-      taskRegistryStore: this.isolated ? null : new TaskRegistryStore({ dataDir: this.dataDir }),
+      taskRegistryStore: options.taskRegistryStore || (this.isolated ? null : new TaskRegistryStore({ dataDir: this.dataDir })),
       macWindowsDevelopment: this.isolated ? null : (options.macWindowsDevelopment || null),
       connectorOptions: this.isolated ? { storageDir: path.join(this.dataDir, 'providers'), clientConfigFile: false, readEnvironment: false } : {},
       vaultOptions: this.isolated ? { vaultDir: path.join(this.dataDir, 'vault') } : {},
@@ -612,14 +629,69 @@ class AgentEngine {
                 if (plan.feasibility.status === 'blocked') {
                   response = { content: `관리자: 실행 불가 — ${plan.feasibility.reason}`, toolCalls: [] };
                 } else {
-                  const tasks = this.dispatcher.enqueueTasks(plan.tasks.map((task, index) => ({
-                    id: `manager_${this.currentSession.sessionId}_${Date.now()}_${index + 1}`,
-                    ...task,
-                    requireToolExecution: true
-                  })));
-                  managerDelegation = { summary: plan.summary, tasks };
-                  response = { content: `관리자: ${plan.summary}\n실행 가능: ${plan.feasibility.reason}\n실행자: ${tasks.length}개 작업을 별도 세션으로 접수했습니다. 상태와 결과는 작업 대기열에서 확인할 수 있습니다.`, toolCalls: [] };
-                  callbacks.onManagerDelegation?.({ summary: plan.summary, tasks: tasks.map(task => ({ id: task.id, title: task.title, status: task.status })) });
+                  const registry = this.tools.taskRegistryStore;
+                  if (!registry || !this.currentSession?.sessionId) throw new Error('지속형 작업 기록소와 현재 대화 식별자가 준비되지 않았습니다.');
+                  const { repositoryPath, baseSha } = managerRepositoryIdentity(this.workspaceDir);
+                  const execution = { kind: 'executor-plan', summary: plan.summary, tasks: plan.tasks };
+                  const planIdentity = JSON.stringify({ repositoryPath, baseSha, execution });
+                  const planHash = crypto.createHash('sha256').update(planIdentity).digest('hex');
+                  const taskKey = `manager-${planHash.slice(0, 48)}`;
+                  let saved;
+                  try {
+                    saved = await registry.createTask({
+                      taskKey,
+                      title: plan.summary.slice(0, 120),
+                      creatorChatId: this.currentSession.sessionId,
+                      repositoryPath,
+                      baseSha,
+                      paths: plan.tasks.flatMap(task => task.files),
+                      nextAction: '검증된 관리자 계획이 저장되었습니다. 실행 결과와 검토 상태를 갱신합니다.',
+                      idempotencyKey: `manager-plan-${planHash.slice(0, 48)}`,
+                      execution
+                    });
+                  } catch (createError) {
+                    const existing = registry.getTask(taskKey);
+                    if (!existing || existing.repositoryPath !== repositoryPath || existing.baseSha !== baseSha
+                      || JSON.stringify(existing.execution) !== JSON.stringify(execution)) throw createError;
+                    saved = { created: false, task: existing };
+                  }
+                  if (!saved.created) {
+                    response = {
+                      content: `관리자: 같은 실행 계획이 이미 저장되어 있습니다. 중복 실행은 추가하지 않았습니다. 작업 ${taskKey} · 상태 ${saved.task.status}.`,
+                      toolCalls: []
+                    };
+                  } else {
+                    const ownerChatId = this.currentSession.sessionId;
+                    const claim = await registry.claimTask({
+                      taskKey, ownerChatId, leaseMs: 15 * 60_000, idempotencyKey: `manager-claim-${crypto.randomUUID()}`
+                    });
+                    if (!claim.accepted) {
+                      response = {
+                        content: `관리자: 계획 ${taskKey}는 저장했지만 기존 작업 범위가 겹쳐 실행을 시작하지 않았습니다 (${claim.reason}).`,
+                        toolCalls: []
+                      };
+                    } else {
+                      try {
+                        const queued = this.dispatcher.enqueueTasks(plan.tasks.map((task, index) => ({
+                          id: `${taskKey}-${index + 1}`,
+                          registryTaskKey: taskKey,
+                          ...task,
+                          requireToolExecution: true
+                        })));
+                        if (queued.length !== plan.tasks.length) throw new Error('작업 큐가 계획된 작업 수와 다르게 접수했습니다.');
+                        managerDelegation = { summary: plan.summary, registryTaskKey: taskKey, tasks: queued };
+                        response = { content: `관리자: ${plan.summary}\n실행 가능: ${plan.feasibility.reason}\n실행 계획 ${taskKey}를 저장하고 실행자 ${queued.length}개 작업을 큐에 접수했습니다.`, toolCalls: [] };
+                        callbacks.onManagerDelegation?.({ registryTaskKey: taskKey, summary: plan.summary, tasks: queued.map(task => ({ id: task.id, title: task.title, status: task.status })) });
+                      } catch (queueError) {
+                        await registry.updateCheckpoint({
+                          taskKey, ownerChatId, status: 'blocked', nextAction: '큐 접수 실패 원인을 확인하고 계획을 다시 검토합니다.',
+                          blocker: `실행 큐 접수 실패: ${String(queueError.message || queueError).slice(0, 1600)}`,
+                          idempotencyKey: `manager-block-${crypto.randomUUID()}`
+                        });
+                        throw new Error(`계획 ${taskKey}는 저장됐지만 실행 큐 접수에 실패했습니다. ${queueError.message || '실행하지 않았습니다.'}`);
+                      }
+                    }
+                  }
                 }
               } catch (error) {
                 managerToolCallBlocked = true;
@@ -713,6 +785,7 @@ class AgentEngine {
           this.sessions.appendItem(this.currentSession.sessionId, {
             type: 'manager_delegation',
             summary: managerDelegation.summary,
+            registryTaskKey: managerDelegation.registryTaskKey,
             tasks: managerDelegation.tasks.map(task => ({ id: task.id, title: task.title, status: task.status }))
           });
         }

@@ -40,8 +40,9 @@ test('creates durable tasks and replays idempotent create and claim requests', a
     const first = await store.createTask(input);
     const replay = await store.createTask(input);
     assert.equal(first.created, true);
-    assert.equal(replay.created, true);
-    assert.deepEqual(replay, first);
+    assert.equal(replay.created, false);
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(replay.task, first.task);
 
     const claimInput = { taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'claim-1' };
     const claim = await store.claimTask(claimInput);
@@ -51,6 +52,33 @@ test('creates durable tasks and replays idempotent create and claim requests', a
     const reopened = new TaskRegistryStore({ dataDir });
     assert.equal(reopened.getTask('slice-1').ownerChatId, 'chat-a');
     assert.equal(fs.statSync(reopened.filePath).mode & 0o777, 0o600);
+  });
+});
+
+test('persists validated executor plans and rejects overlapping plan scopes', async () => {
+  await withFixture(async ({ repo, dataDir }) => {
+    const store = new TaskRegistryStore({ dataDir });
+    const execution = {
+      kind: 'executor-plan',
+      summary: 'Split the feature safely',
+      tasks: [
+        { title: 'Inspect core', prompt: 'Read the core module and report its boundaries.', files: ['src/core'], allowedTools: ['read_file'] },
+        { title: 'Inspect UI', prompt: 'Read the UI module and report its boundaries.', files: ['src/ui'], allowedTools: ['read_file'] }
+      ]
+    };
+    const input = taskInput(repo, { taskKey: 'manager-plan', execution, idempotencyKey: 'create-plan' });
+    const created = await store.createTask(input);
+    const replay = await store.createTask(input);
+    assert.equal(created.created, true);
+    assert.equal(replay.created, false);
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(replay.task, created.task);
+    assert.deepEqual(new TaskRegistryStore({ dataDir }).getTask('manager-plan').execution, execution);
+
+    await assert.rejects(store.createTask(taskInput(repo, {
+      taskKey: 'manager-overlap', idempotencyKey: 'create-overlap',
+      execution: { ...execution, tasks: [execution.tasks[0], { ...execution.tasks[1], files: ['src/core/AgentEngine.js'] }] }
+    })), /overlap/);
   });
 });
 
