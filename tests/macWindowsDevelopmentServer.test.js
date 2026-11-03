@@ -40,11 +40,15 @@ async function main() {
     } } };
     server = http.createServer((req, res) => app._handleRequest(req, res));
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); app.port = server.address().port;
-    const contract = { taskKey: 'sample-app-task', title: 'sample', app: 'Sample', goal: 'coordinate', integrationBase: base,
+    const contract = { taskKey: 'sample-app-task', contractVersion: 2, title: 'sample', app: 'Sample', goal: 'coordinate',
+      sharedContract: 'Both platforms follow one API and persistence contract.', acceptanceCriteria: ['Shared behavior matches on both platforms.'], integrationBase: base,
       mac: { owner: 'mac', source: repo, baseCommit: base, paths: ['src/mac.swift'] },
       windows: { owner: 'windows', source: 'C:/repo', baseCommit: base, paths: ['windows/file.cs'] } };
     const created = await request(app.port, '/api/joint-development/tasks', 'POST', contract);
     assert.equal(created.status, 201);
+    assert.equal(created.body.task.contractVersion, 2);
+    assert.equal(created.body.task.sharedContract, contract.sharedContract);
+    assert.deepEqual(created.body.task.acceptanceCriteria, contract.acceptanceCriteria);
     assert.equal((await request(app.port, '/api/joint-development/tasks')).body.tasks.length, 1);
     const published = await request(app.port, '/api/joint-development/tasks/sample-app-task/publish', 'POST', {});
     assert.equal(published.status, 200); assert.equal(published.body.drive.readback, 'verified');
@@ -56,6 +60,8 @@ async function main() {
     assert.equal(received.status, 200); assert.equal(received.body.drive.receiverRead, 'verified');
     const overlap = await request(app.port, '/api/joint-development/tasks', 'POST', { ...contract, taskKey: 'overlap', windows: { ...contract.windows, paths: ['SRC/MAC.SWIFT'] } });
     assert.equal(overlap.status, 400);
+    const missingV2 = await request(app.port, '/api/joint-development/tasks', 'POST', { ...contract, taskKey: 'missing-v2-fields', sharedContract: '', acceptanceCriteria: [] });
+    assert.equal(missingV2.status, 400);
     const badState = await request(app.port, '/api/joint-development/tasks/sample-app-task/windows', 'POST', { state: 'integrated' });
     assert.equal(badState.status, 400, 'stages cannot be skipped to falsely record integration');
   } finally {

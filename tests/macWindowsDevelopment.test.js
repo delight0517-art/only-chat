@@ -21,6 +21,15 @@ try {
   assert.equal(created.task.policy, 'canonical-main-no-branches');
   assert.equal(new MacWindowsDevelopment({ dataDir }).get(contract.taskKey).windows.baseCommit, hashA);
   assert.equal(store.create(contract).created, false);
+  const v2 = { ...contract, taskKey: 'detox-time-sync-v2', contractVersion: 2,
+    sharedContract: 'Both platforms exclude ad playback and persist normalized provider seconds.',
+    acceptanceCriteria: ['YouTube and Twitch totals use the same daily boundary.', 'Preview playback is excluded.'] };
+  assert.equal(store.create(v2).task.contractVersion, 2);
+  assert.deepEqual(new MacWindowsDevelopment({ dataDir }).get(v2.taskKey).acceptanceCriteria, v2.acceptanceCriteria);
+  assert.throws(() => store.create({ ...v2, sharedContract: 'Changed after agreement.' }), /different contract/);
+  assert.throws(() => store.create({ ...contract, taskKey: 'v2-missing-contract', contractVersion: 2 }), /requires a shared behavior\/API contract/);
+  assert.throws(() => store.create({ ...v2, taskKey: 'v2-no-criteria', acceptanceCriteria: [] }), /requires a shared behavior\/API contract/);
+  assert.throws(() => store.create({ ...v2, taskKey: 'v3-unsupported', contractVersion: 3 }), /unsupported joint development contract version/);
   assert.throws(() => store.create({ ...contract, taskKey: 'overlap', windows: { ...contract.windows, paths: ['mac'] } }), /ownership overlaps/);
   assert.throws(() => store.create({ ...contract, taskKey: 'diverged', windows: { ...contract.windows, baseCommit: hashB } }), /same canonical integration commit/);
   assert.throws(() => store.updateSide(contract.taskKey, 'mac', { state: 'active', baseCommit: hashB }), /base commit changed/);
@@ -36,7 +45,7 @@ try {
   const remote = { schema: 'only-chat-joint-development/v1', ...contract };
   const imported = new MacWindowsDevelopment({ dataDir: path.join(root, 'receiver') }).importPacket(remote, 'drive-file-02', 'd'.repeat(64));
   assert.equal(imported.drive.receiverRead, 'verified');
-  assert.equal(store.list().length, 1);
+  assert.equal(store.list().length, 2);
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

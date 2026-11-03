@@ -30,13 +30,17 @@ try {
   for (const repo of [windowsRepo, conflictRepo]) { git(repo, 'config', 'user.email', 'joint-dev-test@example.invalid'); git(repo, 'config', 'user.name', 'Joint Dev Test'); }
   fs.writeFileSync(path.join(macRepo, 'shared.txt'), 'Mac change\n');
   const macStore = new MacWindowsDevelopment({ dataDir: path.join(root, 'mac-data'), platform: 'darwin' });
-  const contract = { taskKey: 'shared-patch', title: 'patch', app: 'Sample', goal: 'transfer scoped source change', integrationBase: base,
+  const contract = { taskKey: 'shared-patch', contractVersion: 2, title: 'patch', app: 'Sample', goal: 'transfer scoped source change',
+    sharedContract: 'Mac and Windows implement the same persisted behavior.', acceptanceCriteria: ['Both sides use the shared API contract.'], integrationBase: base,
     mac: { owner: 'Mac', source: macRepo, baseCommit: base, paths: ['shared.txt'] },
     windows: { owner: 'Windows', source: windowsRepo, baseCommit: base, paths: ['windows-only/'] } };
   macStore.create(contract);
   macStore.updateSide('shared-patch', 'mac', { state: 'active' });
   const packet = macStore.createPatch('shared-patch');
   assert.deepEqual(packet.filePaths, ['shared.txt']);
+  assert.equal(packet.contract.contractVersion, 2);
+  assert.equal(packet.contract.sharedContract, contract.sharedContract);
+  assert.deepEqual(packet.contract.acceptanceCriteria, contract.acceptanceCriteria);
   macStore.recordPatch('shared-patch', 'mac', { fileId: 'drive-patch-1', patchSha256: packet.patchSha256,
     payloadSha256: crypto.createHash('sha256').update(JSON.stringify(packet)).digest('hex'), filePaths: packet.filePaths, readback: true });
 
@@ -48,6 +52,16 @@ try {
   const applied = receiver.applyPatch('shared-patch', 'drive-patch-1');
   assert.equal(applied.incomingPatches[0].state, 'applied');
   assert.equal(fs.readFileSync(path.join(windowsRepo, 'shared.txt'), 'utf8'), 'Mac change\n');
+
+  const mismatchContract = { ...contract, taskKey: 'shared-patch-contract-mismatch' };
+  macStore.create(mismatchContract);
+  macStore.updateSide(mismatchContract.taskKey, 'mac', { state: 'active' });
+  const mismatchPacket = macStore.createPatch(mismatchContract.taskKey);
+  const mismatchedReceiver = new MacWindowsDevelopment({ dataDir: path.join(root, 'windows-mismatch-data'), platform: 'win32' });
+  mismatchedReceiver.create({ ...mismatchContract, sharedContract: 'Receiver silently changed the agreed API.' });
+  const alteredPacket = { ...mismatchPacket, contract: { ...mismatchPacket.contract, sharedContract: 'Tampered API contract.' } };
+  const alteredPayloadHash = crypto.createHash('sha256').update(JSON.stringify(alteredPacket)).digest('hex');
+  assert.throws(() => mismatchedReceiver.receivePatch(alteredPacket, 'drive-patch-tampered', alteredPayloadHash), /patch contract conflicts with the registered task/);
   const receipt = receiver.createAppliedReceipt('shared-patch', 'drive-patch-1');
   const receiptHash = crypto.createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
   const sender = macStore.recordRemoteReceipt(receipt, 'drive-ack-1', receiptHash);
