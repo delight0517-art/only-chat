@@ -371,19 +371,22 @@ function setupEventListeners() {
   // Reference 4: Circle with Diamond Usage Popup toggle
   btnUsageQuota.addEventListener('click', e => {
     e.stopPropagation();
-    usageQuotaPopup.classList.toggle('open');
+    const open = !usageQuotaPopup.classList.contains('open');
+    setExclusiveDrawerOpen(null, false);
+    usageQuotaPopup.classList.toggle('open', open);
     modelSelectorPopup.classList.remove('open');
   });
 
   btnManageUsage.addEventListener('click', () => {
     usageQuotaPopup.classList.remove('open');
-    drawerPriority.classList.add('open');
+    setExclusiveDrawerOpen(drawerPriority, true);
   });
 
   // Reference 3: Model Selector Popup toggle & selection
   modelPillTrigger.addEventListener('click', e => {
     e.stopPropagation();
     const open = !modelSelectorPopup.classList.contains('open');
+    setExclusiveDrawerOpen(null, false);
     modelSelectorPopup.classList.toggle('open', open);
     modelPillTrigger.setAttribute('aria-expanded', String(open));
     if (open) {
@@ -396,7 +399,9 @@ function setupEventListeners() {
 
   effortPillTrigger?.addEventListener('click', e => {
     e.stopPropagation();
-    effortSelectorPopup.classList.toggle('open');
+    const open = !effortSelectorPopup.classList.contains('open');
+    setExclusiveDrawerOpen(null, false);
+    effortSelectorPopup.classList.toggle('open', open);
     modelSelectorPopup.classList.remove('open');
     usageQuotaPopup.classList.remove('open');
     effortPillTrigger.setAttribute('aria-expanded', String(effortSelectorPopup.classList.contains('open')));
@@ -487,10 +492,7 @@ function setupEventListeners() {
       if (isSettingsStageOpen()) {
         closeSettingsStage();
       }
-      drawerSettings.classList.remove('open');
-      drawerPriority.classList.remove('open');
-      drawerMorph.classList.remove('open');
-      drawerBrowser.classList.remove('open');
+      setExclusiveDrawerOpen(null, false);
       usageQuotaPopup.classList.remove('open');
       modelSelectorPopup.classList.remove('open');
       modelPillTrigger.setAttribute('aria-expanded', 'false');
@@ -499,7 +501,7 @@ function setupEventListeners() {
 
   // Top Titlebar Settings Button opens Full-Stage Settings View
   btnToggleSettings.addEventListener('click', () => toggleSettingsStage());
-  btnCloseSettings.addEventListener('click', () => drawerSettings.classList.remove('open'));
+  btnCloseSettings.addEventListener('click', () => setExclusiveDrawerOpen(drawerSettings, false));
 
   // Full-Stage Settings Controls
   const btnCloseSettingsStage = document.getElementById('btnCloseSettingsStage');
@@ -589,15 +591,15 @@ function setupEventListeners() {
   }
 
   // Drawer toggles
-  btnTogglePriority?.addEventListener('click', () => drawerPriority.classList.toggle('open'));
-  btnClosePriority.addEventListener('click', () => drawerPriority.classList.remove('open'));
+  btnTogglePriority?.addEventListener('click', () => setExclusiveDrawerOpen(drawerPriority, !drawerPriority.classList.contains('open')));
+  btnClosePriority.addEventListener('click', () => setExclusiveDrawerOpen(drawerPriority, false));
 
-  btnToggleMorph?.addEventListener('click', () => drawerMorph.classList.toggle('open'));
-  btnCloseMorph.addEventListener('click', () => drawerMorph.classList.remove('open'));
+  btnToggleMorph?.addEventListener('click', () => setExclusiveDrawerOpen(drawerMorph, !drawerMorph.classList.contains('open')));
+  btnCloseMorph.addEventListener('click', () => setExclusiveDrawerOpen(drawerMorph, false));
 
   // Built-in Browser drawer
-  btnToggleBrowser?.addEventListener('click', () => setBrowserPanelOpen(!drawerBrowser.classList.contains('open')));
-  btnCloseBrowser.addEventListener('click', () => setBrowserPanelOpen(false));
+  btnToggleBrowser?.addEventListener('click', () => setExclusiveDrawerOpen(drawerBrowser, !drawerBrowser.classList.contains('open')));
+  btnCloseBrowser.addEventListener('click', () => setExclusiveDrawerOpen(drawerBrowser, false));
   document.getElementById('btnBrowserNav').addEventListener('click', () => {
     const url = document.getElementById('browserUrlInput').value.trim();
     navBrowser(url);
@@ -3498,7 +3500,23 @@ function syncNativeBrowserPanel() {
 }
 
 function setBrowserPanelOpen(open) {
-  drawerBrowser.classList.toggle('open', open);
+  setExclusiveDrawerOpen(drawerBrowser, open);
+}
+
+function setExclusiveDrawerOpen(activeDrawer, open) {
+  const drawers = [drawerSettings, drawerPriority, drawerMorph, drawerBrowser];
+  drawers.forEach(drawer => drawer.classList.toggle('open', Boolean(open && drawer === activeDrawer)));
+  if (open) {
+    usageQuotaPopup.classList.remove('open');
+    modelSelectorPopup.classList.remove('open');
+    effortSelectorPopup?.classList.remove('open');
+    modelPillTrigger.setAttribute('aria-expanded', 'false');
+    effortPillTrigger?.setAttribute('aria-expanded', 'false');
+    const workbenchPanel = document.getElementById('workbenchPanel');
+    const workbenchToggle = document.getElementById('btnToggleWorkbench');
+    if (workbenchPanel) workbenchPanel.hidden = true;
+    workbenchToggle?.setAttribute('aria-expanded', 'false');
+  }
   syncNativeBrowserPanel();
 }
 
@@ -3683,6 +3701,17 @@ function isSettingsStageOpen() {
 }
 
 function openSettingsStage(targetTab = 'general') {
+  setExclusiveDrawerOpen(null, false);
+  usageQuotaPopup.classList.remove('open');
+  modelSelectorPopup.classList.remove('open');
+  effortSelectorPopup?.classList.remove('open');
+  modelPillTrigger.setAttribute('aria-expanded', 'false');
+  effortPillTrigger?.setAttribute('aria-expanded', 'false');
+  const workbenchPanel = document.getElementById('workbenchPanel');
+  const workbenchToggle = document.getElementById('btnToggleWorkbench');
+  if (workbenchPanel) workbenchPanel.hidden = true;
+  workbenchToggle?.setAttribute('aria-expanded', 'false');
+
   const chatStage = document.querySelector('.chat-stage');
   const settingsStage = document.getElementById('settingsStage');
   if (chatStage) chatStage.style.display = 'none';
@@ -3719,6 +3748,12 @@ function initWorkbench() {
   const toggle = document.getElementById('btnToggleWorkbench');
   if (!panel || !toggle) return;
   const setOpen = open => {
+    if (open) {
+      setExclusiveDrawerOpen(null, false);
+      usageQuotaPopup.classList.remove('open');
+      modelSelectorPopup.classList.remove('open');
+      effortSelectorPopup?.classList.remove('open');
+    }
     panel.hidden = !open;
     toggle.setAttribute('aria-expanded', String(open));
   };
