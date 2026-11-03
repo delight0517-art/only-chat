@@ -153,8 +153,11 @@ test('concurrent contenders reclaim one stale workspace lease without admitting 
   const lockRoot = path.join(root, 'locks');
   const readyRoot = path.join(root, 'ready');
   const startPath = path.join(root, 'start');
+  const releasePath = path.join(root, 'release');
+  const resultRoot = path.join(root, 'results');
   fs.mkdirSync(workspace);
   fs.mkdirSync(readyRoot);
+  fs.mkdirSync(resultRoot);
   const lease = new WorkspaceExecutionLease({ lockRoot });
   fs.mkdirSync(lockRoot, { recursive: true });
   fs.writeFileSync(path.join(lockRoot, `${lease._workspaceKey(workspace)}.lock`), JSON.stringify({
@@ -164,6 +167,7 @@ test('concurrent contenders reclaim one stale workspace lease without admitting 
 
   const children = [];
   const childOutput = new Map();
+  const childExits = new Map();
   try {
     const script = [
       "const fs = require('node:fs');",
@@ -171,16 +175,18 @@ test('concurrent contenders reclaim one stale workspace lease without admitting 
       "const { WorkspaceExecutionLease } = require(process.env.ONLYCHAT_LOCK_MODULE);",
       "const lease = new WorkspaceExecutionLease({ lockRoot: process.env.ONLYCHAT_LOCK_ROOT });",
       "fs.writeFileSync(path.join(process.env.ONLYCHAT_READY_ROOT, String(process.pid)), 'ready');",
+      "const resultPath = path.join(process.env.ONLYCHAT_RESULT_ROOT, String(process.pid));",
       "const waitForStart = new Promise(resolve => { const timer = setInterval(() => { if (fs.existsSync(process.env.ONLYCHAT_START_PATH)) { clearInterval(timer); resolve(); } }, 5); });",
       "waitForStart.then(() => lease.run(process.env.ONLYCHAT_WORKSPACE, 'contender', async () => {",
       "  const fd = fs.openSync(process.env.ONLYCHAT_ACTIVE_MARKER, 'wx');",
       "  fs.closeSync(fd);",
+      "  fs.writeFileSync(resultPath, 'acquired', { flag: 'wx' });",
       "  process.stdout.write('acquired\\n');",
-      "  await new Promise(resolve => setTimeout(resolve, 300));",
+      "  await new Promise(resolve => { const timer = setInterval(() => { if (fs.existsSync(process.env.ONLYCHAT_RELEASE_PATH)) { clearInterval(timer); resolve(); } }, 5); });",
       "  fs.unlinkSync(process.env.ONLYCHAT_ACTIVE_MARKER);",
       "}).catch(error => {",
-      "  if (/다른 Only Chat 작업이 사용 중입니다/.test(error.message)) { process.stdout.write('busy\\n'); process.exitCode = 2; }",
-      "  else { console.error(error); process.exitCode = 1; }",
+      "  if (/다른 Only Chat 작업이 사용 중입니다/.test(error.message)) { fs.writeFileSync(resultPath, 'busy', { flag: 'wx' }); process.stdout.write('busy\\n'); process.exitCode = 2; }",
+      "  else { fs.writeFileSync(resultPath, 'error', { flag: 'wx' }); console.error(error); process.exitCode = 1; }",
       "}));"
     ].join('\n');
     const env = {
@@ -189,7 +195,9 @@ test('concurrent contenders reclaim one stale workspace lease without admitting 
       ONLYCHAT_LOCK_ROOT: lockRoot,
       ONLYCHAT_WORKSPACE: workspace,
       ONLYCHAT_READY_ROOT: readyRoot,
+      ONLYCHAT_RESULT_ROOT: resultRoot,
       ONLYCHAT_START_PATH: startPath,
+      ONLYCHAT_RELEASE_PATH: releasePath,
       ONLYCHAT_ACTIVE_MARKER: path.join(root, 'active')
     };
     for (let i = 0; i < 8; i++) {
@@ -198,6 +206,10 @@ test('concurrent contenders reclaim one stale workspace lease without admitting 
       child.stdout.on('data', chunk => { output.stdout += chunk.toString(); });
       child.stderr.on('data', chunk => { output.stderr += chunk.toString(); });
       childOutput.set(child, output);
+      childExits.set(child, new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('exit', code => resolve({ code, ...output }));
+      }));
       children.push(child);
     }
     const readyDeadline = Date.now() + 10000;
@@ -206,10 +218,15 @@ test('concurrent contenders reclaim one stale workspace lease without admitting 
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     fs.writeFileSync(startPath, 'start');
-    const results = await Promise.all(children.map(child => new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('exit', code => resolve({ code, ...childOutput.get(child) }));
-    })));
+    const resultDeadline = Date.now() + 10000;
+    while (fs.readdirSync(resultRoot).length !== 8) {
+      if (Date.now() >= resultDeadline) {
+        throw new Error(`lease contenders did not report their acquisition result (${fs.readdirSync(resultRoot).length}/8)`);
+      }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    fs.writeFileSync(releasePath, 'release');
+    const results = await Promise.all(children.map(child => childExits.get(child)));
     assert.equal(results.filter(result => result.code === 0 && result.stdout.includes('acquired')).length, 1);
     assert.equal(results.filter(result => result.code === 2 && result.stdout.includes('busy')).length, 7);
     assert.equal(results.some(result => result.code === 1 || result.stderr), false, JSON.stringify(results));
@@ -217,6 +234,7 @@ test('concurrent contenders reclaim one stale workspace lease without admitting 
     assert.equal(fs.readdirSync(lockRoot).length, 0, 'the reclaimer guard is released');
   } finally {
     for (const child of children) if (child.exitCode === null) child.kill('SIGTERM');
+    await Promise.allSettled([...childExits.values()]);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
