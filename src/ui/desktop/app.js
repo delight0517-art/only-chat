@@ -3816,9 +3816,20 @@ function renderWorkbenchTasks() {
     const meta = workbenchText('span', 'workbench-task-meta', '');
     meta.append(workbenchText('span', 'workbench-app-name', row.app), workbenchText('span', 'workbench-task-state', row.label));
     summary.append(meta, workbenchText('strong', 'workbench-task-title', row.title));
+    const flow = workbenchText('span', 'workbench-flow', '');
+    flow.setAttribute('role', 'list');
+    flow.setAttribute('aria-label', '등록된 작업 단계');
+    ['범위', '변경', '검토', '통합'].forEach((label, index) => {
+      const step = workbenchText('span', '', label);
+      step.setAttribute('role', 'listitem');
+      if (index === row.phase) step.setAttribute('aria-current', 'step');
+      flow.append(step);
+    });
+    summary.append(flow);
+    summary.append(workbenchText('span', 'workbench-next', `다음 · ${row.next || '다음 단계 기록 필요'}`));
+    if (row.blocker) summary.append(workbenchText('span', 'workbench-blocker workbench-next', `막힘 · ${row.blocker}`));
+    summary.append(workbenchText('span', 'workbench-proof-count', `검토 근거 ${row.evidence.length}개`));
     const detail = workbenchText('div', 'workbench-task-detail', '');
-    detail.append(workbenchText('p', '', `다음 단계 · ${row.next || '기록 없음'}`));
-    if (row.blocker) detail.append(workbenchText('p', 'workbench-blocker', `막힌 이유 · ${row.blocker}`));
     detail.append(workbenchText('p', '', `담당 채팅 · ${row.owner || '미배정'}`));
     detail.append(workbenchText('p', '', `원본 · ${row.repository || '기록 없음'}`));
     if (row.paths.length) detail.append(workbenchText('p', '', `변경 범위 · ${row.paths.join(', ')}`));

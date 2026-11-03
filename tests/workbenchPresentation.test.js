@@ -2,6 +2,8 @@
 
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
+const fs = require('node:fs');
+const vm = require('node:vm');
 const { presentWorkspaceOwnership, presentWorkbenchTasks } = require('../src/ui/desktop/workspaceOwnershipPresentation.js');
 
 const now = Date.parse('2026-11-03T04:00:00Z');
@@ -47,4 +49,61 @@ test('completion without evidence needs attention and unknown status never count
   assert.equal(snapshot.rows.find(row => row.key === 'no-evidence').label, '완료 근거 확인 필요');
   assert.throws(() => presentWorkbenchTasks(null), /array/);
   assert.equal(presentWorkbenchTasks([], now).apps, 0);
+});
+
+test('phase highlights only the recorded state and withholds stale or unsupported progress', () => {
+  for (const [status, phase] of Object.entries({ planned: 0, claimed: 0, executing: 1, verifying: 2, reviewing: 2, integrating: 3, completed: 3 })) {
+    const row = presentWorkbenchTasks([task(status, { status, checkpoint: { evidenceRefs: ['receipt.md'] } })], now).rows[0];
+    assert.equal(row.phase, phase, status);
+  }
+  for (const extra of [{ status: 'blocked' }, { status: 'failed' }, { status: 'new-status' },
+    { leaseExpiresAt: '2026-11-03T03:59:59Z' }, { status: 'completed' }]) {
+    assert.equal(presentWorkbenchTasks([task('attention', extra)], now).rows[0].phase, null);
+  }
+});
+
+test('collapsed work cards expose next action and blocker safely and preserve disclosure on refresh', () => {
+  class Element {
+    constructor(tag) { this.tagName = tag; this.children = []; this.dataset = {}; this.attributes = {}; this.textContent = ''; }
+    append(...nodes) { this.children.push(...nodes); }
+    replaceChildren(...nodes) { this.children = nodes; }
+    setAttribute(key, value) { this.attributes[key] = value; }
+    querySelectorAll(selector) {
+      assert.equal(selector, 'details[open]');
+      return this.children.filter(child => child.tagName === 'details' && child.open);
+    }
+  }
+  const ids = Object.fromEntries(['workbenchTasks', 'workbenchAppCount', 'workbenchActiveCount', 'workbenchAttentionCount', 'workbenchReadStatus']
+    .map(id => [id, new Element('div')]));
+  const app = fs.readFileSync(require.resolve('../src/ui/desktop/app.js'), 'utf8');
+  const helper = app.slice(app.indexOf('function workbenchText('), app.indexOf('\nfunction initWorkbench('));
+  const renderer = app.slice(app.indexOf('function renderWorkbenchTasks('), app.indexOf('\nfunction renderWorkbenchModules('));
+  const unsafeText = '<img src=x onerror=alert(1)>';
+  const context = vm.createContext({
+    document: { getElementById: id => ids[id], createElement: tag => new Element(tag) },
+    workbenchSnapshot: presentWorkbenchTasks([task('card', { status: 'blocked', checkpoint: { nextAction: unsafeText, blocker: '수신 확인 대기', evidenceRefs: ['receipt.md'] } })], now),
+    workbenchFilter: 'open', workbenchReadAt: now
+  });
+  vm.runInContext(`${helper}\n${renderer}\nrenderWorkbenchTasks();`, context);
+  const card = ids.workbenchTasks.children[0];
+  assert.equal(card.open, false);
+  const summary = card.children[0];
+  const text = summary.children.map(node => node.textContent).join('\n');
+  assert.match(text, /다음 · <img src=x onerror=alert\(1\)>/);
+  assert.match(text, /막힘 · 수신 확인 대기/);
+  assert.match(text, /검토 근거 1개/);
+  const flow = summary.children.find(node => node.className === 'workbench-flow');
+  assert.equal(flow.attributes.role, 'list');
+  assert.equal(flow.children.filter(node => node.attributes['aria-current']).length, 0);
+  assert.equal(summary.children.some(node => node.tagName === 'img'), false);
+  card.open = true;
+  context.workbenchSnapshot = presentWorkbenchTasks([task('card', { status: 'verifying' })], now);
+  vm.runInContext('renderWorkbenchTasks();', context);
+  assert.equal(ids.workbenchTasks.children[0].open, true);
+  const refreshed = ids.workbenchTasks.children[0].children[0].children.find(node => node.className === 'workbench-flow');
+  assert.equal(refreshed.children[2].attributes['aria-current'], 'step');
+  assert.equal(refreshed.children.filter(node => node.attributes['aria-current']).length, 1);
+  context.workbenchSnapshot = null;
+  vm.runInContext('renderWorkbenchTasks();', context);
+  assert.equal(ids.workbenchAppCount.textContent, '—');
 });

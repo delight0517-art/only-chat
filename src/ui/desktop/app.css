@@ -2673,9 +2673,11 @@ body {
 .workbench-empty strong { font-size: 12px; font-weight: 600; }
 .workbench-empty p { font-size: 11px; line-height: 1.8; color: var(--text-muted); margin-top: 8px; }
 .workbench-task { border: 1px solid var(--border-subtle); border-radius: var(--oc-radius); background: var(--bg-card); overflow: hidden; }
+.workbench-task[data-tone="attention"] { border-inline-start: 3px solid var(--accent-orange); }
+.workbench-task[data-tone="active"] { border-inline-start: 3px solid var(--oc-connection); }
 .workbench-task summary { cursor: pointer; padding: 15px; list-style: none; }
 .workbench-task summary::-webkit-details-marker { display: none; }
-.workbench-task summary::after { content: "상세 보기 +"; display: block; color: var(--text-dim); font-size: 10px; margin-top: 10px; }
+.workbench-task summary::after { content: "담당·원본·근거 보기 +"; display: block; color: var(--oc-connection); font-size: 10px; margin-top: 12px; }
 .workbench-task[open] summary::after { content: "접기 −"; }
 .workbench-task-meta { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; font-size: 10px; }
 .workbench-app-name { color: var(--text-muted); overflow-wrap: anywhere; }
@@ -2683,6 +2685,15 @@ body {
 .workbench-task[data-tone="active"] .workbench-task-state { color: var(--oc-connection); }
 .workbench-task[data-tone="attention"] .workbench-task-state { color: var(--accent-orange); }
 .workbench-task-title { display: block; font-size: 12px; line-height: 1.7; margin-top: 10px; font-weight: 600; overflow-wrap: anywhere; }
+.workbench-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); list-style: none; padding: 0; gap: 4px; margin: 15px 0 12px; }
+.workbench-flow > span { position: relative; padding-top: 9px; font-size: 10px; color: var(--text-dim); }
+.workbench-flow > span::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; border-radius: 2px; background: var(--border-subtle); }
+.workbench-flow > [aria-current="step"] { color: var(--oc-connection); font-weight: 600; }
+.workbench-flow > [aria-current="step"]::before { background: var(--oc-connection); }
+.workbench-next { display: block; font-size: 11px; line-height: 1.7; color: var(--text-muted); overflow-wrap: anywhere; }
+.workbench-next + .workbench-next { margin-top: 5px; }
+.workbench-proof-count { display: inline-block; margin-top: 10px; padding: 4px 7px; border-radius: 4px; font: 9px/1.5 var(--font-mono); color: var(--text-muted); background: var(--bg-subtle); }
+.workbench-flow-note { margin-top: 12px; }
 .workbench-task-detail { padding: 0 15px 15px; font-size: 11px; line-height: 1.8; color: var(--text-muted); user-select: text; overflow-wrap: anywhere; }
 .workbench-task-detail p + p { margin-top: 7px; }
 .workbench-evidence { font: 10px/1.7 var(--font-mono); }
@@ -2757,9 +2768,18 @@ body {
   .quick-prompt-card:hover { transform: translateY(-2px); }
   .quick-prompt-card:active { transform: translateY(0); }
   .workbench-task-detail { animation: only-arrive 180ms ease-out both; }
+  .workbench-panel:not([hidden]) { animation: only-arrive 200ms ease-out both; }
+  .evolution-path rect, .evolution-path circle { transform-box: fill-box; transform-origin: center; animation: only-node-arrive 420ms ease-out both; }
+  .evolution-path rect:nth-of-type(2) { animation-delay: 100ms; }
+  .evolution-path rect:nth-of-type(3) { animation-delay: 160ms; }
+  .evolution-path rect:nth-of-type(4) { animation-delay: 220ms; }
+  .evolution-path circle { animation-delay: 300ms; }
 }
 @keyframes only-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes only-node-arrive { from { opacity: 0; transform: scale(.85); } to { opacity: 1; transform: scale(1); } }
 @media (forced-colors: active) {
   .workbench-task-state, .workbench-text-button { color: ButtonText; }
   .workbench-task, .workbench-toggle, .quick-prompt-card { border: 1px solid CanvasText; }
+  .workbench-flow > [aria-current="step"] { color: Highlight; }
+  .workbench-flow > [aria-current="step"]::before { background: Highlight; forced-color-adjust: none; }
 }

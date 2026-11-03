@@ -43,6 +43,9 @@ const WORKBENCH_STATUSES = {
   blocked: ['막힘', 'attention'], failed: ['실패 기록', 'attention'], completed: ['완료 기록', 'done']
 };
 
+// This is the recorded current phase, not proof that earlier phases passed.
+const WORKBENCH_PHASES = { planned: 0, claimed: 0, executing: 1, verifying: 2, reviewing: 2, integrating: 3, completed: 3 };
+
 function presentWorkbenchTasks(tasks, now = Date.now()) {
   if (!Array.isArray(tasks)) throw new TypeError('Task snapshot must be an array');
   const seen = new Set();
@@ -64,6 +67,7 @@ function presentWorkbenchTasks(tasks, now = Date.now()) {
     return {
       key: task.taskKey, title: typeof task.title === 'string' ? task.title : task.taskKey,
       repository, app, label, tone, status: task.status,
+      phase: tone === 'attention' ? null : WORKBENCH_PHASES[task.status] ?? null,
       owner: typeof task.ownerChatId === 'string' ? task.ownerChatId : '',
       next: typeof task.checkpoint?.nextAction === 'string' ? task.checkpoint.nextAction : '',
       blocker: typeof task.checkpoint?.blocker === 'string' ? task.checkpoint.blocker : '',

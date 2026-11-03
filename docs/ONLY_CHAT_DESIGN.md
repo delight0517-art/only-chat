@@ -17,6 +17,27 @@ Only Chat connects a goal to scoped work, an identifiable source, an owner, a ne
 - Motion: a single short entrance, deliberate hover and disclosure responses. Animate opacity and transforms; respect reduced motion and keep persistent status static. No looping decorative animation, extra motion library or external fonts.
 - Interaction: native buttons/details, visible keyboard focus, text status alongside color, Escape from the map returns focus to its toggle. Suggested prompts fill the composer and never send automatically.
 
+## Visible evolution workflow — follow-up
+
+Each task now exposes its next action, blocker and evidence count before disclosure. The compact four-stage strip, 범위 → 변경 → 검토 → 통합, highlights only its recorded current phase. It has no percentage or checkmarks for preceding stages: registry status alone cannot prove those stages passed. Expired ownership, failures, blockers, unsupported status and completion without evidence leave every phase unhighlighted. The full owner, canonical source, changed paths and evidence references remain in keyboard-accessible details.
+
+The home diagram introduces the same visual grammar: one goal branches into scoped changes and rejoins at review/integration. Its nodes arrive once in sequence, and opening the work map has a short entrance. Both use only opacity/transform inside `prefers-reduced-motion: no-preference`; status cards never loop or replay on refresh. Forced-color mode retains an explicit current-phase highlight. Text labels remain authoritative alongside color.
+
+### App family concept
+
+| Shared principle | Only Chat | Connected app adaptation |
+| --- | --- | --- |
+| One recognizable purpose | “대화 하나에서, 앱들이 함께 진화합니다” | Lead with the app's own benefit: focused viewing, a focus session, a wake routine or task protection. |
+| Paper / ink / copper / teal | Ivory canvas, deep green type, copper primary action, teal connections | Reuse semantic palette roles through each app's existing theme layer; preserve its identity and native controls. |
+| Connected change | Visible task phase, next action, owner/source on disclosure | Show relevant producer/consumer state and loaded revision only when that app has actual readback. Unknown remains unknown. |
+| Evidence before completion | Saved evidence count and references | Keep saved, synchronized, installed and verified outcomes distinct in the user's language. |
+| Motion has a purpose | One-time branching introduction, panel entrance, hover/disclosure feedback | Use brief state-change motion, never a busy effect that suggests a process is running. Respect reduced motion. |
+| Changes keep context | Conversation and composer stay reachable | Preserve the app's timer, recording, draft and current task across supported theme updates. |
+
+This defines the shared concept; it does not assert that other apps have already received this renderer or that displaying phases enforces cross-app ownership. Each app adopts it in an owned feature slice on its canonical source, with a check of its real user flow.
+
+Follow-up validation: 16 focused checks passed across six test files, including all phase mappings, stale/missing owner and evidence handling, actual card-renderer execution with collapsed next-action/blocker/evidence visibility, inert untrusted text, current-phase accessibility, disclosure preservation on refresh and unavailable-state reset. JavaScript syntax and whitespace checks passed. Existing session-loading, dictation and theme checks passed. No native build, provider call, install, renderer reload or temporary browser tab was created. Aside visual validation could not start: `focus-fence-browserctl aside-ai-work start` returned “The running Focus Fence app does not report Aside AI lease support”. The existing preview below predates this phase-strip follow-up; dark, narrow, reduced-motion and installed-wrapper visual proof remain pending. This change creates no temporary verification directories or superseded build output to retire.
+
 The shared style tokens and first implementation live in `src/ui/desktop/app.css` under “Connected workspace”. Reuse the naming and behavior when adapting another app to its existing native/web theme layer; do not copy the entire Only Chat shell into every product.
 
 ## Implemented information contracts
