@@ -2758,6 +2758,12 @@ body {
 .workbench-flow-note { margin-top: 12px; }
 .workbench-task-detail { padding: 0 15px 15px; font-size: 11px; line-height: 1.8; color: var(--text-muted); user-select: text; overflow-wrap: anywhere; }
 .workbench-task-detail p + p { margin-top: 7px; }
+.workbench-executor-result, .workbench-executor-attempt { margin-top: 12px; padding: 10px 12px; border-left: 2px solid var(--oc-connection); border-radius: 0 8px 8px 0; background: var(--bg-subtle); }
+.workbench-executor-attempt { margin-top: 8px; border-left-color: var(--border-subtle); }
+.workbench-executor-result pre, .workbench-executor-attempt pre { margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.7 var(--font-mono); color: var(--text-main); }
+.workbench-task-detail > button { margin-top: 12px; padding: 8px 12px; border: 1px solid var(--oc-connection); border-radius: 8px; background: var(--oc-connection-soft); color: var(--text-main); font: 11px var(--font-sans); cursor: pointer; }
+.workbench-task-detail > button:disabled { opacity: .55; cursor: wait; }
+.workbench-resume-status { display: block; margin-top: 6px; overflow-wrap: anywhere; }
 .workbench-evidence { font: 10px/1.7 var(--font-mono); }
 .workbench-blocker { color: var(--accent-orange); }
 .workbench-source, .workbench-modules { margin-top: 23px; padding-top: 18px; border-top: 1px solid var(--border-subtle); }

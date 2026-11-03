@@ -69,8 +69,17 @@ function presentWorkbenchTasks(tasks, now = Date.now()) {
         attempt: Number.isSafeInteger(item.attempt) && item.attempt >= 0 ? item.attempt : 0,
         result: typeof item.result === 'string' ? item.result.slice(0, 8_000) : '',
         reason: typeof item.reason === 'string' ? item.reason.slice(0, 2_000) : '',
-        error: typeof item.error === 'string' ? item.error.slice(0, 2_000) : ''
+        error: typeof item.error === 'string' ? item.error.slice(0, 2_000) : '',
+        history: Array.isArray(item.history) ? item.history.filter(entry => entry && typeof entry.status === 'string').map(entry => ({
+          attempt: Number.isSafeInteger(entry.attempt) && entry.attempt >= 0 ? entry.attempt : 0,
+          status: entry.status, result: typeof entry.result === 'string' ? entry.result.slice(0, 8_000) : '',
+          reason: typeof entry.reason === 'string' ? entry.reason.slice(0, 2_000) : '',
+          error: typeof entry.error === 'string' ? entry.error.slice(0, 2_000) : ''
+        })) : []
       })) : [];
+    const leaseExpired = !task.ownerChatId || !Number.isFinite(Date.parse(task.leaseExpiresAt)) || Date.parse(task.leaseExpiresAt) <= now;
+    const canResume = Boolean(task.execution && executionProgress.some(item => item.status !== 'completed')
+      && (task.status === 'blocked' || (['claimed', 'executing'].includes(task.status) && leaseExpired)));
     if (task.status === 'completed' && !evidence.length) [label, tone] = ['완료 근거 확인 필요', 'attention'];
     return {
       key: task.taskKey, title: typeof task.title === 'string' ? task.title : task.taskKey,
@@ -80,7 +89,8 @@ function presentWorkbenchTasks(tasks, now = Date.now()) {
       next: typeof task.checkpoint?.nextAction === 'string' ? task.checkpoint.nextAction : '',
       blocker: typeof task.checkpoint?.blocker === 'string' ? task.checkpoint.blocker : '',
       paths: Array.isArray(task.paths) ? task.paths.filter(item => typeof item === 'string') : [],
-      evidence, executionProgress
+      evidence, executionProgress,
+      creatorChatId: typeof task.creatorChatId === 'string' ? task.creatorChatId : '', canResume
     };
   });
   const priority = { attention: 0, active: 1, quiet: 2, done: 3 };

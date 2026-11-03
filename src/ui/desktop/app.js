@@ -4418,9 +4418,44 @@ function renderWorkbenchTasks() {
     if (row.paths.length) detail.append(workbenchText('p', '', `변경 범위 · ${row.paths.join(', ')}`));
     detail.append(workbenchText('p', '', `검토 근거 · ${row.evidence.length}개`));
     for (const ref of row.evidence) detail.append(workbenchText('p', 'workbench-evidence', ref));
+    if (row.canResume && row.creatorChatId) {
+      const resume = document.createElement('button');
+      resume.type = 'button';
+      resume.textContent = '저장된 계획에서 미완료 작업 재개';
+      const resumeStatus = workbenchText('small', 'workbench-resume-status', '');
+      resume.addEventListener('click', async event => {
+        event.preventDefault();
+        event.stopPropagation();
+        resume.disabled = true;
+        resumeStatus.textContent = '저장된 범위와 lease를 확인하고 있습니다.';
+        try {
+          const key = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          const response = await fetch(`/api/task-registry/tasks/${encodeURIComponent(row.key)}/resume`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ownerChatId: row.creatorChatId, idempotencyKey: `ui-resume-${key}` })
+          });
+          const result = await response.json();
+          if (!response.ok || !result.accepted) throw new Error(result.reason || result.error || '재개 요청을 접수하지 못했습니다.');
+          resumeStatus.textContent = result.replayed ? '이 요청은 이미 접수된 재개입니다.' : `저장된 계획의 미완료 실행자 ${result.queuedCount}개를 다시 대기열에 넣었습니다.`;
+          await refreshWorkbench();
+        } catch (error) {
+          resumeStatus.textContent = error.message;
+          resume.disabled = false;
+        }
+      });
+      detail.append(resume, resumeStatus);
+    }
     for (const executor of row.executionProgress) {
       const worker = workbenchText('section', 'workbench-executor-result', '');
       worker.append(workbenchText('strong', '', `${executor.title} · ${executor.status} · 시도 ${executor.attempt}회`));
+      for (const previous of executor.history) {
+        const prior = workbenchText('div', 'workbench-executor-attempt', '');
+        prior.append(workbenchText('strong', '', `이전 시도 ${previous.attempt} · ${previous.status}`));
+        if (previous.reason) prior.append(workbenchText('p', '', `차단 사유 · ${previous.reason}`));
+        if (previous.error) prior.append(workbenchText('p', '', `오류 · ${previous.error}`));
+        if (previous.result) prior.append(workbenchText('pre', '', previous.result));
+        worker.append(prior);
+      }
       if (executor.reason) worker.append(workbenchText('p', '', `차단 사유 · ${executor.reason}`));
       if (executor.error) worker.append(workbenchText('p', '', `오류 · ${executor.error}`));
       if (executor.result) worker.append(workbenchText('pre', '', executor.result));

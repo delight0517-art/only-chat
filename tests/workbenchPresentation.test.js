@@ -53,11 +53,26 @@ test('completion without evidence needs attention and unknown status never count
 
 test('workbench preserves bounded executor outcomes for durable review', () => {
   const progress = [{ id: 'task-1', title: 'Core slice', status: 'blocked', attempt: 1,
-    reason: '승인 대기', error: '', result: '<script>not markup</script>', updatedAt: '2026-11-03T03:00:00Z' }];
+    reason: '승인 대기', error: '', result: '<script>not markup</script>',
+    history: [{ attempt: 0, status: 'queued', result: '', reason: '', error: '', updatedAt: '2026-11-03T02:59:00Z' }], updatedAt: '2026-11-03T03:00:00Z' }];
   const row = presentWorkbenchTasks([task('manager', { executionProgress: progress })], now).rows[0];
   assert.deepEqual(row.executionProgress, [{ title: 'Core slice', status: 'blocked', attempt: 1,
-    result: '<script>not markup</script>', reason: '승인 대기', error: '' }]);
+    result: '<script>not markup</script>', reason: '승인 대기', error: '',
+    history: [{ attempt: 0, status: 'queued', result: '', reason: '', error: '' }] }]);
   assert.equal(JSON.stringify(row).includes('task-1'), false);
+});
+
+test('shows resume only when an executor plan has incomplete work and no current lease', () => {
+  const progress = [{ title: 'UI slice', status: 'blocked', attempt: 1, result: '', reason: '승인 필요', error: '', history: [] }];
+  const resumable = presentWorkbenchTasks([task('retry', { status: 'blocked', ownerChatId: null, leaseExpiresAt: null,
+    creatorChatId: 'chat-origin', execution: { kind: 'executor-plan' }, executionProgress: progress })], now).rows[0];
+  assert.equal(resumable.canResume, true);
+  assert.equal(resumable.creatorChatId, 'chat-origin');
+  const active = presentWorkbenchTasks([task('active', { execution: { kind: 'executor-plan' }, executionProgress: progress })], now).rows[0];
+  assert.equal(active.canResume, false);
+  const complete = presentWorkbenchTasks([task('complete', { status: 'blocked', ownerChatId: null, leaseExpiresAt: null,
+    execution: { kind: 'executor-plan' }, executionProgress: [{ ...progress[0], status: 'completed' }] })], now).rows[0];
+  assert.equal(complete.canResume, false);
 });
 
 test('phase highlights only the recorded state and withholds stale or unsupported progress', () => {
@@ -91,7 +106,8 @@ test('collapsed work cards expose next action and blocker safely and preserve di
   const context = vm.createContext({
     document: { getElementById: id => ids[id], createElement: tag => new Element(tag) },
     workbenchSnapshot: presentWorkbenchTasks([task('card', { status: 'blocked', checkpoint: { nextAction: unsafeText, blocker: '수신 확인 대기', evidenceRefs: ['receipt.md'] }, executionProgress: [
-      { id: 'card-1', title: 'UI 수정', status: 'blocked', attempt: 2, reason: '승인 필요', error: '', result: unsafeText, updatedAt: '2026-11-03T03:00:00Z' }
+      { id: 'card-1', title: 'UI 수정', status: 'blocked', attempt: 2, reason: '승인 필요', error: '', result: unsafeText,
+        history: [{ attempt: 1, status: 'blocked', reason: '이전 차단', error: '', result: unsafeText, updatedAt: '2026-11-03T02:59:00Z' }], updatedAt: '2026-11-03T03:00:00Z' }
     ] })], now),
     workbenchFilter: 'open', workbenchReadAt: now
   });
@@ -105,9 +121,12 @@ test('collapsed work cards expose next action and blocker safely and preserve di
   assert.match(text, /검토 근거 1개/);
   const workerDetail = card.children[1].children.find(node => node.className === 'workbench-executor-result');
   assert.equal(workerDetail.children[0].textContent, 'UI 수정 · blocked · 시도 2회');
-  assert.equal(workerDetail.children[1].textContent, '차단 사유 · 승인 필요');
-  assert.equal(workerDetail.children[2].textContent, unsafeText);
-  assert.equal(workerDetail.children[2].tagName, 'pre');
+  assert.equal(workerDetail.children[1].children[0].textContent, '이전 시도 1 · blocked');
+  assert.equal(workerDetail.children[1].children[1].textContent, '차단 사유 · 이전 차단');
+  assert.equal(workerDetail.children[1].children[2].textContent, unsafeText);
+  assert.equal(workerDetail.children[1].children[2].tagName, 'pre');
+  assert.equal(workerDetail.children[2].textContent, '차단 사유 · 승인 필요');
+  assert.equal(workerDetail.children[3].textContent, unsafeText);
   const flow = summary.children.find(node => node.className === 'workbench-flow');
   assert.equal(flow.attributes.role, 'list');
   assert.equal(flow.children.filter(node => node.attributes['aria-current']).length, 0);

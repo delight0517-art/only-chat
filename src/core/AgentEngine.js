@@ -124,6 +124,9 @@ class AgentEngine {
       executeTask: task => this._executeDispatchedTask(task)
     });
     this.managerProgressQueues = new Map();
+    this.managerLeaseTimers = new Map();
+    this.scheduleManagerLeaseRenewal = options.scheduleManagerLeaseRenewal || setInterval;
+    this.cancelManagerLeaseRenewal = options.cancelManagerLeaseRenewal || clearInterval;
     for (const [eventName, status] of [
       ['worker_started', 'running'], ['worker_completed', 'completed'],
       ['worker_blocked', 'blocked'], ['worker_failed', 'failed']
@@ -185,9 +188,16 @@ class AgentEngine {
         ...request,
         idempotencyKey: `executor-${task.id}-${status}-${digest}`
       });
-      if (!persisted.updated) this.dispatcher.emit('manager_persistence_error', {
-        taskKey: task.registryTaskKey, executorId: task.id, status, reason: persisted.reason
-      });
+      if (!persisted.updated) {
+        this._stopManagerLeaseRenewal(task.registryTaskKey);
+        this.dispatcher.emit('manager_persistence_error', {
+          taskKey: task.registryTaskKey, executorId: task.id, status, reason: persisted.reason
+        });
+      } else if (persisted.task.status === 'executing') {
+        this._startManagerLeaseRenewal(task.registryTaskKey, task.managerOwnerChatId);
+      } else if (['blocked', 'verifying', 'failed', 'completed'].includes(persisted.task.status)) {
+        this._stopManagerLeaseRenewal(task.registryTaskKey);
+      }
       return persisted;
     }).catch(error => {
       this.dispatcher.emit('manager_persistence_error', {
@@ -198,6 +208,71 @@ class AgentEngine {
     });
     this.managerProgressQueues.set(task.registryTaskKey, next);
     return next;
+  }
+
+  _startManagerLeaseRenewal(taskKey, ownerChatId) {
+    if (this.managerLeaseTimers.has(taskKey)) return;
+    const registry = this.tools.taskRegistryStore;
+    if (!registry || typeof registry.claimTask !== 'function') return;
+    let renewalPending = false;
+    const timer = this.scheduleManagerLeaseRenewal(async () => {
+      if (renewalPending) return;
+      renewalPending = true;
+      try {
+        const renewed = await registry.claimTask({
+          taskKey, ownerChatId, leaseMs: 15 * 60_000,
+          idempotencyKey: `manager-renew-${crypto.randomUUID()}`
+        });
+        if (!renewed.accepted) {
+          this._stopManagerLeaseRenewal(taskKey);
+          this.dispatcher.emit('manager_persistence_error', { taskKey, status: 'lease-renewal', reason: renewed.reason });
+        }
+      } catch (error) {
+        this.dispatcher.emit('manager_persistence_error', {
+          taskKey, status: 'lease-renewal', reason: String(error?.message || error).slice(0, 1000)
+        });
+      } finally {
+        renewalPending = false;
+      }
+    }, 5 * 60_000);
+    timer?.unref?.();
+    this.managerLeaseTimers.set(taskKey, timer);
+  }
+
+  _stopManagerLeaseRenewal(taskKey) {
+    const timer = this.managerLeaseTimers.get(taskKey);
+    if (!timer) return;
+    this.cancelManagerLeaseRenewal(timer);
+    this.managerLeaseTimers.delete(taskKey);
+  }
+
+  async resumeManagerPlan({ taskKey, ownerChatId, idempotencyKey } = {}) {
+    const registry = this.tools.taskRegistryStore;
+    if (!registry || typeof registry.resumeExecutorPlan !== 'function') return { accepted: false, reason: 'task_registry_unavailable' };
+    const saved = registry.getTask(taskKey);
+    if (!saved) return { accepted: false, reason: 'task_not_found' };
+    if (saved.creatorChatId !== ownerChatId) return { accepted: false, reason: 'creator_chat_mismatch' };
+    const isAlreadyQueued = task => task?.registryTaskKey === taskKey;
+    if (this.dispatcher.queue.some(isAlreadyQueued)
+      || [...this.dispatcher.activeWorkers.values()].some(worker => isAlreadyQueued(worker.task))) {
+      return { accepted: false, reason: 'task_already_running' };
+    }
+    const prepared = await registry.resumeExecutorPlan({ taskKey, ownerChatId, idempotencyKey });
+    if (!prepared.accepted || prepared.replayed) return prepared;
+    try {
+      const queued = this.dispatcher.enqueueTasks(prepared.tasks.map(task => ({
+        ...task, registryTaskKey: taskKey, managerOwnerChatId: ownerChatId, requireToolExecution: true
+      })));
+      if (queued.length !== prepared.tasks.length) throw new Error('saved executor tasks were not fully queued');
+      return { accepted: true, taskKey, status: 'claimed', queuedCount: queued.length };
+    } catch (error) {
+      const blocker = `재개 큐 접수 실패: ${String(error?.message || error).slice(0, 1200)}`;
+      const blocked = await registry.updateCheckpoint({
+        taskKey, ownerChatId, status: 'blocked', nextAction: '큐 접수 실패 원인을 확인하고 저장된 계획을 다시 검토합니다.',
+        blocker, idempotencyKey: `manager-resume-block-${crypto.randomUUID()}`
+      });
+      return { accepted: false, reason: 'resume_queue_failed', task: blocked.task || null };
+    }
   }
 
   loadResumedSession(sessionData) {

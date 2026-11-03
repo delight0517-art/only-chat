@@ -148,7 +148,7 @@ function initialExecutionProgress(taskKey, execution, now) {
   if (!execution) return undefined;
   return execution.tasks.map((task, index) => ({
     id: `${taskKey}-${index + 1}`, title: task.title, status: 'queued', attempt: 0,
-    sessionId: null, result: '', reason: '', error: '', executionEvidence: null, updatedAt: now
+    sessionId: null, result: '', reason: '', error: '', executionEvidence: null, history: [], updatedAt: now
   }));
 }
 
@@ -237,10 +237,27 @@ class TaskRegistryStore {
             || typeof item.reason !== 'string' || item.reason.length > 2000
             || typeof item.error !== 'string' || item.error.length > 2000
             || (item.sessionId !== null && typeof item.sessionId !== 'string')
+            || (item.history !== undefined && (!Array.isArray(item.history) || item.history.some(entry => !entry
+              || !Number.isSafeInteger(entry.attempt) || entry.attempt < 0
+              || !['queued', 'running', 'completed', 'blocked', 'failed', 'interrupted'].includes(entry.status)
+              || typeof entry.result !== 'string' || entry.result.length > MAX_EXECUTOR_RESULT_LENGTH
+              || typeof entry.reason !== 'string' || entry.reason.length > 2000
+              || typeof entry.error !== 'string' || entry.error.length > 2000
+              || (entry.sessionId !== null && typeof entry.sessionId !== 'string')
+              || !Number.isFinite(Date.parse(entry.updatedAt)))))
             || !Number.isFinite(Date.parse(item.updatedAt)))) {
           throw new Error('invalid task registry executor progress');
         }
-        for (const item of task.executionProgress) normalizeExecutionEvidence(item.executionEvidence);
+        for (const item of task.executionProgress) {
+          if (JSON.stringify(normalizeExecutionEvidence(item.executionEvidence)) !== JSON.stringify(item.executionEvidence)) {
+            throw new Error('executor evidence is not normalized');
+          }
+          for (const entry of item.history || []) {
+            if (JSON.stringify(normalizeExecutionEvidence(entry.executionEvidence)) !== JSON.stringify(entry.executionEvidence)) {
+              throw new Error('executor history evidence is not normalized');
+            }
+          }
+        }
       }
       if (ACTIVE_STATUSES.has(task.status) && (typeof task.ownerChatId !== 'string'
         || !task.ownerChatId || typeof task.leaseExpiresAt !== 'string' || !Number.isFinite(Date.parse(task.leaseExpiresAt)))) {
@@ -606,6 +623,78 @@ class TaskRegistryStore {
       task.revision += 1;
       task.updatedAt = new Date(nowMs).toISOString();
       const response = { updated: true, task: clone(task) };
+      this._remember(state, replay, response);
+      this._saveState(state);
+      return response;
+    });
+  }
+
+  async resumeExecutorPlan(input = {}) {
+    const taskKey = printableString(input.taskKey, 'taskKey', 128);
+    const ownerChatId = printableString(input.ownerChatId, 'ownerChatId', 256);
+    const idempotencyKey = printableString(input.idempotencyKey, 'idempotencyKey', 160);
+    const leaseMs = input.leaseMs === undefined ? MAX_LEASE_MS : input.leaseMs;
+    if (!TASK_KEY.test(taskKey)) throw new TypeError('taskKey must be a stable alphanumeric key');
+    if (!Number.isSafeInteger(leaseMs) || leaseMs < MIN_LEASE_MS || leaseMs > MAX_LEASE_MS) throw new RangeError('leaseMs is invalid');
+    const request = { taskKey, ownerChatId, leaseMs };
+    return this._withWriteLock(`task-registry:executor-resume:${taskKey}`, async () => {
+      const state = this._loadState();
+      const replay = this._idempotencyReplay(state, 'executor-resume', idempotencyKey, request);
+      if (replay.result) return { ...replay.result, replayed: true };
+      const task = state.tasks.find(item => item.taskKey === taskKey);
+      const nowMs = this.clock();
+      const reject = (reason, extra = {}) => {
+        const response = { accepted: false, reason, taskKey, ...extra };
+        this._remember(state, replay, response);
+        this._saveState(state);
+        return response;
+      };
+      if (!task) return reject('task_not_found');
+      if (!task.execution) return reject('execution_plan_missing');
+      if (task.creatorChatId !== ownerChatId) return reject('creator_chat_mismatch');
+      if (!['blocked', 'claimed', 'executing'].includes(task.status)) return reject(`task_${task.status}`, { status: task.status });
+      if (task.ownerChatId && task.leaseExpiresAt && Date.parse(task.leaseExpiresAt) > nowMs) {
+        return reject('task_still_leased', { status: task.status, ownerChatId: task.ownerChatId, leaseExpiresAt: task.leaseExpiresAt });
+      }
+      const conflict = state.tasks.find(other => other.taskKey !== task.taskKey
+        && other.repositoryPath === task.repositoryPath && other.ownerChatId
+        && Date.parse(other.leaseExpiresAt) > nowMs && pathsOverlap(other.paths, task.paths));
+      if (conflict) return reject('path_scope_conflict', { blockingTaskKey: conflict.taskKey });
+
+      const progress = task.executionProgress || initialExecutionProgress(taskKey, task.execution, task.createdAt);
+      const retryable = progress.filter(item => item.status !== 'completed');
+      if (!retryable.length) return reject('no_incomplete_executors', { status: task.status });
+      const now = new Date(nowMs).toISOString();
+      for (const item of retryable) {
+        const hasAttemptData = item.attempt > 0 || item.status !== 'queued' || item.sessionId || item.result || item.reason || item.error || item.executionEvidence;
+        if (hasAttemptData) {
+          item.history ||= [];
+          item.history.push({ attempt: item.attempt, status: item.status === 'running' ? 'interrupted' : item.status,
+            sessionId: item.sessionId, result: item.result, reason: item.reason, error: item.error,
+            executionEvidence: item.executionEvidence, updatedAt: item.updatedAt });
+        }
+        item.status = 'queued';
+        item.sessionId = null;
+        item.result = '';
+        item.reason = '';
+        item.error = '';
+        item.executionEvidence = null;
+        item.updatedAt = now;
+      }
+      task.executionProgress = progress;
+      task.status = 'claimed';
+      task.ownerChatId = ownerChatId;
+      task.leaseExpiresAt = new Date(nowMs + leaseMs).toISOString();
+      task.checkpoint = { nextAction: '저장된 계획에서 미완료 실행자만 다시 대기열에 넣습니다.', blocker: '', evidenceRefs: [] };
+      task.revision += 1;
+      task.updatedAt = now;
+      const tasks = retryable.map(item => {
+        const index = Number(item.id.slice(`${taskKey}-`.length)) - 1;
+        const planned = task.execution.tasks[index];
+        return { id: item.id, title: planned.title, prompt: planned.prompt, files: planned.files, allowedTools: planned.allowedTools };
+      });
+      const response = { accepted: true, taskKey, ownerChatId, leaseExpiresAt: task.leaseExpiresAt,
+        status: task.status, revision: task.revision, tasks };
       this._remember(state, replay, response);
       this._saveState(state);
       return response;

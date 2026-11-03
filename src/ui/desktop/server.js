@@ -543,7 +543,7 @@ class DesktopServer {
       }
     }
 
-    const taskRegistryMatch = /^\/api\/task-registry\/tasks\/([^/]+)(?:\/(claim|checkpoint|messages|ack))?$/.exec(pathname);
+    const taskRegistryMatch = /^\/api\/task-registry\/tasks\/([^/]+)(?:\/(claim|checkpoint|messages|ack|resume))?$/.exec(pathname);
     if (taskRegistryMatch) {
       if (!this.taskRegistryStore) return this._respondJson(res, { error: 'task_registry_unavailable' }, 503);
       let taskKey;
@@ -574,6 +574,20 @@ class DesktopServer {
         } catch (error) {
           const conflict = /ACK|recipient|acknowledge/i.test(error.message || '');
           return this._respondJson(res, { error: error.message || 'task_message_send_failed' }, conflict ? 409 : 400);
+        }
+      }
+      if (operation === 'resume' && req.method === 'POST') {
+        const body = await this._readLimitedBody(req, 64 * 1024);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return this._respondJson(res, { error: 'task_registry_body_invalid' }, 400);
+        if (!this.engine || typeof this.engine.resumeManagerPlan !== 'function') return this._respondJson(res, { error: 'manager_resume_unavailable' }, 503);
+        try {
+          const result = await this.engine.resumeManagerPlan({ taskKey, ownerChatId: body.ownerChatId, idempotencyKey: body.idempotencyKey });
+          const missing = result.reason === 'task_not_found';
+          const conflict = !result.accepted && !missing;
+          return this._respondJson(res, result, result.accepted ? 200 : missing ? 404 : conflict ? 409 : 400);
+        } catch (error) {
+          const conflict = /claim|lease|conflict|already_running|transition/i.test(error.message || '');
+          return this._respondJson(res, { error: error.message || 'task_resume_failed' }, conflict ? 409 : 400);
         }
       }
       if ((operation === 'claim' || operation === 'checkpoint') && req.method === 'POST') {

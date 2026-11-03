@@ -44,7 +44,8 @@ test('loopback API shares task records between chat owners with idempotent write
     const created = await request(app.port, '/api/task-registry/tasks', 'POST', taskBody);
     assert.equal(created.status, 201);
     const replay = await request(app.port, '/api/task-registry/tasks', 'POST', taskBody);
-    assert.equal(replay.status, 201);
+    assert.equal(replay.status, 200);
+    assert.equal(replay.body.replayed, true);
     assert.equal(replay.body.task.taskKey, 'cross-chat-check');
     const duplicate = await request(app.port, '/api/task-registry/tasks', 'POST', { ...taskBody, idempotencyKey: 'create-2' });
     assert.equal(duplicate.status, 200);
@@ -64,6 +65,18 @@ test('loopback API shares task records between chat owners with idempotent write
     const readByOtherChat = await request(app.port, '/api/task-registry/tasks/cross-chat-check');
     assert.equal(readByOtherChat.status, 200);
     assert.equal(readByOtherChat.body.task.checkpoint.nextAction, 'Check the recorded source');
+
+    let resumeRequest;
+    app.engine = { resumeManagerPlan: async input => {
+      resumeRequest = input;
+      return { accepted: true, taskKey: input.taskKey, queuedCount: 1 };
+    } };
+    const resumed = await request(app.port, '/api/task-registry/tasks/cross-chat-check/resume', 'POST', {
+      ownerChatId: 'chat-origin', idempotencyKey: 'resume-from-workbench'
+    });
+    assert.equal(resumed.status, 200);
+    assert.equal(resumed.body.queuedCount, 1);
+    assert.deepEqual(resumeRequest, { taskKey: 'cross-chat-check', ownerChatId: 'chat-origin', idempotencyKey: 'resume-from-workbench' });
 
     const list = await request(app.port, '/api/task-registry/tasks?ownerChatId=chat-a');
     assert.equal(list.status, 200);
