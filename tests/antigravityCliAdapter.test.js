@@ -1,0 +1,88 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
+const { AntigravityCliAdapter, formatHistory } = require('../src/providers/AntigravityCliAdapter.js');
+const { withResponseGuidance } = require('../src/providers/responseGuidance.js');
+
+function fakeSpawn(results, launches) {
+  return (command, args, options) => {
+    launches.push({ command, args, cwd: options.cwd });
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => {};
+    process.nextTick(() => {
+      const result = results.shift();
+      if (result.error) child.stderr.write(result.error);
+      else {
+        child.stdout.write(JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'agy-conv-1', step_index: 2, state: 'ACTIVE', step_type: 'tool', tool_name: 'run_command', tool_info: { parameters: { CommandLine: 'pwd' } } } }) + '\n');
+        child.stdout.write(JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'agy-conv-1', step_index: 2, state: 'DONE', step_type: 'tool', tool_name: 'run_command', tool_info: { name: 'run_command', parameters: { CommandLine: 'pwd' }, output: '/workspace/a' } } }) + '\n');
+        child.stdout.write(JSON.stringify({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'Hello' } }) + '\n');
+        child.stdout.write(JSON.stringify({ event: 'result', result: result.value }) + '\n');
+      }
+      child.stdout.end();
+      child.stderr.end();
+      child.emit('close', result.code || 0);
+    });
+    return child;
+  };
+}
+
+async function main() {
+  assert.equal(formatHistory([{ role: 'user', content: 'hi' }]), withResponseGuidance('USER\nhi'));
+  assert.match(formatHistory([{ role: 'user', content: 'hi' }]), /USER\nhi$/);
+  const stateFile = `/tmp/onlychat-provider-${process.pid}.json`;
+  const fs = require('node:fs');
+  const launches = [];
+  const hooks = [];
+  const tools = [];
+  const results = [
+    { value: { status: 'SUCCESS', response: 'Hello', conversation_id: 'agy-conv-1' } },
+    { value: { status: 'SUCCESS', response: 'Follow up', conversation_id: 'agy-conv-1' } },
+    { value: { status: 'ERROR', response: '', error: 'authentication required' }, code: 1 }
+  ];
+  try {
+    const adapter = new AntigravityCliAdapter({
+      command: '/mock/agy', stateFile, timeoutMs: 2000,
+      spawn: fakeSpawn(results, launches)
+    });
+    const tier = { provider: 'antigravity-cli', model: 'gemini-model' };
+    const first = await adapter.call(tier, [{ role: 'user', content: 'hi' }], {
+      onMessageDelta: value => hooks.push(value),
+      onToolStart: call => tools.push(['start', call.name]),
+      onToolOutput: value => tools.push(['output', value.text]),
+      onToolEnd: value => tools.push(['end', value.call.name])
+    }, { sessionId: 'session-a', workspaceDir: '/workspace/a', reasoningEffort: 'high' });
+    assert.equal(first.content, 'Hello');
+    assert.equal(launches[0].cwd, '/workspace/a');
+    assert.ok(launches[0].args.includes('--model'));
+    assert.deepEqual(launches[0].args.slice(launches[0].args.indexOf('--effort'), launches[0].args.indexOf('--effort') + 2), ['--effort', 'high']);
+    assert.deepEqual(hooks, ['Hello']);
+    assert.deepEqual(tools, [['start', 'run_command'], ['output', '/workspace/a'], ['end', 'run_command']]);
+
+    const resumed = await adapter.call(tier, [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'Hello' },
+      { role: 'user', content: 'next' }
+    ], {}, { sessionId: 'session-a', reasoningEffort: 'medium' });
+    assert.equal(resumed.content, 'Follow up');
+    assert.ok(launches[1].args.includes('--conversation'));
+    assert.deepEqual(launches[1].args.slice(launches[1].args.indexOf('--effort'), launches[1].args.indexOf('--effort') + 2), ['--effort', 'medium']);
+    assert.match(launches[1].args[1], /USER\nnext/);
+    assert.doesNotMatch(launches[1].args[1], /Hello/);
+    assert.equal(new AntigravityCliAdapter({ stateFile }).conversations['session-a'].conversationId, 'agy-conv-1');
+
+    await assert.rejects(adapter.call(tier, [{ role: 'user', content: 'again' }]), /authentication required/);
+  } finally {
+    try { fs.unlinkSync(stateFile); } catch (_) {}
+  }
+
+  console.log('Antigravity CLI streaming, conversation resume, and failure handling passed');
+}
+
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -1,0 +1,42 @@
+'use strict';
+
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const source = fs.readFileSync(path.join(__dirname, '../src/ui/desktop/app.js'), 'utf8');
+const nativeSource = fs.readFileSync(path.join(__dirname, '../macOS/OnlyChatApp.swift'), 'utf8');
+const mainStart = nativeSource.indexOf('static func main() {');
+const mainEnd = nativeSource.indexOf('func applicationDidFinishLaunching', mainStart);
+assert(mainStart >= 0 && mainEnd > mainStart, 'native app entry point should exist');
+const appMain = nativeSource.slice(mainStart, mainEnd);
+assert.match(appMain, /NSRunningApplication\.runningApplications\(withBundleIdentifier: bundleIdentifier\)/, 'a second launch should find the existing app bundle instance');
+assert.match(appMain, /existing\.activate\(options: \[\.activateAllWindows\]\)/, 'a second launch should surface the existing app window');
+assert(appMain.indexOf('exit(EXIT_SUCCESS)') >= 0 && appMain.indexOf('exit(EXIT_SUCCESS)') < appMain.indexOf('app.run()'), 'a second launch should exit before creating another app runtime');
+assert(appMain.indexOf('guard claimSingleInstanceLock()') >= 0 && appMain.indexOf('guard claimSingleInstanceLock()') < appMain.indexOf('app.run()'), 'the process must claim its atomic lock before entering the app event loop');
+const lockStart = nativeSource.indexOf('private static func claimSingleInstanceLock() -> Bool {');
+const lockEnd = nativeSource.indexOf('\n    func applicationDidFinishLaunching', lockStart);
+assert(lockStart >= 0 && lockEnd > lockStart, 'the native single-instance lock implementation should exist');
+const lockBody = nativeSource.slice(lockStart, lockEnd);
+assert.match(lockBody, /O_CREAT \| O_RDWR \| O_NOFOLLOW \| O_CLOEXEC/, 'the lock file must not follow symlinks or leak into child processes');
+assert.match(lockBody, /metadata\.st_uid == getuid\(\)/, 'the lock file must belong to the current user');
+assert.match(lockBody, /\(metadata\.st_mode & S_IFMT\) == S_IFREG/, 'the lock file must be a regular file');
+assert.match(lockBody, /\(metadata\.st_mode & 0o077\) == 0/, 'the lock file must not grant group or other permissions');
+assert.match(lockBody, /flock\(descriptor, LOCK_EX \| LOCK_NB\)/, 'concurrent launches must use a non-blocking exclusive OS lock');
+assert.match(lockBody, /runningApplications\(withBundleIdentifier:[\s\S]*?existing\.activate\(options: \[\.activateAllWindows\]\)/, 'a lock collision should surface the winning process when it appears');
+assert.match(lockBody, /singleInstanceLockFD = descriptor/, 'the lock descriptor must stay open for the lifetime of the app process');
+const start = source.indexOf('function toggleSpeechInput() {');
+const end = source.indexOf('function setSpeechRecording(recording) {', start);
+assert(start >= 0 && end > start, 'speech input handlers should exist');
+const handlers = source.slice(start, end);
+assert.match(handlers, /nativeSpeech\.postMessage\('start'\)/, 'macOS should use its native speech bridge');
+assert.match(handlers, /recognition\.stop\(\)/, 'browser speech recognition should stop on user action');
+assert.match(source, /window\.onlyChatSpeechResult\s*=/, 'native speech results should reach the composer');
+assert.match(source, /window\.onlyChatSpeechError\s*=/, 'native permission and service errors should be shown');
+assert.doesNotMatch(handlers, /Simulated Voice Input|내 아이디어로 풀스택 웹 앱/);
+assert.match(nativeSource, /guard action == "start", !speechStartRequested else \{ return \}/, 'a pending or active native dictation cannot start a second audio tap');
+assert.match(nativeSource, /speechStartGeneration == generation/, 'permission and recognition callbacks must belong to the current request');
+assert.match(nativeSource, /private func speechError\(_ message: String, generation: UInt64\)[\s\S]*?stopSpeech\(generation: generation\)/, 'start failures clean up the audio engine and tap so the user can retry');
+assert.match(nativeSource, /request\.requiresOnDeviceRecognition = true/, 'native dictation must remain on-device');
+
+console.log('native and browser speech input paths use real recognition and report failures');

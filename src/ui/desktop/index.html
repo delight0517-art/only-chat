@@ -1,0 +1,1363 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+    <meta name="color-scheme" content="light dark">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Only Chat · Just Chat. We Code.</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <!-- Mac Window Titlebar -->
+  <header class="mac-titlebar">
+    <div class="titlebar-left">
+      <div class="traffic-lights">
+        <div class="light red" title="닫기" onclick="window.close()"></div>
+        <div class="light yellow" title="최소화"></div>
+        <div class="light green" title="전체화면"></div>
+      </div>
+      <div class="nav-arrows">
+        <button class="nav-btn" id="btnNavBack" title="뒤로가기">←</button>
+        <button class="nav-btn" id="btnNavForward" title="앞으로가기">→</button>
+        <button class="nav-btn" id="btnToggleSidebar" title="사이드바 토글">◫</button>
+      </div>
+    </div>
+
+    <div class="titlebar-center">
+      <span class="active-thread-title" id="titlebarThreadTitle">Only Chat · 채팅만으로 코딩 완결</span>
+    </div>
+
+    <div class="titlebar-right">
+      <button class="btn-icon" id="btnToggleBrowser" title="3F Browser" aria-label="3F Browser 열기" aria-expanded="false">
+        <span aria-hidden="true">🌐</span>
+      </button>
+      <button class="btn-icon" id="btnToggleSettings" title="Settings (Ctrl+,)">
+        <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="app-layout">
+    <!-- 1. Far-Left Activity Rail -->
+    <aside class="activity-rail">
+      <div class="rail-top">
+        <!-- Home / Chat Active Pill -->
+        <button class="rail-item active" id="railHomeBtn" title="홈 / 대화">
+          <svg width="18" height="18" fill="currentColor" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+        </button>
+        <!-- Stack / Projects -->
+        <button class="rail-item" id="railProjectsBtn" title="프로젝트 관리">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h7"/></svg>
+        </button>
+        <!-- History / Timeline -->
+        <button class="rail-item" id="railHistoryBtn" title="세션 히스토리">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </button>
+        <button class="rail-item" id="railSchedulesBtn" title="반복 스케줄 관리" aria-label="반복 스케줄 관리">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18M8 14h3m-3 4h8"/></svg>
+        </button>
+        <!-- Mentions / Assistant -->
+        <button class="rail-item" id="railMentionsBtn" title="멘션 및 에이전트">
+          <span style="font-size: 15px; font-weight: 700;">@</span>
+        </button>
+        <!-- More Actions (with orange dot) -->
+        <button class="rail-item has-badge" id="railMoreBtn" title="더보기">
+          <span class="badge-dot orange"></span>
+          <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+        </button>
+        <!-- Git Branch -->
+        <button class="rail-item" id="railBranchBtn" title="브랜치 및 버전 잠금">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M6 9v12M18 9a9 9 0 0 1-9 9"/></svg>
+        </button>
+        <!-- Grid / Metamorphic Hub -->
+        <button class="rail-item" id="railGridBtn" title="신체 변형 장기 조립 허브">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        </button>
+      </div>
+
+      <div class="rail-bottom">
+        <!-- Circle with Diamond: Usage Quota Trigger (Ref 4) -->
+        <button class="rail-item quota-trigger" id="btnUsageQuota" title="쿼터 및 플랜 사용량 (Usage Limit)">
+          <div class="circle-diamond-icon">
+            <div class="diamond-shape"></div>
+          </div>
+        </button>
+        <!-- User Avatar Circle -->
+        <div class="user-avatar-circle" id="userAvatarBtn" title="Rogan Kim (RK)">RK</div>
+      </div>
+    </aside>
+
+    <!-- Provider quota is shown only when the provider supplies it. -->
+    <div class="usage-popup-card" id="usageQuotaPopup">
+      <div class="usage-popup-header">우선순위별 잔여 사용량</div>
+      <div class="usage-divider"></div>
+      <div id="priorityUsageRows" class="priority-usage-rows">
+        <div class="usage-row"><span class="usage-label">1~3순위</span><span class="usage-val">확인 중</span></div>
+      </div>
+      <div class="usage-divider"></div>
+      <div class="usage-action-row" id="btnManageUsage">
+        <span>우선순위 설정</span>
+      </div>
+    </div>
+
+    <!-- 2. Left Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="app-brand-dropdown" id="sidebarBrandTrigger">
+          <span class="app-brand-name">Only Chat</span>
+          <span class="chevron-down">⌄</span>
+        </div>
+        <div class="sidebar-header-actions">
+          <button class="sidebar-icon-btn has-dot" id="btnNotificationBell" title="알림">
+            <span class="badge-dot orange"></span>
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          </button>
+          <button class="sidebar-icon-btn" id="btnSidebarSearch" title="검색" aria-label="세션 제목 검색" aria-expanded="false" aria-controls="sessionTitleSearch">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="sidebar-search-row">
+        <input class="sidebar-session-search" id="sessionTitleSearch" type="search" maxlength="200" aria-label="과거 Codex·Antigravity 세션 전문 검색" placeholder="세션 전문 검색" autocomplete="off" spellcheck="false" hidden>
+      </div>
+
+      <!-- New Chat Button -->
+      <div class="sidebar-new-chat-box">
+        <button class="btn-new-chat-codex" id="btnNewChat" title="새 채팅 (⌘N / Ctrl+N)" aria-keyshortcuts="Meta+N Control+N">
+          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          <span>New chat</span>
+          <kbd class="shortcut-hint">⌘N / Ctrl+N</kbd>
+        </button>
+      </div>
+
+      <!-- Session Filter Tabs (Clean text pills matching real Codex) -->
+      <div class="sidebar-filter-bar">
+        <button class="filter-tab-pill active" data-filter="all">All</button>
+        <button class="filter-tab-pill" data-filter="codex">Codex</button>
+        <button class="filter-tab-pill" data-filter="antigravity">Antigravity</button>
+        <button class="filter-tab-pill" data-filter="internal">Only</button>
+      </div>
+
+      <!-- Navigation Tree -->
+      <div class="sidebar-scrollable">
+        <div id="sessionDropStatus" class="visually-hidden" role="status" aria-live="polite"></div>
+        <div id="sessionListStatus" class="visually-hidden" role="status" aria-live="polite"></div>
+        <div id="sessionSearchStatus" class="visually-hidden" role="status" aria-live="polite"></div>
+        <div class="sidebar-nav-group" id="codexQueueGroup">
+          <div class="nav-group-title">Codex 대기열 <span id="codexQueueCount" aria-label="대기 작업 수">—</span></div>
+          <div class="session-list" id="codexQueueList"><div class="nav-item"><span class="nav-item-text">대기 작업 확인 중…</span></div></div>
+          <div id="codexQueueStatus" class="visually-hidden" role="status" aria-live="polite"></div>
+        </div>
+        <!-- Pinned Section -->
+        <div class="sidebar-nav-group session-drop-target" id="pinnedSessionGroup" data-drop-type="pinned" aria-label="Pinned에 내부 세션 놓기" aria-dropeffect="move" tabindex="0">
+          <div class="nav-group-title">Pinned</div>
+          <div class="session-list" id="pinnedSessionList"></div>
+        </div>
+
+        <!-- Projects Section -->
+        <div class="sidebar-nav-group" id="codexProjectGroup">
+          <div class="nav-group-title">Projects</div>
+          <div id="projectList"></div>
+        </div>
+
+        <!-- Recents Section -->
+        <div class="sidebar-nav-group session-drop-target" data-drop-type="recents" aria-label="Recents에 내부 세션 놓기" aria-dropeffect="move" tabindex="0">
+          <div class="nav-group-title">Recents</div>
+          <div class="session-list" id="sessionList">
+            <div class="nav-item"><span class="nav-item-text">세션 목록을 불러오는 중…</span></div>
+          </div>
+        </div>
+        <div class="sidebar-nav-group" id="archivedSessionGroup" hidden>
+          <div class="nav-group-title">Archived</div>
+          <div class="session-list" id="archivedSessionList"></div>
+        </div>
+
+      </div>
+
+      <!-- Bottom Drop Target -->
+      <div class="sidebar-footer-drop">
+        <span>Drop chats, pages, or projects here</span>
+      </div>
+    </aside>
+    <div id="sessionContextMenu" class="session-context-menu" role="menu" hidden></div>
+
+    <!-- 3. Main Chat Workspace Stage -->
+    <main class="chat-stage">
+      <!-- Messages Timeline -->
+      <div class="timeline" id="timeline">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-state-logo">
+            <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </div>
+          <h1 class="brand-hero-title">Only Chat</h1>
+          <div class="brand-hero-slogan">"Just Chat. We Code."</div>
+          <p class="brand-hero-desc">
+            자연어로 작업을 요청하세요. 실행 가능한 도구와 수정 범위는 연결 상태와 선택한 워크스페이스 권한에 따라 달라집니다.
+          </p>
+
+          <div class="quick-prompts">
+            <div class="quick-prompt-card" onclick="setPrompt('내가 생각한 아이디어를 동작하는 풀스택 앱으로 바로 제작해줘. 요구사항 정리부터 해줄래?')">
+              <h4>요구사항 정리와 구현</h4>
+              <p>작업 범위를 정리하고 필요한 코드 변경을 계획합니다</p>
+            </div>
+            <div class="quick-prompt-card" onclick="setPrompt('방금 만든 코드의 문제점이나 개선할 버그를 찾아서 핫리로드로 실시간 고쳐줘')">
+              <h4>코드 점검과 수정</h4>
+              <p>선택한 워크스페이스에서 문제를 찾고 필요한 수정을 제안합니다</p>
+            </div>
+            <div class="quick-prompt-card" onclick="setPrompt('내장 Aside 브라우저를 띄워서 최신 기술 문서를 조사하고 정리해줘')">
+              <h4>브라우저 조사</h4>
+              <p>연결된 브라우저 도구와 허용된 범위에서 페이지를 확인합니다</p>
+            </div>
+            <div class="quick-prompt-card" onclick="setPrompt('현재 워크스페이스 구조를 분석하고 리팩토링할 부분들을 제안해줘')">
+              <h4>코드베이스 탐색 및 제안</h4>
+              <p>워크스페이스 파일을 읽고 구조와 수정 후보를 설명합니다</p>
+            </div>
+            <div class="quick-prompt-card" onclick="setPrompt('/spacekeeper task-key')">
+              <h4>저장공간 세션 보고서</h4>
+              <p>task-key를 입력하면 Space Keeper의 용량·보존·검토 결과를 읽습니다</p>
+            </div>
+            <div class="quick-prompt-card" onclick="setPrompt('/capacity')">
+              <h4>현재 용량과 안전 여유</h4>
+              <p>Space Keeper에서 실제 여유 공간과 저장공간 가드 상태를 새로 읽습니다</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. Floating Composer (Matching Ref 1, 2, 3) -->
+      <footer class="composer-floating-wrapper">
+        <div class="composer-card">
+          <textarea class="composer-input" id="composerInput" placeholder="Work with Only Chat... · 세션 용량: /session-storage [일수] · Space Keeper: /spacekeeper task-key" rows="1"></textarea>
+          <input id="attachmentPicker" type="file" multiple hidden>
+          <input id="folderPicker" type="file" webkitdirectory multiple hidden>
+          <div class="attachment-menu" id="attachmentMenu" hidden>
+            <button type="button" id="chooseFiles">파일 선택</button>
+            <button type="button" id="chooseFolder">폴더 선택</button>
+          </div>
+          <div class="attachment-list" id="attachmentList" aria-live="polite"></div>
+          <div class="composer-status" id="composerStatus" role="status" aria-live="polite"></div>
+          
+          <div class="composer-bottom-bar">
+            <!-- Left Controls: + and Full Access Pill -->
+            <div class="composer-bottom-left">
+              <label for="managerModeToggle" title="Mac 런타임 capability 확인 중" style="display:flex; align-items:center; gap:5px; margin-left:6px; font-size:11px; color:var(--text-dim); cursor:pointer; white-space:nowrap;">
+                <input id="managerModeToggle" type="checkbox" disabled style="margin:0; accent-color:var(--accent-orange);">
+                <span id="managerModeLabel">관리자 AI 확인 중…</span>
+              </label>
+              <button class="composer-tool-btn" id="btnAttach" title="파일 첨부 / 도구">
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+              
+              <div class="access-pill" id="btnAccessToggle" title="Codex 실행은 현재 Only Chat 작업공간 안에서만 파일을 수정합니다.">
+                <span class="warning-icon">⚠️</span>
+                <span class="access-text">Workspace sandbox</span>
+              </div>
+            </div>
+
+            <!-- Right Controls: Model Selector, Mic, Orange Circle Button (Ref 3) -->
+            <div class="composer-bottom-right">
+              <!-- Model Selector Dropdown Trigger -->
+              <div class="model-selection-control">
+                <button class="model-pill-trigger" id="modelPillTrigger" aria-haspopup="listbox" aria-expanded="false" aria-label="현재 선택 모델 GPT-6 Luna + Light" title="현재 선택 모델: GPT-6 Luna + Light">
+                  <span class="model-pill-copy"><span class="model-pill-caption">현재 선택 모델</span><span id="activeModelLabel">GPT-6 Luna + Light</span><span id="activeModelAccount" class="model-pill-account"></span></span>
+                </button>
+                <button class="effort-pill-trigger" id="effortPillTrigger" aria-haspopup="true" aria-expanded="false">
+                  <span id="activeEffortLabel">Light</span><span class="chevron-down">⌄</span>
+                </button>
+              </div>
+
+              <!-- Model Selector Popup Menu -->
+              <div class="model-selector-popup" id="modelSelectorPopup" role="listbox" aria-label="모델 선택">
+                <div class="model-popup-heading">Select model</div>
+                <button class="model-option" data-model="auto" role="option" aria-selected="false">
+                  <span class="model-opt-copy"><span class="model-opt-title" id="automaticModelOptionTitle">자동 우선순위 모델</span><span class="model-opt-desc" id="automaticModelOptionDescription">현재 순위 설정에 따라 모델과 계정을 선택합니다</span></span><span class="model-check">✓</span>
+                </button>
+                <div class="model-popup-divider"></div>
+                <div id="availableModelOptions" role="group" aria-label="현재 우선순위에 설정된 모델"></div>
+              </div>
+
+              <div class="effort-selector-popup" id="effortSelectorPopup">
+                <div class="effort-popup-top"><span aria-hidden="true">ϟ</span><strong id="effortPopupLevel">Low</strong><span id="effortPopupModel">GPT-6 Luna + Light</span><button id="resetEffort" type="button" title="기본값으로 초기화" aria-label="기본값으로 초기화">↶</button></div>
+                <input id="effortSlider" type="range" min="0" max="4" step="1" value="0" aria-label="추론 강도">
+                <div class="effort-slider-labels" role="group" aria-label="채팅 난이도">
+                  <button type="button" class="effort-level-button selected" data-effort-index="0" aria-pressed="true">Low</button>
+                  <button type="button" class="effort-level-button" data-effort-index="1" aria-pressed="false">Medium</button>
+                  <button type="button" class="effort-level-button" data-effort-index="2" aria-pressed="false">High</button>
+                  <button type="button" class="effort-level-button" data-effort-index="3" aria-pressed="false">Extra High</button>
+                  <button type="button" class="effort-level-button" data-effort-index="4" aria-pressed="false">Max</button>
+                </div>
+              </div>
+
+              <!-- Microphone Button -->
+              <button class="composer-tool-btn" id="btnMicrophone" title="음성 받아쓰기 / 오디오 명령">
+                <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg>
+              </button>
+
+              <!-- Signature Orange Circular Button (Ref 3) -->
+              <button class="btn-orange-circle" id="btnSend" title="채팅 전송 / 작업 중단">
+                <!-- Idle State: Up Arrow / Send -->
+                <svg class="icon-send" width="16" height="16" fill="none" stroke="#ffffff" stroke-width="3" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                <!-- Generating State: White Square Stop Box -->
+                <div class="icon-stop" style="display: none;"></div>
+              </button>
+            </div>
+          </div>
+        </div>
+      </footer>
+    </main>
+
+    <!-- 4. Full-Stage Settings View (Matching User Reference 1:1) -->
+    <section class="settings-stage" id="settingsStage" style="display: none;">
+      <!-- Left Sub-Sidebar for Settings -->
+      <aside class="settings-sub-sidebar">
+        <div class="settings-sub-header">
+          <div class="settings-sub-title-row">
+            <h2 class="settings-title">Settings</h2>
+            <button class="btn-icon" id="btnCloseSettingsStage" title="대화로 돌아가기 (Ctrl+,)">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="settings-search-wrapper">
+            <span class="settings-search-icon">🔍</span>
+            <input type="text" class="settings-search-input" id="settingsSearchInput" placeholder="Search..">
+          </div>
+        </div>
+
+        <div class="settings-nav-scrollable">
+          <!-- Group: Personal -->
+          <div class="settings-menu-group">
+            <div class="settings-group-label">Personal</div>
+            <button class="settings-nav-item active" data-tab="general">
+              <span class="settings-nav-icon">⚙️</span>
+              <span class="settings-nav-text">General</span>
+            </button>
+            <button class="settings-nav-item" data-tab="models">
+              <span class="settings-nav-icon">✨</span>
+              <span class="settings-nav-text">Models</span>
+              <span class="badge-pill-new">Active</span>
+            </button>
+            <button class="settings-nav-item" data-tab="providers">
+              <span class="settings-nav-icon">🔌</span>
+              <span class="settings-nav-text">Providers</span>
+            </button>
+            <button class="settings-nav-item" data-tab="appearance">
+              <span class="settings-nav-icon">☼</span>
+              <span class="settings-nav-text">Appearance</span>
+            </button>
+            <button class="settings-nav-item" data-tab="account">
+              <span class="settings-nav-icon">👤</span>
+              <span class="settings-nav-text">Account</span>
+            </button>
+            <button class="settings-nav-item" data-tab="plan">
+              <span class="settings-nav-icon">💎</span>
+              <span class="settings-nav-text">Plan & Usage</span>
+            </button>
+            <button class="settings-nav-item" data-tab="security">
+              <span class="settings-nav-icon">🛡️</span>
+              <span class="settings-nav-text">Security & Privacy</span>
+            </button>
+          </div>
+
+          <!-- Group: Agent -->
+          <div class="settings-menu-group">
+            <div class="settings-group-label">Agent</div>
+            <button class="settings-nav-item" data-tab="agents">
+              <span class="settings-nav-icon">🤖</span>
+              <span class="settings-nav-text">Agents</span>
+            </button>
+            <button class="settings-nav-item" data-tab="projects">
+              <span class="settings-nav-icon">📁</span>
+              <span class="settings-nav-text">Projects</span>
+            </button>
+            <button class="settings-nav-item" data-tab="plugins">
+              <span class="settings-nav-icon">🧩</span>
+              <span class="settings-nav-text">Plugins & MCPs</span>
+            </button>
+            <button class="settings-nav-item" data-tab="memory">
+              <span class="settings-nav-icon">🧠</span>
+              <span class="settings-nav-text">Memory</span>
+            </button>
+            <button class="settings-nav-item" data-tab="context">
+              <span class="settings-nav-icon">⚡</span>
+              <span class="settings-nav-text">Context Awareness</span>
+              <span class="badge-pill-new">New</span>
+            </button>
+            <button class="settings-nav-item" data-tab="windows-sync">
+              <span class="settings-nav-icon">↔️</span>
+              <span class="settings-nav-text">Windows changes</span>
+              <span class="badge-pill-new" id="windowsChangesBadge" hidden>0</span>
+            </button>
+          </div>
+
+          <!-- Group: Features -->
+          <div class="settings-menu-group">
+            <div class="settings-group-label">Features</div>
+            <button class="settings-nav-item" data-tab="passwords">
+              <span class="settings-nav-icon">🔐</span>
+              <span class="settings-nav-text">Passwords & Vault</span>
+            </button>
+            <button class="settings-nav-item" data-tab="routines">
+              <span class="settings-nav-icon">🔄</span>
+              <span class="settings-nav-text">Routines</span>
+            </button>
+            <button class="settings-nav-item" data-tab="channels">
+              <span class="settings-nav-icon">📢</span>
+              <span class="settings-nav-text">Channels</span>
+              <span class="badge-pill-new">New</span>
+            </button>
+            <button class="settings-nav-item" data-tab="developers">
+              <span class="settings-nav-icon">🛠️</span>
+              <span class="settings-nav-text">Developers</span>
+            </button>
+            <button class="settings-nav-item" data-tab="minipopup">
+              <span class="settings-nav-icon">🪟</span>
+              <span class="settings-nav-text">Mini popup</span>
+            </button>
+            <button class="settings-nav-item" data-tab="lasso">
+              <span class="settings-nav-icon">🎯</span>
+              <span class="settings-nav-text">Lasso</span>
+            </button>
+          </div>
+
+          <!-- Group: Archived -->
+          <div class="settings-menu-group">
+            <div class="settings-group-label">Archived</div>
+            <button class="settings-nav-item" data-tab="archived">
+              <span class="settings-nav-icon">🗃️</span>
+              <span class="settings-nav-text">Archived chats</span>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Right Content View for Settings -->
+      <section class="settings-content-pane">
+        <!-- 1. Tab: General (Matching Ref Image media_1793067774736_2ecfdbd3.png) -->
+        <div class="settings-panel-view active" id="panelTabGeneral">
+          <h1 class="panel-main-title">General</h1>
+
+          <!-- Section: Permissions -->
+          <div class="settings-section-card">
+            <h3 class="section-card-title">Permissions</h3>
+            
+            <div class="settings-row-item">
+              <div class="row-item-text">
+                <div class="row-item-heading">Default permissions</div>
+                <div class="row-item-desc">
+                  By default, ChatGPT can read and edit files in its workspace. It can ask for additional access when needed
+                </div>
+              </div>
+              <div class="row-item-action">
+                <label class="switch-ios">
+                  <input type="checkbox" id="chkDefaultPermissions" checked>
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-divider-line"></div>
+
+            <div class="settings-row-item">
+              <div class="row-item-text">
+                <div class="row-item-heading">Codex workspace access</div>
+                <div class="row-item-desc">
+                  Codex runs with workspace-write sandboxing. File changes and commands are limited to the active workspace; Only Chat does not grant full-disk access.
+                </div>
+              </div>
+              <div class="row-item-action"><span class="text-body">Workspace sandbox</span></div>
+            </div>
+          </div>
+
+          <!-- Section: General -->
+          <div class="settings-section-card">
+            <h3 class="section-card-title">General</h3>
+
+            <div class="settings-row-item workspace-ownership-row">
+              <div class="row-item-text">
+                <div class="row-item-heading">이 Mac의 작업 상태</div>
+                <div class="row-item-desc" id="workspaceLeaseStatus">아직 확인하지 않았습니다.</div>
+                <div class="row-item-desc workspace-lease-detail" id="workspaceLeaseDetail"></div>
+                <div class="row-item-desc" id="workspaceGitStatus">Git 상태를 아직 확인하지 않았습니다.</div>
+                <div class="visually-hidden" id="workspaceOwnershipLiveStatus" role="status" aria-live="polite"></div>
+              </div>
+              <div class="row-item-action">
+                <button class="btn-change-outline" id="btnRefreshWorkspaceOwnership" type="button">작업 상태 새로고침</button>
+              </div>
+            </div>
+
+            <div class="settings-divider-line"></div>
+
+            <div class="settings-row-item">
+              <div class="row-item-text">
+                <div class="row-item-heading">Projectless chat folder</div>
+                <div class="row-item-desc">
+                  The location where chats started outside of projects store their data by default.
+                </div>
+                <div class="folder-path-tag" id="labelProjectlessFolder">/Users/rogan/Documents/Codex</div>
+              </div>
+              <div class="row-item-action">
+                <button class="btn-change-outline" id="btnChangeChatFolder">Change</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-panel-view" id="panelTabAppearance">
+          <h1 class="panel-main-title">Appearance</h1>
+          <div class="settings-section-card">
+            <h3 class="section-card-title">판타지 전사 모드</h3>
+            <div class="settings-row-item">
+              <div class="row-item-text">
+                <div class="row-item-heading">에이전트를 중세 판타지 전사 캐릭터로 표시</div>
+                <div class="row-item-desc">기본값은 꺼짐입니다. 켜면 앱 테마와 우선순위 계정 목록이 판타지 길드로 바뀝니다. 계정 연결과 한도가 회복된 캐릭터만 선택할 수 있으며, 선택은 수동 계정 모드로 고정됩니다.</div>
+              </div>
+              <div class="row-item-action">
+                <label class="switch-ios" for="fantasyWarriorModeToggle">
+                  <input type="checkbox" id="fantasyWarriorModeToggle" aria-label="판타지 전사 모드">
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Tab: Models & Task Models (Matching Ref Images media_1793067858738_5307a68c.png) -->
+        <div class="settings-panel-view" id="panelTabModels">
+          <div class="panel-header-breadcrumb">
+            <span class="breadcrumb-root">Aside</span>
+            <span class="breadcrumb-sep">&gt;</span>
+            <span class="breadcrumb-root">Settings</span>
+            <span class="breadcrumb-sep">&gt;</span>
+            <span class="breadcrumb-leaf">Models</span>
+          </div>
+          
+          <h1 class="panel-main-title">Models</h1>
+
+          <!-- 1. Providers Card Section (Ref: media_1793067858736_4768b3ee.png & media_1793067858743_2cc7ec8c.png) -->
+          <div class="providers-section-wrapper">
+            <div class="providers-section-header">
+              <span class="providers-header-title">Providers</span>
+            </div>
+
+            <div class="providers-compact-card">
+              <!-- Provider: Aside -->
+              <div class="provider-compact-row" data-provider-id="aside">
+                <div class="provider-left-cell">
+                  <div class="provider-glyph-icon aside">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+                  </div>
+                  <div class="provider-meta-cell">
+                    <div class="provider-name-main">Aside</div>
+                    <div class="provider-type-sub">Free</div>
+                  </div>
+                </div>
+                <div class="provider-right-cell">
+                  <div class="provider-status-circle active" title="Active"></div>
+                  <div class="kebab-menu-wrapper">
+                    <button class="btn-kebab" onclick="toggleKebabMenu(event, 'aside')">•••</button>
+                    <div class="kebab-popover" id="kebab-aside">
+                      <div class="kebab-item" onclick="setAsRank('aside', 1)">1순위로 지정 (M-Oasis)</div>
+                      <div class="kebab-item" onclick="setAsRank('aside', 2)">2순위로 지정 (M-Oasis)</div>
+                      <div class="kebab-item" onclick="setAsRank('aside', 3)">3순위로 지정 (M-Oasis)</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Provider: Claude -->
+              <div class="provider-compact-row" data-provider-id="claude">
+                <div class="provider-left-cell">
+                  <div class="provider-glyph-icon claude">✳</div>
+                  <div class="provider-meta-cell">
+                    <div class="provider-name-main">Claude</div>
+                    <div class="provider-type-sub warning">Reauthentication required</div>
+                  </div>
+                </div>
+                <div class="provider-right-cell">
+                  <div class="kebab-menu-wrapper">
+                    <button class="btn-kebab" onclick="toggleKebabMenu(event, 'claude')">•••</button>
+                    <div class="kebab-popover" id="kebab-claude">
+                      <div class="kebab-item" onclick="reauthProvider('claude')">
+                        <span class="kebab-icon">⟳</span> Reauthenticate
+                      </div>
+                      <div class="kebab-item danger" onclick="disconnectProvider('claude')">
+                        <span class="kebab-icon">⎋</span> Disconnect
+                      </div>
+                      <div class="kebab-divider"></div>
+                      <div class="kebab-item" onclick="setAsRank('claude', 1)">1순위로 지정 (M-Oasis)</div>
+                      <div class="kebab-item" onclick="setAsRank('claude', 2)">2순위로 지정 (M-Oasis)</div>
+                      <div class="kebab-item" onclick="setAsRank('claude', 3)">3순위로 지정 (M-Oasis)</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Provider: ChatGPT -->
+              <div class="provider-compact-row" data-provider-id="chatgpt">
+                <div class="provider-left-cell">
+                  <div class="provider-glyph-icon chatgpt">✴</div>
+                  <div class="provider-meta-cell">
+                    <div class="provider-name-main">ChatGPT</div>
+                    <div class="provider-type-sub">Subscription</div>
+                  </div>
+                </div>
+                <div class="provider-right-cell">
+                  <div class="provider-status-circle active" title="Active"></div>
+                  <div class="kebab-menu-wrapper">
+                    <button class="btn-kebab" onclick="toggleKebabMenu(event, 'chatgpt')">•••</button>
+                    <div class="kebab-popover" id="kebab-chatgpt">
+                      <div class="kebab-item" onclick="reauthProvider('chatgpt')">
+                        <span class="kebab-icon">⟳</span> Reauthenticate
+                      </div>
+                      <div class="kebab-item danger" onclick="disconnectProvider('chatgpt')">
+                        <span class="kebab-icon">⎋</span> Disconnect
+                      </div>
+                      <div class="kebab-divider"></div>
+                      <div class="kebab-item" onclick="setAsRank('codex-primary', 1)">1순위로 지정 (Primary: rogan2534@gmail.com)</div>
+                      <div class="kebab-item" onclick="setAsRank('codex-secondary', 2)">2순위로 지정 (Secondary: f123123ff@gmail.com)</div>
+                      <div class="kebab-item" onclick="setAsRank('codex-primary', 3)">3순위로 지정 (Primary 방어선)</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Provider: OpenRouter -->
+              <div class="provider-compact-row" data-provider-id="openrouter">
+                <div class="provider-left-cell">
+                  <div class="provider-glyph-icon openrouter">⤢</div>
+                  <div class="provider-meta-cell">
+                    <div class="provider-name-main">OpenRouter</div>
+                    <div class="provider-type-sub">API</div>
+                  </div>
+                </div>
+                <div class="provider-right-cell">
+                  <div class="kebab-menu-wrapper">
+                    <button class="btn-kebab" onclick="toggleKebabMenu(event, 'openrouter')">•••</button>
+                    <div class="kebab-popover" id="kebab-openrouter">
+                      <div class="kebab-item" onclick="openConnectModal('openrouter')">
+                        <span class="kebab-icon">✎</span> Configure API Key
+                      </div>
+                      <div class="kebab-divider"></div>
+                      <div class="kebab-item" onclick="setAsRank('openrouter', 1)">1순위로 지정 (M-Oasis)</div>
+                      <div class="kebab-item" onclick="setAsRank('openrouter', 2)">2순위로 지정 (M-Oasis)</div>
+                      <div class="kebab-item" onclick="setAsRank('openrouter', 3)">3순위로 지정 (M-Oasis)</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Provider: Ollama -->
+              <div class="provider-compact-row" data-provider-id="ollama">
+                <div class="provider-left-cell">
+                  <div class="provider-glyph-icon ollama">🦙</div>
+                  <div class="provider-meta-cell">
+                    <div class="provider-name-main">Ollama</div>
+                    <div class="provider-type-sub">API</div>
+                  </div>
+                </div>
+                <div class="provider-right-cell">
+                  <div class="kebab-menu-wrapper">
+                    <button class="btn-kebab" onclick="toggleKebabMenu(event, 'ollama')">•••</button>
+                    <div class="kebab-popover" id="kebab-ollama">
+                      <div class="kebab-item" onclick="openConnectModal('ollama')">
+                        <span class="kebab-icon">⚙</span> 로컬 모델 설정
+                      </div>
+                      <div class="kebab-divider"></div>
+                      <div class="kebab-item" onclick="setAsRank('ollama', 1)">1순위로 지정 (0원 로컬)</div>
+                      <div class="kebab-item" onclick="setAsRank('ollama', 2)">2순위로 지정 (0원 로컬)</div>
+                      <div class="kebab-item" onclick="setAsRank('ollama', 3)">3순위로 지정 (0원 로컬)</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Provider: Google (Antigravity CLI) -->
+              <div class="provider-compact-row" data-provider-id="google">
+                <div class="provider-left-cell">
+                  <div class="provider-glyph-icon google">G</div>
+                  <div class="provider-meta-cell">
+                    <div class="provider-name-main">Google (Antigravity)</div>
+                    <div class="provider-type-sub">API</div>
+                  </div>
+                </div>
+                <div class="provider-right-cell">
+                  <div class="provider-status-circle active" title="Active"></div>
+                  <div class="kebab-menu-wrapper">
+                    <button class="btn-kebab" onclick="toggleKebabMenu(event, 'google')">•••</button>
+                    <div class="kebab-popover" id="kebab-google">
+                      <div class="kebab-item" onclick="setAsRank('antigravity-flash-med', 1)">
+                        <span class="kebab-icon">★</span> 1순위로 지정 (M-Oasis Tier 1)
+                      </div>
+                      <div class="kebab-item" onclick="setAsRank('antigravity-flash-med', 2)">
+                        2순위로 지정
+                      </div>
+                      <div class="kebab-item" onclick="setAsRank('antigravity-flash-med', 3)">
+                        3순위로 지정
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Provider: GitHub Copilot -->
+              <div class="provider-compact-row" data-provider-id="copilot">
+                <div class="provider-left-cell">
+                  <div class="provider-glyph-icon copilot">🐱</div>
+                  <div class="provider-meta-cell">
+                    <div class="provider-name-main">GitHub Copilot</div>
+                    <div class="provider-type-sub">Subscription</div>
+                  </div>
+                </div>
+                <div class="provider-right-cell">
+                  <div class="kebab-menu-wrapper">
+                    <button class="btn-kebab" onclick="toggleKebabMenu(event, 'copilot')">•••</button>
+                    <div class="kebab-popover" id="kebab-copilot">
+                      <div class="kebab-item" onclick="openConnectModal('copilot')">
+                        <span class="kebab-icon">🔗</span> GitHub 계정 로그인
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Provider: Gemini Fence -->
+              <div class="provider-compact-row" data-provider-id="gemini-fence">
+                <div class="provider-left-cell">
+                  <div class="provider-glyph-icon fence">✢</div>
+                  <div class="provider-meta-cell">
+                    <div class="provider-name-main">Gemini Fence</div>
+                    <div class="provider-type-sub">API</div>
+                  </div>
+                </div>
+                <div class="provider-right-cell">
+                  <div class="kebab-menu-wrapper">
+                    <button class="btn-kebab" onclick="toggleKebabMenu(event, 'gemini-fence')">•••</button>
+                    <div class="kebab-popover" id="kebab-gemini-fence">
+                      <div class="kebab-item" onclick="openConnectModal('gemini-fence')">
+                        <span class="kebab-icon">⚙</span> Fence 보안 정책 구성
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Provider: LiteLLM -->
+              <div class="provider-compact-row" data-provider-id="litellm">
+                <div class="provider-left-cell">
+                  <div class="provider-glyph-icon litellm">❖</div>
+                  <div class="provider-meta-cell">
+                    <div class="provider-name-main">LiteLLM</div>
+                    <div class="provider-type-sub">API</div>
+                  </div>
+                </div>
+                <div class="provider-right-cell">
+                  <div class="kebab-menu-wrapper">
+                    <button class="btn-kebab" onclick="toggleKebabMenu(event, 'litellm')">•••</button>
+                    <div class="kebab-popover" id="kebab-litellm">
+                      <div class="kebab-item" onclick="openConnectModal('litellm')">
+                        <span class="kebab-icon">✎</span> 프록시 URL 및 토큰 설정
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Bottom Row: + Connect (Exact match Ref 1 & 2) -->
+              <div class="provider-connect-bottom-row" onclick="openConnectModal()">
+                <span class="connect-plus-sign">+</span>
+                <span class="connect-text">Connect</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- M-Oasis 3-Tier Priority Selection Banner -->
+          <div class="moasis-priority-selection-card">
+            <div class="priority-selection-header">
+              <div class="priority-selection-title">
+                <span style="font-size: 15px;">⚡️</span> M-Oasis 무중단 1·2·3순위 우선순위 체인
+              </div>
+              <span class="priority-mode-badge">Auto Fallback Active</span>
+            </div>
+            <p class="priority-selection-desc">
+              1순위 한도(429/할당량 소진) 시 2순위, 최종 3순위로 작업 중단 없이 자동 우회 실행됩니다.
+            </p>
+            <div class="priority-tiers-grid" id="stagePriorityTiersGrid">
+              <!-- Dynamically populated from /api/status -->
+            </div>
+          </div>
+
+          <!-- 2. Task Models Section (Exact match Ref 2: media_1793067858738_5307a68c.png) -->
+          <div class="task-models-section-wrapper">
+            <div class="task-models-section-header">
+              <span class="task-models-header-title">Task models</span>
+            </div>
+
+            <!-- Task Model Item: Default model -->
+            <div class="task-model-card-row">
+              <div class="task-model-desc-col">
+                <div class="task-model-name">Default model</div>
+                <div class="task-model-sub">The last used model becomes the default for new chat</div>
+              </div>
+              <div class="task-model-controls-col">
+                <div class="model-select-capsule">
+                  <span class="capsule-icon chatgpt">✴</span>
+                  <select class="capsule-native-select" id="selectDefaultModel">
+                    <option value="gpt-6-luna" selected>GPT-6 Luna</option>
+                    <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+                    <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
+                    <option value="auto">M-Oasis Automatic</option>
+                  </select>
+                  <span class="capsule-chevron">⌄</span>
+                </div>
+                <button class="btn-kebab-capsule">•••</button>
+              </div>
+            </div>
+
+            <!-- Task Model Item: Fast -->
+            <div class="task-model-card-row">
+              <div class="task-model-desc-col">
+                <div class="task-model-name">Fast</div>
+                <div class="task-model-sub">Quick, cheap, bounded side work</div>
+              </div>
+              <div class="task-model-controls-col">
+                <div class="model-select-capsule">
+                  <span class="capsule-icon gemini">✦</span>
+                  <select class="capsule-native-select" id="selectFastModel">
+                    <option value="gemini-3.5-flash" selected>Gemini 3.5 Flash</option>
+                    <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+                    <option value="gpt-6-luna-light">GPT-6 Luna Light</option>
+                    <option value="ollama-qwen">Ollama Local</option>
+                  </select>
+                  <span class="capsule-chevron">⌄</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Task Model Item: Standard -->
+            <div class="task-model-card-row">
+              <div class="task-model-desc-col">
+                <div class="task-model-name">Standard</div>
+                <div class="task-model-sub">Durable internal background work, and memory dreaming</div>
+              </div>
+              <div class="task-model-controls-col">
+                <div class="model-select-capsule">
+                  <span class="capsule-icon auto">⚙</span>
+                  <select class="capsule-native-select" id="selectStandardModel">
+                    <option value="automatic" selected>Automatic</option>
+                    <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+                    <option value="gpt-6-luna-light">GPT-6 Luna Light</option>
+                  </select>
+                  <span class="capsule-chevron">⌄</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Task Model Item: Deep -->
+            <div class="task-model-card-row">
+              <div class="task-model-desc-col">
+                <div class="task-model-name">Deep</div>
+                <div class="task-model-sub">Hard reasoning, planning, judging, and synthesis</div>
+              </div>
+              <div class="task-model-controls-col">
+                <div class="model-select-capsule">
+                  <span class="capsule-icon chatgpt">✴</span>
+                  <select class="capsule-native-select" id="selectDeepModel">
+                    <option value="gpt-6-1-sol" selected>GPT-6.1 Sol</option>
+                    <option value="gpt-6-luna-med">GPT-6 Luna Medium</option>
+                    <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
+                    <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                  </select>
+                  <span class="capsule-chevron">⌄</span>
+                </div>
+                <button class="btn-kebab-capsule">•••</button>
+              </div>
+            </div>
+
+            <!-- Task Model Item: Visual -->
+            <div class="task-model-card-row">
+              <div class="task-model-desc-col">
+                <div class="task-model-name">Visual</div>
+                <div class="task-model-sub">Image, screenshot, CAPTCHA, and page interpretation</div>
+              </div>
+              <div class="task-model-controls-col">
+                <div class="model-select-capsule">
+                  <span class="capsule-icon gemini">✦</span>
+                  <select class="capsule-native-select" id="selectVisualModel">
+                    <option value="gemini-3.8-flash" selected>Gemini 3.8 Flash</option>
+                    <option value="gpt-6-vision">GPT-6 Vision</option>
+                  </select>
+                  <span class="capsule-chevron">⌄</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Task Model Item: Image generation model -->
+            <div class="task-model-card-row">
+              <div class="task-model-desc-col">
+                <div class="task-model-name">Image generation model</div>
+                <div class="task-model-sub">Model used to generate and edit images</div>
+              </div>
+              <div class="task-model-controls-col">
+                <div class="model-select-capsule">
+                  <span class="capsule-icon chatgpt">✴</span>
+                  <select class="capsule-native-select" id="selectImageModel">
+                    <option value="chatgpt-image" selected>ChatGPT Image Generator</option>
+                    <option value="imagen-3">Google Imagen 3</option>
+                  </select>
+                  <span class="capsule-chevron">⌄</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Tab: Providers (Alias) -->
+        <div class="settings-panel-view" id="panelTabProviders">
+          <div class="panel-header-breadcrumb">
+            <span class="breadcrumb-root">Aside</span>
+            <span class="breadcrumb-sep">&gt;</span>
+            <span class="breadcrumb-root">Settings</span>
+            <span class="breadcrumb-sep">&gt;</span>
+            <span class="breadcrumb-leaf">Providers</span>
+          </div>
+          <h1 class="panel-main-title">Providers Overview</h1>
+          <p class="panel-subtitle">상세 공급자 및 3-Tier 우선순위 설정을 보려면 좌측의 <b>Models</b> 탭을 확인하세요.</p>
+        </div>
+
+        <div class="settings-panel-view" id="panelTabWindowsSync">
+          <h1 class="panel-main-title">Windows changes</h1>
+          <p class="panel-subtitle">새 Windows 변경 사항만 해시로 식별해 이 수신함에 보관합니다. 전체 Drive나 소스 폴더를 반복해서 읽지 않습니다. 받은 변경은 검토·반영이 확인될 때까지 대기 항목으로 남습니다.</p>
+          <div class="settings-section-card">
+            <h3 class="section-card-title">공유 Evolution 폴더 연결</h3>
+            <p style="color: var(--text-dim); font-size: 13px; line-height: 1.5;">Mac과 Windows에서 같은 Google Drive 로컬 폴더를 한 번 연결하세요. Drive의 클라우드 업로드·수신 자체는 별도로 확인해야 합니다.</p>
+            <div style="display:flex; gap:8px; margin-top:12px;">
+              <input class="settings-input-box" id="windowsEvolutionPath" placeholder="이 Mac의 공유 폴더 절대 경로" style="flex:1;">
+              <button class="btn-save-orange" id="btnWindowsEvolutionConnect">연결</button>
+              <button class="btn-change-outline" id="btnWindowsEvolutionDisable">연결 해제</button>
+            </div>
+            <div id="windowsEvolutionStatus" role="status" style="margin-top:10px; color:var(--text-dim); font-size:12px;">연결 상태 확인 중…</div>
+          </div>
+          <div class="settings-section-card">
+            <h3 class="section-card-title">반영 대기 중인 Windows 변경</h3>
+            <div id="windowsEvolutionPending" style="margin-top:12px;"><div style="color:var(--text-dim); font-size:13px;">대기 항목을 불러오는 중…</div></div>
+          </div>
+        </div>
+
+        <!-- 4. Tab: Passwords & Vault (Passkey Vault) -->
+        <div class="settings-panel-view" id="panelTabPasswords">
+          <h1 class="panel-main-title">Passwords & Passkey Vault</h1>
+          <p class="panel-subtitle">AES-256-GCM 암호화 보관함에 사이트 자격증명과 패스키를 안전하게 보관하고 AI 조작을 제어합니다.</p>
+
+          <div class="settings-section-card">
+            <h3 class="section-card-title">새 패스키 / 자격증명 등록</h3>
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 12px;">
+              <input type="text" id="stageVaultService" class="settings-input-box" placeholder="서비스 이름 (예: Google, GitHub, Notion, ChatGPT)">
+              <input type="text" id="stageVaultUsername" class="settings-input-box" placeholder="계정/이메일 (선택)">
+              <input type="password" id="stageVaultSecret" class="settings-input-box" placeholder="패스키 / 비밀번호 / 토큰">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
+                  <input type="checkbox" id="stageVaultAllowAi" checked>
+                  <span>AI 자동 로그인 및 브라우저 조작 허용</span>
+                </label>
+                <button class="btn-save-orange" id="btnStageVaultSave">보관함 저장</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section-card">
+            <h3 class="section-card-title">저장된 자격증명 목록</h3>
+            <div id="stageVaultList" class="vault-items-grid" style="margin-top: 12px;">
+              <!-- Injected dynamically -->
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. Tab: Plugins & MCPs -->
+        <div class="settings-panel-view" id="panelTabPlugins">
+          <h1 class="panel-main-title">Plugins & MCP Servers</h1>
+          <p class="panel-subtitle">Chrome / Firefox 브라우저 워크스페이스, Google Workspace, Notion 등 확장 기능 연결</p>
+
+          <div class="settings-section-card">
+            <h3 class="section-card-title">Active Extensions</h3>
+            
+            <div class="settings-row-item">
+              <div class="row-item-text">
+                <div class="row-item-heading">🌐 Browser Workspace (Chrome · Firefox)</div>
+                <div class="row-item-desc">실제 사용자의 브라우저를 living AI 워크스페이스로 전환 (탭 스냅샷, 복원, 포커스)</div>
+              </div>
+              <div class="row-item-action">
+                <span class="status-indicator-green">● Active (Plugin)</span>
+              </div>
+            </div>
+
+            <div class="settings-divider-line"></div>
+
+            <div class="settings-row-item">
+              <div class="row-item-text">
+                <div class="row-item-heading">📁 Google Workspace Connector (Drive · Gmail)</div>
+                <div class="row-item-desc">연결하면 GPT-6 Luna/Codex 채팅에서 Drive 검색·본문 읽기와 Gmail 검색·본문 읽기를 로컬 MCP 도구로 사용할 수 있습니다.</div>
+              </div>
+              <div class="row-item-action">
+                <button class="btn-change-outline" id="btnStageGoogleAuth">인증하기</button>
+              </div>
+            </div>
+
+            <div class="settings-divider-line"></div>
+
+            <div class="settings-row-item">
+              <div class="row-item-text">
+                <div class="row-item-heading">📓 Notion Connector</div>
+                <div class="row-item-desc">노션 데이터베이스 쿼리 및 페이지 생성 연동</div>
+              </div>
+              <div class="row-item-action">
+                <button class="btn-change-outline" id="btnStageNotionAuth">토큰 입력</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 6. Tab: Security & Privacy -->
+        <div class="settings-panel-view" id="panelTabSecurity">
+          <h1 class="panel-main-title">Security & Privacy</h1>
+          <p class="panel-subtitle">명령어 실행 승인 정책 및 샌드박스 보안 가드레일</p>
+
+          <div class="settings-section-card">
+            <div class="settings-row-item">
+              <div class="row-item-text">
+                <div class="row-item-heading" id="approvalPolicyHeading">Command Approval Policy</div>
+                <div class="row-item-desc" id="settingApprovalPolicyDescription">앱 도구는 호출별로 승인합니다. On Request에서 Codex는 요청마다 작업공간 쓰기 범위를 먼저 승인받고, Read Only에서는 화면·전원 변경 도구도 사용할 수 없습니다.</div>
+              </div>
+              <div class="row-item-action">
+                <select class="settings-select-dropdown" id="settingApprovalPolicy" disabled aria-labelledby="approvalPolicyHeading" aria-describedby="settingApprovalPolicyDescription settingApprovalPolicyStatus">
+                  <option value="on-request" selected>On Request (Codex 요청마다 작업공간 쓰기 승인)</option>
+                  <option value="never">Never Ask (전면 자율 실행 - 위험)</option>
+                  <option value="read-only">Read Only (수정 및 삭제 차단)</option>
+                </select>
+                <small id="settingApprovalPolicyStatus" role="status" aria-live="polite">승인 정책을 불러오는 중…</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 7. Other Tabs Fallback -->
+        <div class="settings-panel-view" id="panelTabGeneric">
+          <h1 class="panel-main-title" id="genericPanelTitle">Configuration</h1>
+          <div class="settings-section-card">
+            <div class="empty-settings-placeholder">
+              <div style="font-size: 32px; margin-bottom: 12px;">⚙️</div>
+              <h3>해당 설정 항목이 준비 중입니다.</h3>
+              <p style="color: var(--text-dim); font-size: 13px; margin-top: 6px;">
+                Only Chat Codex Sovereign Edition은 실제 사용자의 데스크톱 환경에 맞춰 실시간 핫리로드로 확장됩니다.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+  </div>
+
+  <!-- Drawers (Slide-out Overlays) -->
+  <!-- 1. Drawer: Priority Chain & Accounts -->
+  <aside class="drawer" id="drawerPriority">
+    <div class="drawer-header">
+      <h3 style="font-size: 14px; font-weight: 700;">🔀 무중단 우선순위 체인 & 계정 관리</h3>
+      <button class="btn-icon" id="btnClosePriority">✕</button>
+    </div>
+    <div class="drawer-content">
+      <div class="priority-current-selection" aria-live="polite">
+        <span class="priority-current-selection-label">작성창에서 선택한 모델</span>
+        <strong id="prioritySelectedModel">확인 중</strong>
+        <span class="priority-current-route-label">이번 요청이 사용할 모델과 계정</span>
+        <span id="priorityActualRoute" class="priority-current-route">확인 중</span>
+      </div>
+      <div style="font-size: 12px; color: var(--text-dim); line-height: 1.5;">
+        작성창에서 선택한 모델과 다음 요청의 라우팅 대상을 구분합니다. Antigravity 한도는 앱 실행 중 30분마다 조회하며, 실제 응답은 해당 계정의 실행 연결이 준비된 경우에만 가능합니다. 계정 한도는 제공자가 실제 수치를 제공할 때만 표시합니다.
+      </div>
+      <label class="priority-auto-control" for="priorityAutoToggle">
+        <input type="checkbox" id="priorityAutoToggle" checked>
+        <span><strong>자동 우선순위</strong><small id="priorityModeDescription">켜짐 · 한도 10% 이하나 오류가 감지되면 다음 계정으로 전환</small></span>
+        <span id="priorityAutoLabel" class="priority-auto-status">켜짐</span>
+      </label>
+      <div id="drawerTierList" style="display: flex; flex-direction: column; gap: 10px;">
+        <!-- Injected via JS -->
+      </div>
+      <div style="border-top: 1px solid var(--border-subtle); padding-top: 14px;">
+        <h4 style="font-size: 12px; font-weight: 600; margin-bottom: 8px;">새 계정 등록</h4>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <select class="select-pill" id="newAccProvider" style="width: 100%;">
+            <option value="google">Google (Antigravity OAuth)</option>
+            <option value="chatgpt">ChatGPT (OpenAI OAuth / Token)</option>
+          </select>
+          <input type="email" id="newAccEmail" class="search-box-input" style="width: 100%;" placeholder="이메일 주소">
+          <input type="password" id="newAccToken" class="search-box-input" style="width: 100%;" placeholder="세션 토큰 또는 API Key (선택)">
+          <button class="btn-primary" id="btnRegisterAccount" style="margin-top: 4px;">계정 추가 및 체인 등록</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 2. Drawer: Settings & Passkey Vault -->
+  <aside class="drawer" id="drawerSettings">
+    <div class="drawer-header">
+      <h3 style="font-size: 14px; font-weight: 700;">환경 설정 & 패스키 보관함</h3>
+      <button class="btn-icon" id="btnCloseSettings">✕</button>
+    </div>
+    <div class="drawer-content">
+      <div>
+        <label style="font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase;">새 채팅 기본 작업 폴더</label>
+        <input type="text" id="settingsDefaultCwdInput" class="search-box-input" style="width: 100%; margin-top: 6px;" placeholder="기본 실행 경로 확인 중…" readonly aria-describedby="settingsCwdHelp">
+        <label for="settingsCwdInput" style="display:block; margin-top:10px; font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase;">현재 세션 작업 폴더</label>
+        <input type="text" id="settingsCwdInput" class="search-box-input" style="width: 100%; margin-top: 6px;" placeholder="세션 실행 경로 확인 중…" readonly aria-describedby="settingsCwdHelp">
+        <small id="settingsCwdHelp" style="display:block; margin-top:6px; color:var(--text-dim); line-height:1.45;">새 채팅은 기본 폴더에서 시작하고, 다시 연 세션은 저장된 세션 폴더를 사용합니다. 이 표시는 작업 경로를 변경하지 않습니다.</small>
+      </div>
+      <div>
+        <label for="settingsApprovalSelect" style="font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase;">명령어 승인 정책 (Approval Policy)</label>
+        <select class="select-pill" id="settingsApprovalSelect" style="width: 100%; margin-top: 6px;" disabled aria-describedby="settingsApprovalPolicyDescription settingsApprovalPolicyStatus">
+          <option value="on-request">Codex 요청마다 작업공간 쓰기 승인 (On Request)</option>
+          <option value="never">확인 없이 전자율 실행 (Never Ask / Danger)</option>
+          <option value="read-only">쓰기 및 삭제 명령 전면 차단 (Read Only)</option>
+        </select>
+        <small id="settingsApprovalPolicyStatus" role="status" aria-live="polite" style="display:block; margin-top:6px; color:var(--text-dim); line-height:1.45;">승인 정책을 불러오는 중…</small>
+        <small id="settingsApprovalPolicyDescription" style="display:block; margin-top:6px; color:var(--text-dim); line-height:1.45;">앱 도구는 호출별로 승인합니다. On Request에서 Codex는 요청마다 작업공간 쓰기 범위를 먼저 승인받고, Read Only에서는 화면·전원 변경 도구도 사용할 수 없습니다.</small>
+      </div>
+
+      <!-- Google & Notion Connectors Section -->
+      <div style="border-top: 1px solid var(--border-subtle); padding-top: 14px;">
+        <h4 style="font-size: 12px; font-weight: 600; margin-bottom: 8px;">🔗 외부 서비스 연동 (Drive · Gmail · Notion)</h4>
+        
+        <!-- Google Workspace Card -->
+        <div class="tier-list-card" style="margin-bottom: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 700; font-size: 12px; color: var(--text-main);">📁 Google Workspace (Drive + Gmail)</span>
+            <span id="badgeGoogleStatus" style="font-size: 10px; padding: 2px 6px; border-radius: 4px; background: rgba(0,0,0,0.06);">확인 중...</span>
+          </div>
+          <div style="font-size: 11px; color: var(--text-dim);">구글 드라이브 파일 읽기/쓰기 및 지메일 발송/편집 권한</div>
+          <button class="btn-primary" id="btnLoginGoogleWorkspace" style="margin-top: 6px; padding: 6px; font-size: 11px;">
+            Google 로그인 및 편집 권한 승인
+          </button>
+        </div>
+
+        <!-- Notion Connector Card -->
+        <div class="tier-list-card">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 700; font-size: 12px; color: var(--text-main);">📓 Notion 워크스페이스 연동</span>
+            <span id="badgeNotionStatus" style="font-size: 10px; padding: 2px 6px; border-radius: 4px; background: rgba(0,0,0,0.06);">확인 중...</span>
+          </div>
+          <div style="font-size: 11px; color: var(--text-dim); line-height: 1.5;">Notion 개인 계정으로 로그인하고 공유할 페이지를 선택하세요. 무료 요금제로도 연결할 수 있습니다. 실제 사용 가능한 도구와 옵션은 Notion이 계정·페이지 권한·요금제·사용량에 따라 제공한 목록을 따르며, 유료 전용 기능이나 한도 초과 기능은 제한될 수 있습니다.</div>
+          <button class="btn-primary" id="btnLoginNotion" type="button" style="margin-top: 8px; padding: 7px;">Notion 개인 계정으로 로그인</button>
+          <small id="notionOAuthStatus" role="status" aria-live="polite" style="display:block; margin-top:5px; color:var(--text-dim); line-height:1.45;"></small>
+          <details style="margin-top:8px;">
+            <summary style="cursor:pointer; font-size:11px; color:var(--text-dim);">기존 Integration 토큰 방식</summary>
+            <label for="inputNotionToken" style="display:block; margin-top:8px; font-size:11px; color:var(--text-main);">Internal integration token</label>
+            <input type="password" id="inputNotionToken" class="search-box-input" style="width: 100%; margin-top: 4px;" placeholder="secret_…" autocomplete="new-password" autocapitalize="off" spellcheck="false" aria-describedby="notion-token-help">
+            <small id="notion-token-help" style="display:block; margin-top:4px; color:var(--text-dim); line-height:1.45;">기존 REST 연동용입니다. OAuth 로그인 정보는 macOS 키체인에 저장됩니다.</small>
+          <button class="btn-primary" id="btnConnectNotion" style="margin-top: 6px; padding: 6px; font-size: 11px;">
+              토큰 등록
+          </button>
+          </details>
+        </div>
+      </div>
+
+      <!-- Passkey & Credential Vault Section -->
+      <div style="border-top: 1px solid var(--border-subtle); padding-top: 14px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <h4 style="font-size: 12px; font-weight: 600;">🔐 안전한 패스키 및 자격증명 보관함</h4>
+          <span style="font-size: 10px; color: #10b981; background: rgba(16,185,129,0.1); padding: 2px 6px; border-radius: 4px;">AES-GCM 암호화</span>
+        </div>
+        <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 10px;">
+          패스키, 사이트 비밀번호, 세션 토큰을 안전하게 저장하고 AI에게 사용 권한을 개별 승인할 수 있습니다.
+        </div>
+        
+        <div class="tier-list-card" style="margin-bottom: 10px;">
+          <input type="text" id="inputVaultService" class="search-box-input" style="width: 100%; margin-bottom: 6px;" placeholder="서비스 이름 (예: Google, GitHub, Notion, ChatGPT)">
+          <input type="text" id="inputVaultUsername" class="search-box-input" style="width: 100%; margin-bottom: 6px;" placeholder="계정/이메일 (선택)">
+          <input type="password" id="inputVaultSecret" class="search-box-input" style="width: 100%; margin-bottom: 6px;" placeholder="패스키 / 비밀번호 / 토큰">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">
+            <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer;">
+              <input type="checkbox" id="checkVaultAllowAi" checked>
+              <span>AI 자동 로그인 및 조작 허용</span>
+            </label>
+            <button class="btn-primary" id="btnVaultSave" style="padding: 5px 12px; font-size: 11px;">보관함 저장</button>
+          </div>
+        </div>
+
+        <div style="font-size: 11px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px;">등록된 자격증명 목록</div>
+        <div id="vaultList" style="display: flex; flex-direction: column; gap: 6px; max-height: 160px; overflow-y: auto;">
+          <!-- Injected via JS -->
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 3. Drawer: Metamorphic Hub -->
+  <aside class="drawer" id="drawerMorph">
+    <div class="drawer-header">
+      <h3 style="font-size: 14px; font-weight: 700;">🧬 신체 변형 허브 (Hot-Reload)</h3>
+      <button class="btn-icon" id="btnCloseMorph">✕</button>
+    </div>
+    <div class="drawer-content">
+      <div style="font-size: 12px; color: var(--text-dim); line-height: 1.5;">
+        중앙 허브에 UI, 디자인, 폰트, 기능들이 독립된 신체 장기(Organs)처럼 조립되어, 새 세션 없이 실시간으로 부분 변형 및 핫리로드됩니다.
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 10px;" id="morphSlotsList"></div>
+
+      <!-- Local installed-app candidates -->
+      <div style="border-top: 1px solid var(--border-subtle); padding-top: 14px;">
+        <h4 style="font-size: 12px; font-weight: 600; margin-bottom: 8px;">🔍 로컬 앱 후보</h4>
+        <div id="reaAppList" style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto;"></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 4. Drawer: in-app 3F browser -->
+  <aside class="drawer" id="drawerBrowser" style="width: 440px;">
+    <div class="drawer-header">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 14px;">🌐</span>
+        <h3 style="font-size: 14px; font-weight: 700;">3F Browser</h3>
+      </div>
+      <button class="btn-icon" id="btnCloseBrowser">✕</button>
+    </div>
+    <div class="drawer-content" style="padding: 12px; gap: 10px;">
+      <div style="display: flex; gap: 6px;">
+        <input type="text" id="browserUrlInput" class="search-box-input" style="flex: 1;" placeholder="https://google.com" value="https://google.com">
+        <button class="btn-secondary" data-browser-action="back" aria-label="뒤로">‹</button>
+        <button class="btn-secondary" data-browser-action="forward" aria-label="앞으로">›</button>
+        <button class="btn-secondary" data-browser-action="reload" aria-label="새로고침">↻</button>
+        <button class="btn-primary" id="btnBrowserNav" style="padding: 6px 12px;">이동</button>
+      </div>
+
+      <button class="btn-secondary" id="btnBrowserThreef" style="padding: 7px; font-size: 11px; font-weight: 600;">3F Browser에서 주소 열기</button>
+      <div class="threef-control-setting">
+        <label for="threefControlEnabled"><input id="threefControlEnabled" type="checkbox" checked> 3F Browser 제어 허용</label>
+        <button class="btn-secondary" id="btnThreefRefresh" type="button">연결 확인</button>
+        <span id="threefControlStatus" role="status" aria-live="polite">상태 확인 중</span>
+      </div>
+
+      <section class="mac-screen-control-card" aria-labelledby="macScreenControlTitle">
+        <strong id="macScreenControlTitle">🖥️ Mac 전체 화면 제어</strong>
+        <label for="macScreenControlEnabled"><input id="macScreenControlEnabled" type="checkbox"> AI 화면 보기·마우스·키보드 허용</label>
+        <p>켜면 현재 기본 디스플레이 화면을 AI가 볼 수 있고 마우스·키보드를 조작할 수 있습니다. 화면에는 개인정보가 포함될 수 있습니다. 기본값은 꺼짐입니다.</p>
+        <div class="mac-screen-control-actions">
+          <button class="btn-secondary" id="btnMacScreenPermissions" type="button">macOS 권한 확인/요청</button>
+          <button class="btn-secondary" id="btnMacScreenStatus" type="button">권한 상태 새로고침</button>
+        </div>
+        <span id="macScreenControlStatus" role="status" aria-live="polite">꺼짐</span>
+        <img id="macScreenPreview" alt="AI가 최근에 확인한 현재 Mac 화면" hidden>
+      </section>
+
+      <div style="display: flex; gap: 6px;">
+        <button class="btn-secondary" id="btnBrowserAria" style="flex: 1; padding: 6px; font-size: 11px; font-weight: 600;">
+          ⚡️ ARIA 트리 캡처 (150 토큰)
+        </button>
+        <button class="btn-secondary" id="btnBrowserRead" style="flex: 1; padding: 6px; font-size: 11px; font-weight: 600;">
+          📄 텍스트 추출 (Zero Image)
+        </button>
+      </div>
+
+      <div id="browserNativeSurface" role="status" style="position:relative; flex:1; min-height:300px; overflow:hidden; border:1px solid var(--border-subtle); border-radius:8px; background:#fff; display:grid; place-items:center; padding:24px; text-align:center; color:#64748b;">
+        <div><strong style="display:block; color:#334155; margin-bottom:8px;">3F Browser</strong>이 패널 안에 3F Browser가 표시됩니다.<br>주소 이동, 뒤로·앞으로, 새로고침과 페이지 읽기가 현재 브라우저 화면을 제어합니다.</div>
+      </div>
+      <pre class="terminal-console" id="browserAriaConsole" style="flex:none; height:110px; max-height:110px; overflow:auto; font-size:11px; background:#18191c; color:#a5f3fc; border-radius:8px; padding:10px;">[3F Browser 제어 대기 중]</pre>
+    </div>
+  </aside>
+
+  <script src="browser-address.js"></script>
+  <script src="chatPresentation.js"></script>
+  <script src="internalSessionGrouping.js"></script>
+  <script src="sessionDropMapping.js"></script>
+  <script src="workspaceOwnershipPresentation.js"></script>
+  <script src="notion-oauth.js"></script>
+  <script src="app.js"></script>
+
+  <div class="modal-backdrop" id="scheduleModal" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="scheduleModalTitle">
+    <section class="modal-card schedule-manager-card">
+      <header class="modal-header">
+        <div><h3 class="modal-title" id="scheduleModalTitle">반복 스케줄</h3><small>예약을 저장하면 Only Chat이 정해진 시각에 실행합니다.</small></div>
+        <button class="btn-icon" id="btnCloseSchedules" aria-label="닫기">✕</button>
+      </header>
+      <div class="schedule-manager-body">
+        <aside class="schedule-list-pane">
+          <div class="schedule-list-heading"><strong>등록된 스케줄</strong><button class="btn-secondary" id="btnNewSchedule" type="button">＋ 새 스케줄</button></div>
+          <div id="scheduleList" class="schedule-list" role="list" aria-label="등록된 스케줄"></div>
+          <p id="scheduleListEmpty" class="schedule-empty">아직 스케줄이 없습니다.</p>
+          <button class="btn-secondary schedule-refresh" id="btnRefreshSchedules" type="button">목록 새로고침</button>
+        </aside>
+        <form id="scheduleForm" class="schedule-editor" autocomplete="off">
+          <input type="hidden" id="scheduleId">
+          <label class="schedule-field">스케줄 제목<input id="scheduleTitle" maxlength="120" required placeholder="예: 월간 프로젝트 점검"></label>
+          <label class="schedule-field">요청 내용<textarea id="schedulePrompt" rows="5" maxlength="100000" required placeholder="매달 점검할 내용과 결과에 포함할 항목을 적어 주세요."></textarea></label>
+          <label class="schedule-field">허용 도구<textarea id="scheduleAllowedTools" rows="2" required placeholder="read_file, google_drive_read"></textarea><small>쉼표로 구분해 이 스케줄이 실행할 도구 이름만 입력하세요. 비어 있으면 저장할 수 없습니다.</small></label>
+          <div class="schedule-recurrence-grid">
+            <label class="schedule-field">반복<select id="scheduleFrequency"><option value="monthly">매월</option><option value="weekly">매주</option><option value="daily">매일</option></select></label>
+            <label class="schedule-field" id="scheduleMonthDayWrap">날짜<input id="scheduleMonthDay" type="number" min="1" max="31" value="1"></label>
+            <label class="schedule-field" id="scheduleWeekdayWrap">요일<select id="scheduleWeekday"><option value="1">월요일</option><option value="2">화요일</option><option value="3">수요일</option><option value="4">목요일</option><option value="5">금요일</option><option value="6">토요일</option><option value="0">일요일</option></select></label>
+            <label class="schedule-field">시각<input id="scheduleLocalTime" type="time" value="09:00" required></label>
+          </div>
+          <label class="schedule-enabled"><input id="scheduleEnabled" type="checkbox" checked><span>이 스케줄 사용</span></label>
+          <div class="schedule-attachments-head"><strong>참고 파일</strong><span>텍스트/소스 파일 · 파일당 64 KiB · 최대 5개</span></div>
+          <input id="scheduleFiles" type="file" multiple accept=".txt,.md,.markdown,.csv,.json,.yaml,.yml,.xml,.html,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.rb,.go,.rs,.java,.kt,.swift,.c,.h,.cpp,.hpp,.sh,.sql" hidden>
+          <button class="btn-secondary" id="btnScheduleAddFiles" type="button">파일 추가</button>
+          <div id="scheduleAttachments" class="schedule-attachments" aria-live="polite"></div>
+          <div class="schedule-history" id="scheduleLastRun" role="status">마지막 실행 기록 없음</div>
+          <p class="schedule-policy-note">예약 실행은 Only Chat의 기존 승인 정책을 따릅니다. 승인이 필요한 작업은 자동 승인하지 않고 ‘승인 필요’로 기록됩니다.</p>
+          <div id="scheduleFormStatus" class="schedule-form-status" role="status" aria-live="polite"></div>
+          <footer class="schedule-form-actions">
+            <button class="btn-change-outline" id="btnDeleteSchedule" type="button" hidden>삭제</button>
+            <span class="schedule-action-spacer"></span>
+            <button class="btn-secondary" id="btnRunSchedule" type="button" hidden>지금 실행</button>
+            <button class="btn-save-orange" id="btnSaveSchedule" type="submit">저장</button>
+          </footer>
+        </form>
+      </div>
+    </section>
+  </div>
+</body>
+</html>
+
+  <!-- Connect Provider Modal (Exact match to Aside / Codex UI) -->
+  <div class="modal-backdrop" id="connectModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title" id="connectModalTitle">+ Connect Provider</h3>
+        <button class="btn-icon" onclick="closeConnectModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Provider</label>
+          <select class="settings-select-dropdown" id="modalProviderSelect" style="width: 100%;">
+            <option value="google">Google (Antigravity OAuth / API)</option>
+            <option value="chatgpt">ChatGPT (Codex OAuth / Session Token)</option>
+            <option value="openrouter">OpenRouter (Global Multi-Model)</option>
+            <option value="claude">Anthropic Claude</option>
+            <option value="ollama">Ollama (Local Offline 0원)</option>
+            <option value="copilot">GitHub Copilot</option>
+            <option value="litellm">LiteLLM Proxy</option>
+            <option value="account-router">AI Account Router (local shared account chain)</option>
+          </select>
+          <small>Router 연결에는 계정 라벨만 입력하세요. 제공자 자격 증명은 Router가 로컬에서 관리합니다.</small>
+        </div>
+        <div class="form-group" style="margin-top: 10px;">
+          <label class="form-label">계정 / 식별 이름</label>
+          <input type="text" id="modalAccountName" class="settings-input-box" placeholder="예: rogan2534@gmail.com 또는 Main-Key">
+        </div>
+        <div class="form-group" style="margin-top: 10px;">
+          <label class="form-label">API Key 또는 세션 토큰</label>
+          <input type="password" id="modalApiKey" class="settings-input-box" placeholder="sk-ant-... 또는 gsk_... (로컬/OAuth의 경우 생략 가능)">
+        </div>
+        <div class="form-group" style="margin-top: 10px;">
+          <label class="form-label">M-Oasis 우선순위 체인 지정</label>
+          <select class="settings-select-dropdown" id="modalPriorityRank" style="width: 100%;">
+            <option value="0">체인에 등록만 함 (수동 호출)</option>
+            <option value="1">1순위로 즉시 승격 (Primary Tier)</option>
+            <option value="2">2순위로 지정 (Secondary Fallback)</option>
+            <option value="3">3순위로 지정 (Final Defense Tier)</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-change-outline" onclick="closeConnectModal()">취소</button>
+        <button class="btn-save-orange" id="btnSubmitConnectModal">연결 및 저장</button>
+      </div>
+    </div>
+  </div>

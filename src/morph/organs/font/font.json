@@ -1,0 +1,7 @@
+{
+  "name": "Apple SF Pro + SF Mono",
+  "fontSans": "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"SF Pro Display\", sans-serif",
+  "fontMono": "\"SF Mono\", Menlo, Monaco, Consolas, monospace",
+  "baseSize": "13px",
+  "lineHeight": "1.6"
+}

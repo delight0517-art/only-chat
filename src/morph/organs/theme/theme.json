@@ -1,0 +1,14 @@
+{
+  "name": "Codex Light Native",
+  "accentCyan": "#a855f7",
+  "accentGreen": "#10b981",
+  "accentYellow": "#f59e0b",
+  "accentRed": "#ef4444",
+  "bgBase": "#ffffff",
+  "bgSurface": "#f7f7f8",
+  "glassBlur": "12px",
+  "borderRadius": "10px",
+  "_lastAuthor": "ai-agent",
+  "_updatedAt": 1793104428441,
+  "accentOrange": "#f06a35"
+}

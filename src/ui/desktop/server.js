@@ -1,0 +1,1810 @@
+/**
+ * @project My-Codex
+ * @provenance:rogan-core
+ * @author Rogan Kim (GeunHu Kim) & AI Architect
+ * @license MIT
+ * @description Zero-dependency HTTP & SSE Server powering the My-Codex Mac App UI.
+ */
+'use strict';
+
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+const { execFile } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
+const { AgentEngine } = require('../../core/AgentEngine.js');
+const { MetamorphicHub } = require('../../morph/Hub.js');
+const { InstalledAppCatalog } = require('../../morph/ReaAppBridge.js');
+const { NativeSessionBridge } = require('../../core/NativeSessionBridge.js');
+const { ThreefBrowserBridge } = require('../../browser/ThreefBrowserBridge.js');
+const { EmbeddedThreefBrowserBridge } = require('../../browser/EmbeddedThreefBrowserBridge.js');
+const { ThreefBrowserControlSettings } = require('../../browser/ThreefBrowserControlSettings.js');
+const { MacScreenControlSettings } = require('../../browser/MacScreenControlSettings.js');
+const { FocusFencePolicy } = require('../../browser/FocusFencePolicy.js');
+const { NotionReaBrowser } = require('../../browser/NotionReaBrowser.js');
+const { AntigravityCliAdapter } = require('../../providers/AntigravityCliAdapter.js');
+const { CodexCliAdapter } = require('../../providers/CodexCliAdapter.js');
+const { parseReasoningEffort } = require('../../core/ReasoningEffort.js');
+const { EvolutionInbox } = require('../../sync/EvolutionInbox.js');
+const { RecurringScheduleStore } = require('../../scheduler/RecurringScheduleStore.js');
+const { RecurringScheduleService } = require('../../scheduler/RecurringScheduleService.js');
+
+const QUOTA_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
+const SESSION_SEARCH_TIMEOUT_MS = 20000;
+const APPROVAL_POLICIES = new Set(['on-request', 'never', 'read-only']);
+
+function readApprovalPolicy(filePath) {
+  try {
+    const saved = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return saved?.version === 1 && APPROVAL_POLICIES.has(saved.policy) ? saved.policy : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeApprovalPolicy(filePath, policy) {
+  if (!APPROVAL_POLICIES.has(policy)) throw new Error('지원하지 않는 도구 승인 정책입니다.');
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, JSON.stringify({ version: 1, policy }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    fs.renameSync(tempPath, filePath);
+  } finally {
+    try { fs.unlinkSync(tempPath); } catch (_) {}
+  }
+}
+
+class DesktopServer {
+  constructor(options = {}) {
+    this.port = Number.isInteger(options.port) ? options.port : Number(process.env.PORT) || 8899;
+    this.staticDir = path.join(__dirname);
+    this.projectRoot = path.resolve(__dirname, '../../..');
+    this.isolated = options.isolated === true;
+    this.openExternal = this.isolated ? null : typeof options.openExternal === 'function'
+      ? options.openExternal
+      : process.platform === 'darwin' ? createMacThreefOpener() : null;
+    const profileDir = options.dataDir || options.profileDir || process.env.ONLY_CHAT_ISOLATED_PROFILE;
+    if (this.isolated && !profileDir) throw new Error('Isolated runtime requires an explicit temporary profile directory.');
+    this.dataDir = path.resolve(profileDir || path.join(os.homedir(), '.my-codex'));
+    if (this.isolated) {
+      const tempRoot = path.resolve(os.tmpdir());
+      const relative = path.relative(tempRoot, this.dataDir);
+      if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('Isolated profile must be a dedicated directory inside the system temporary folder.');
+      let ancestor = this.dataDir;
+      while (!fs.existsSync(ancestor) && ancestor !== path.dirname(ancestor)) ancestor = path.dirname(ancestor);
+      const realAncestorRelative = path.relative(fs.realpathSync(tempRoot), fs.realpathSync(ancestor));
+      if (realAncestorRelative === '..' || realAncestorRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realAncestorRelative)) throw new Error('Isolated profile resolves outside the system temporary folder.');
+      fs.mkdirSync(this.dataDir, { recursive: true });
+      const realRelative = path.relative(fs.realpathSync(tempRoot), fs.realpathSync(this.dataDir));
+      if (!realRelative || realRelative === '..' || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) throw new Error('Isolated profile resolves outside the system temporary folder.');
+    }
+    this.workspaceDir = path.resolve(options.workspaceDir || (this.isolated ? path.join(this.dataDir, 'workspace') : process.cwd()));
+    if (this.isolated) {
+      const relative = path.relative(this.dataDir, this.workspaceDir);
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('Isolated workspace must stay inside the temporary profile.');
+      fs.mkdirSync(this.workspaceDir, { recursive: true });
+    }
+    this.threefControlSettings = options.threefControlSettings || new ThreefBrowserControlSettings(path.join(this.dataDir, 'threef-browser-control.json'));
+    this.macScreenControlSettings = options.macScreenControlSettings || new MacScreenControlSettings(path.join(this.dataDir, 'mac-screen-control.json'));
+    this.macScreenNativeBridgeAvailable = options.macScreenNativeBridgeAvailable ?? process.env.ONLY_CHAT_NATIVE_MAC_SCREEN_CONTROL === '1';
+    this.macScreenToken = crypto.randomBytes(32).toString('hex');
+    this.macScreenCommands = [];
+    this.macScreenCommandWaiters = [];
+    this.macScreenCommandSequence = 0;
+    this.macScreenPanelWaiter = null;
+    this.macScreenLastCaptureAt = 0;
+    this.approvalPolicyFile = path.join(this.dataDir, 'approval-policy.json');
+    this.approvalPolicy = APPROVAL_POLICIES.has(options.approvalPolicy)
+      ? options.approvalPolicy
+      : readApprovalPolicy(this.approvalPolicyFile) || 'on-request';
+    const engineOptions = { ...options, approvalPolicy: this.approvalPolicy };
+    delete engineOptions.openExternal;
+    this.focusFencePolicy = new FocusFencePolicy();
+    // Keep free-plan Notion's Aside/REA session separate from the general 3F browser.
+    engineOptions.notionReaBrowser = this.isolated ? null : new NotionReaBrowser({ policy: this.focusFencePolicy });
+    this.threefBridge = options.threefBridge || new ThreefBrowserBridge({ openExternal: this.openExternal, policy: this.focusFencePolicy, isEnabled: () => this.isThreefControlEnabled() });
+    this.antigravityAdapter = !this.isolated && process.platform === 'darwin'
+      ? new AntigravityCliAdapter({ dataDir: this.dataDir }) : null;
+    this.codexAdapter = !this.isolated && process.platform === 'darwin'
+      ? new CodexCliAdapter({ dataDir: this.dataDir }) : null;
+    if (!engineOptions.providerAdapter && !this.isolated && process.platform === 'darwin') {
+      const antigravity = this.antigravityAdapter;
+      const codex = this.codexAdapter;
+      engineOptions.providerAdapter = (tier, history, hooks, context) => {
+        if (tier.provider === 'antigravity-cli') return antigravity.call(tier, history, hooks, context);
+        if (tier.provider === 'codex') return codex.call(tier, history, hooks, context);
+        throw new Error(`No local provider adapter is configured for '${tier.provider}'.`);
+      };
+    }
+    const configuredTierReadiness = engineOptions.isTierReady;
+    engineOptions.isTierReady = tier => (configuredTierReadiness ? configuredTierReadiness(tier) : true)
+      && (tier.provider !== 'codex' || Boolean(this.codexAdapter?.getReadiness(tier).connected));
+    this.browserCommands = [];
+    this.browserCommandWaiters = [];
+    this.browserCommandSequence = 0;
+    // AI browser tools always target the standalone 3F Browser control API.
+    // The embedded panel transport remains separate and must not masquerade as 3F app control.
+    engineOptions.browser = this.isolated ? null : this.threefBridge;
+    if (!this.isolated && process.platform === 'darwin') {
+      this.embeddedBrowserPanel = new EmbeddedThreefBrowserBridge({
+        policy: this.focusFencePolicy,
+        dispatch: command => this._dispatchEmbeddedBrowserCommand(command)
+      });
+    }
+    Object.assign(engineOptions, {
+      isolated: this.isolated,
+      dataDir: this.dataDir,
+      workspaceDir: this.workspaceDir,
+      browser: this.isolated ? null : engineOptions.browser
+    });
+    this.engine = new AgentEngine(engineOptions);
+    this.scheduleStore = options.scheduleStore || new RecurringScheduleStore({ dataDir: this.dataDir });
+    this.scheduleService = options.scheduleService || new RecurringScheduleService({
+      store: this.scheduleStore,
+      dispatcher: this.engine.dispatcher,
+      clock: options.scheduleClock
+    });
+    this.schedulesEnabled = options.enableSchedules ?? !this.isolated;
+    if (this.codexAdapter) this.codexAdapter.googleTokenFile = this.engine.tools.google.tokenFile;
+    if (this.codexAdapter) this.codexAdapter.macScreenBridge = () => ({ enabled: this.isMacScreenControlEnabled(), port: this.port, token: this.macScreenToken });
+    this.activeTurns = 0;
+    this.pendingToolApprovals = new Map();
+    this.newChatSessionAliases = new Map();
+    this.pendingDispatcherToolApprovals = new Map();
+    this.engine.dispatcherApprovalHandler = (task, request) => this._requestDispatcherToolApproval(task, request);
+    this.engine.dispatcher.canStartTask = () => this.activeTurns === 0;
+    this.engine.dispatcher.on('worker_started', () => { this.activeTurns += 1; });
+    const finishDispatchedTurn = () => {
+      this.activeTurns = Math.max(0, this.activeTurns - 1);
+      void this.engine.dispatcher.tick();
+    };
+    this.engine.dispatcher.on('worker_completed', finishDispatchedTurn);
+    this.engine.dispatcher.on('worker_blocked', finishDispatchedTurn);
+    this.engine.dispatcher.on('worker_failed', finishDispatchedTurn);
+    this.hub = new MetamorphicHub({
+      workspaceDir: this.engine.workspaceDir,
+      dataDir: this.dataDir,
+      desktopUiDir: this.staticDir,
+      watchEnabled: !this.isolated,
+      canMutate: () => this.activeTurns === 0
+    });
+    this.localApps = new InstalledAppCatalog(this.isolated ? { searchDirs: [] } : {});
+    this.nativeSessions = this.isolated
+      ? new NativeSessionBridge({ codexStateDb: path.join(this.dataDir, 'disabled-codex.sqlite'), antigravityBrainDir: path.join(this.dataDir, 'disabled-antigravity') })
+      : new NativeSessionBridge();
+    this.syncEnabled = false;
+    this.evolutionInbox = this.isolated ? null : new EvolutionInbox({
+      canonicalRoot: this.projectRoot,
+      dataDir: this.dataDir,
+      getBlockers: () => this.activeTurns > 0 ? ['active_turn'] : [],
+      verifyReload: context => {
+        const files = context?.files || [];
+        if (!files.some(file => file.path === 'src/features/provider/v1.mjs')) return { state: 'source-applied' };
+        if (typeof this.engine.verifyMetamorphicProviderReload !== 'function') throw new Error('account_router_runtime_verifier_unavailable');
+        return this.engine.verifyMetamorphicProviderReload(context);
+      }
+    });
+    this.evolutionInbox?.startConfigured();
+    this.evolutionInboxClients = new Set();
+    this._bindEvolutionInbox();
+    this.server = null;
+    this.quotaRefreshIntervalMs = options.quotaRefreshIntervalMs || QUOTA_REFRESH_INTERVAL_MS;
+    this.quotaRefreshReader = options.quotaRefreshReader || this.antigravityAdapter?.readQuota.bind(this.antigravityAdapter) || null;
+    this.quotaRefreshEnabled = options.enableQuotaRefresh ?? (!this.isolated && process.platform === 'darwin');
+    this.quotaRefreshTimer = null;
+    this.quotaRefreshInFlight = null;
+    this.sessionSearchTimeoutMs = options.sessionSearchTimeoutMs ?? SESSION_SEARCH_TIMEOUT_MS;
+    this.priorityEventClients = new Set();
+  }
+
+  start() {
+    return new Promise((resolve, reject) => {
+      this.server = http.createServer((req, res) => this._handleRequest(req, res));
+      this.server.listen(this.port, '127.0.0.1', () => {
+        this.port = this.server.address().port;
+        const url = `http://127.0.0.1:${this.port}`;
+        this._startQuotaRefresh();
+        if (this.schedulesEnabled) this.scheduleService.start();
+        resolve({ port: this.port, url });
+      });
+      this.server.on('error', err => reject(err));
+    });
+  }
+
+  stop() {
+    this.scheduleService?.stop();
+    if (this.quotaRefreshTimer) clearInterval(this.quotaRefreshTimer);
+    this.quotaRefreshTimer = null;
+    this.hub.stopWatchers();
+    this.engine.skills.stopWatching();
+    this.engine.dispatcher.stop();
+    for (const [requestId, pending] of this.pendingDispatcherToolApprovals) {
+      clearTimeout(pending.timer);
+      this.pendingDispatcherToolApprovals.delete(requestId);
+      pending.resolve(false);
+    }
+    if (this.browserPanelWaiter) {
+      clearTimeout(this.browserPanelWaiter.timeout);
+      this.browserPanelWaiter.res.destroy();
+      this.browserPanelWaiter = null;
+    }
+    for (const waiter of this.browserCommandWaiters.splice(0)) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error('Only Chat 서버가 종료되었습니다.'));
+    }
+    this.browserCommands = [];
+    for (const client of this.priorityEventClients) client.end();
+    this.priorityEventClients.clear();
+    for (const client of this.evolutionInboxClients) client.end();
+    this.evolutionInboxClients.clear();
+    this.evolutionInbox?.stop();
+    if (this.server) {
+      this.server.close();
+      this.server = null;
+    }
+    if (this.macScreenPanelWaiter) {
+      clearTimeout(this.macScreenPanelWaiter.timeout);
+      this.macScreenPanelWaiter.res.destroy();
+      this.macScreenPanelWaiter = null;
+    }
+    for (const waiter of this.macScreenCommandWaiters.splice(0)) {
+      clearTimeout(waiter.timeout);
+      waiter.resolve({ error: 'Only Chat 서버가 종료되었습니다.' });
+    }
+    this.macScreenCommands = [];
+  }
+
+  _startQuotaRefresh() {
+    if (!this.quotaRefreshEnabled || !this.quotaRefreshReader || this.quotaRefreshTimer) return;
+    void this.refreshProviderQuotas();
+    this.quotaRefreshTimer = setInterval(() => { void this.refreshProviderQuotas(); }, this.quotaRefreshIntervalMs);
+    this.quotaRefreshTimer.unref?.();
+  }
+
+  _broadcastPriorityStatus() {
+    const event = `data: ${JSON.stringify({ type: 'priority_status', status: this.getPriorityStatus() })}\n\n`;
+    for (const client of this.priorityEventClients) {
+      try { client.write(event); } catch (_) { this.priorityEventClients.delete(client); }
+    }
+  }
+
+  _bindEvolutionInbox() {
+    this.evolutionInbox?.relay?.on('pending_changed', () => this._broadcastEvolutionInbox());
+  }
+
+  _broadcastEvolutionInbox() {
+    const event = `data: ${JSON.stringify({ type: 'windows_changes', status: this.evolutionInbox?.status() || { configured: false, pending: [] } })}\n\n`;
+    for (const client of this.evolutionInboxClients) {
+      try { client.write(event); } catch (_) { this.evolutionInboxClients.delete(client); }
+    }
+  }
+
+  getPriorityStatus() {
+    const status = this.engine.priorityChain.getStatus();
+    status.tiers = status.tiers.map(tier => ({
+      ...tier,
+      providerReady: tier.provider === 'codex' ? this.codexAdapter?.getReadiness(tier) || { available: false, connected: false, message: 'Codex 연결 어댑터를 사용할 수 없습니다.' } : { available: true, connected: true, message: '실행 경로 연결됨' }
+    }));
+    status.activeTier = status.tiers.find(tier => tier.id === status.activeTier?.id) || null;
+    return status;
+  }
+
+  refreshProviderQuotas() {
+    if (this.quotaRefreshInFlight) return this.quotaRefreshInFlight;
+    this.quotaRefreshInFlight = (async () => {
+      const tiers = this.engine.priorityChain.chain.tiers.filter(tier => tier.enabled && tier.provider === 'antigravity-cli');
+      for (const tier of tiers) {
+        this.engine.priorityChain.markQuotaRefreshAttempt(tier.id);
+        try {
+          const quota = await this.quotaRefreshReader(tier);
+          if (!quota || !Number.isFinite(quota.remainingPercent)) {
+            this.engine.priorityChain.markQuotaRefreshFailure(tier.id, 'no-usable-quota-data');
+            continue;
+          }
+          this.engine.priorityChain.updateTierQuota(tier.id, quota.remainingPercent, {
+            fiveHourRemainingPercent: quota.fiveHourRemainingPercent,
+            nextResetAt: quota.nextResetAt
+          });
+        } catch (error) {
+          this.engine.priorityChain.markQuotaRefreshFailure(tier.id, 'read-failed');
+          console.warn(`[QuotaRefresh] ${tier.id}: ${error.message}`);
+        }
+      }
+      this._broadcastPriorityStatus();
+    })().finally(() => { this.quotaRefreshInFlight = null; });
+    return this.quotaRefreshInFlight;
+  }
+
+  async _handleRequest(req, res) {
+    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    const pathname = url.pathname;
+
+    if (this.isolated && (pathname.startsWith('/api/connectors/') || pathname.startsWith('/api/sync/'))) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'External providers and Drive sync are disabled in isolated mode.' }));
+      return;
+    }
+    if (pathname.startsWith('/api/sync/') && !this.syncEnabled) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Legacy whole-workspace sync is retired. Use the allowlisted evolution protocol.' }));
+      return;
+    }
+
+    if (this.isolated && pathname.startsWith('/api/evolution/')) {
+      res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'Isolated mode disables shared Windows change inbox.' }));
+      return;
+    }
+
+    const allowedHosts = new Set([`127.0.0.1:${this.port}`, `localhost:${this.port}`]);
+    const oauthCallback = ['/api/connectors/google/callback', '/api/connectors/notion/callback'].includes(pathname) && req.method === 'GET';
+    const origin = req.headers.origin;
+    const allowedOrigins = new Set([`http://127.0.0.1:${this.port}`, `http://localhost:${this.port}`]);
+    if (!allowedHosts.has((req.headers.host || '').toLowerCase()) ||
+        (origin && !allowedOrigins.has(origin) && !oauthCallback) ||
+        (req.headers['sec-fetch-site'] === 'cross-site' && !oauthCallback)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Only Chat 로컬 요청만 허용됩니다.' }));
+      return;
+    }
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (pathname === '/api/schedules' && req.method === 'GET') {
+      return this._respondJson(res, { schedules: this.scheduleStore.listSummaries() });
+    }
+    if (pathname === '/api/schedules' && req.method === 'POST') {
+      const body = await this._readLimitedBody(req, 256 * 1024);
+      if (!body) return this._respondJson(res, { error: '일정 입력을 읽지 못했습니다.' }, 400);
+      try { return this._respondJson(res, { ok: true, schedule: this.scheduleStore.create(this._scheduleInput(body)) }, 201); }
+      catch (error) { return this._respondJson(res, { error: error.message || '일정을 저장하지 못했습니다.' }, 400); }
+    }
+    const scheduleMatch = /^\/api\/schedules\/([^/]+)(?:\/(run))?$/.exec(pathname);
+    if (scheduleMatch) {
+      let scheduleId;
+      try { scheduleId = decodeURIComponent(scheduleMatch[1]); }
+      catch (_) { return this._respondJson(res, { error: '일정 ID가 올바르지 않습니다.' }, 400); }
+      if (scheduleMatch[2] === 'run' && req.method === 'POST') {
+        try {
+          const result = this.scheduleService.runNow(scheduleId);
+          return this._respondJson(res, result, result.accepted ? 202 : 409);
+        } catch (error) { return this._respondJson(res, { error: error.message || '일정을 실행하지 못했습니다.' }, 404); }
+      }
+      if (!scheduleMatch[2] && req.method === 'GET') {
+        const schedule = this.scheduleStore.get(scheduleId);
+        return schedule ? this._respondJson(res, { schedule }) : this._respondJson(res, { error: '일정을 찾을 수 없습니다.' }, 404);
+      }
+      if (!scheduleMatch[2] && req.method === 'PUT') {
+        const body = await this._readLimitedBody(req, 256 * 1024);
+        if (!body) return this._respondJson(res, { error: '일정 입력을 읽지 못했습니다.' }, 400);
+        try { return this._respondJson(res, { ok: true, schedule: this.scheduleStore.update(scheduleId, this._scheduleInput(body)) }); }
+        catch (error) { return this._respondJson(res, { error: error.message || '일정을 저장하지 못했습니다.' }, /not found/.test(error.message) ? 404 : 400); }
+      }
+      if (!scheduleMatch[2] && req.method === 'DELETE') {
+        try { return this._respondJson(res, { ok: this.scheduleStore.delete(scheduleId) }); }
+        catch (error) { return this._respondJson(res, { error: error.message || '일정을 삭제하지 못했습니다.' }, 400); }
+      }
+    }
+
+    if (pathname === '/api/mac-screen/settings' && req.method === 'GET') {
+      this._respondJson(res, { ...this.macScreenControlSettings.get(), nativeAvailable: this.isNativeMacScreenControlAvailable() });
+      return;
+    }
+    if (pathname === '/api/mac-screen/settings' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      if (!this.isNativeMacScreenControlAvailable() && body.enabled === true) return this._respondJson(res, { ok: false, error: 'Mac 화면 제어는 Only Chat 네이티브 macOS 앱에서만 사용할 수 있습니다.' }, 403);
+      try {
+        const settings = this.macScreenControlSettings.set(body.enabled);
+        if (!settings.enabled) {
+          this.macScreenLastCaptureAt = 0;
+          this.macScreenCommands.length = 0;
+          for (const waiter of this.macScreenCommandWaiters.splice(0)) { clearTimeout(waiter.timeout); waiter.resolve({ error: 'Mac 화면 제어가 꺼졌습니다.' }); }
+        }
+        return this._respondJson(res, { ok: true, ...settings });
+      } catch (error) { return this._respondJson(res, { ok: false, error: error.message || 'Mac 화면 제어 설정을 저장하지 못했습니다.' }, 400); }
+    }
+    if (pathname === '/api/mac-screen/panel/next' && req.method === 'GET') {
+      if (!this.isMacScreenControlEnabled()) return this._respondJson(res, { error: 'Mac 화면 제어가 꺼져 있습니다.' }, 403);
+      const command = this.macScreenCommands.shift();
+      if (command) return this._respondJson(res, command);
+      res.writeHead(204, { 'Cache-Control': 'no-store' }); res.end(); return;
+    }
+    if (pathname === '/api/mac-screen/panel/complete' && req.method === 'POST') {
+      if (!this.isMacScreenControlEnabled()) return this._respondJson(res, { error: 'Mac 화면 제어가 꺼져 있습니다.' }, 403);
+      const body = await this._readLimitedBody(req, 10 * 1024 * 1024);
+      if (!body || typeof body.id !== 'string') return this._respondJson(res, { error: 'Mac 화면 결과가 올바르지 않습니다.' }, 400);
+      const index = this.macScreenCommandWaiters.findIndex(waiter => waiter.id === body.id);
+      if (index < 0) return this._respondJson(res, { error: 'Mac 화면 명령 대기 항목이 없습니다.' }, 404);
+      const [waiter] = this.macScreenCommandWaiters.splice(index, 1);
+      clearTimeout(waiter.timeout);
+      waiter.resolve(body.result && typeof body.result === 'object' ? body.result : { error: 'Mac 화면 결과가 올바르지 않습니다.' });
+      return this._respondJson(res, { ok: true });
+    }
+    if (pathname === '/api/mac-screen/dispatch' && req.method === 'POST') {
+      const supplied = Buffer.from(String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
+      const expected = Buffer.from(this.macScreenToken);
+      if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return this._respondJson(res, { error: 'Only Chat Mac 화면 도구 인증 실패' }, 401);
+      if (!this.isMacScreenControlEnabled()) return this._respondJson(res, { error: 'Only Chat 설정에서 Mac 화면 제어를 먼저 켜 주세요.' }, 403);
+      const body = await this._readBody(req);
+      try {
+        if (['click', 'type', 'key', 'scroll'].includes(body.action)
+          && (!this.macScreenLastCaptureAt || Date.now() - this.macScreenLastCaptureAt > 60_000)) {
+          return this._respondJson(res, { error: '화면 조작 전 screen_capture로 현재 화면을 먼저 확인해 주세요.' }, 409);
+        }
+        const result = await this._dispatchMacScreenCommand(body.action, body.input || {});
+        if (body.action === 'capture' && typeof result.image === 'string') this.macScreenLastCaptureAt = Date.now();
+        else if (['click', 'type', 'key', 'scroll'].includes(body.action)) this.macScreenLastCaptureAt = 0;
+        if (body.action === 'capture') {
+          const { image, mimeType, width, height, ...metadata } = result;
+          return this._respondJson(res, { ...metadata, image, mimeType: mimeType || 'image/jpeg', width, height });
+        }
+        return this._respondJson(res, result);
+      } catch (error) { return this._respondJson(res, { error: error.message || 'Mac 화면 작업을 완료하지 못했습니다.' }, 502); }
+    }
+
+    if (pathname === '/api/browser/panel/next' && req.method === 'GET') {
+      if (!this.isThreefControlEnabled()) return this._respondThreefDisabled(res);
+      const command = this.browserCommands.shift();
+      if (command) {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(command));
+      } else {
+        if (this.browserPanelWaiter) {
+          this.browserPanelWaiter.res.writeHead(204, { 'Cache-Control': 'no-store' });
+          this.browserPanelWaiter.res.end();
+          clearTimeout(this.browserPanelWaiter.timeout);
+        }
+        const timeout = setTimeout(() => {
+          if (this.browserPanelWaiter?.res === res) {
+            this.browserPanelWaiter = null;
+            res.writeHead(204, { 'Cache-Control': 'no-store' });
+            res.end();
+          }
+        }, 15000);
+        this.browserPanelWaiter = { res, timeout };
+        req.on('close', () => {
+          if (this.browserPanelWaiter?.res === res) {
+            clearTimeout(timeout);
+            this.browserPanelWaiter = null;
+          }
+        });
+      }
+      return;
+    }
+
+    if (pathname === '/api/browser/panel/complete' && req.method === 'POST') {
+      if (!this.isThreefControlEnabled()) return this._respondThreefDisabled(res);
+      const body = await this._readBody(req);
+      const waiterIndex = this.browserCommandWaiters.findIndex(waiter => waiter.id === body.id);
+      if (waiterIndex < 0) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '브라우저 명령 대기 항목을 찾을 수 없습니다.' }));
+        return;
+      }
+      const [waiter] = this.browserCommandWaiters.splice(waiterIndex, 1);
+      clearTimeout(waiter.timeout);
+      waiter.resolve(body.result && typeof body.result === 'object' ? body.result : { error: '브라우저 결과가 올바르지 않습니다.' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // 핫리로드 _ 신체 변형 시스템 (Metamorphic Hot-Reload Routes)
+    if (pathname === '/api/morph/stream' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      res.write(`data: ${JSON.stringify({ type: 'morph_connected', status: this.hub.getHubStatus() })}\n\n`);
+      this.hub.registerSseClient(res);
+      return;
+    }
+
+    if (pathname === '/api/priority/stream' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      this.priorityEventClients.add(res);
+      res.on('close', () => this.priorityEventClients.delete(res));
+      res.write(`data: ${JSON.stringify({ type: 'priority_status', status: this.getPriorityStatus() })}\n\n`);
+      return;
+    }
+
+    if (pathname === '/api/evolution/inbox/stream' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      this.evolutionInboxClients.add(res);
+      res.on('close', () => this.evolutionInboxClients.delete(res));
+      res.write(`data: ${JSON.stringify({ type: 'windows_changes', status: this.evolutionInbox?.status() || { configured: false, pending: [] } })}\n\n`);
+      return;
+    }
+
+    if (pathname === '/api/morph/status' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(this.hub.getHubStatus()));
+      return;
+    }
+
+    if (pathname === '/api/admin-manager/status' && req.method === 'GET') {
+      try {
+        const manager = await this._loadAdminManager();
+        const dispatcherAllowedProviderIds = typeof this.engine._getDispatcherAllowedProviderIds === 'function'
+          ? await this.engine._getDispatcherAllowedProviderIds()
+          : [];
+        const snapshot = this._adminManagerSnapshot(manager.ADMIN_MANAGER_MODULE_VERSION, dispatcherAllowedProviderIds);
+        manager.buildAdminManagerSystemMessage(snapshot);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ apiVersion: manager.ADMIN_MANAGER_API_VERSION, moduleVersion: manager.ADMIN_MANAGER_MODULE_VERSION, ...snapshot }));
+      } catch (err) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '관리자 capability 목록을 불러오지 못했습니다.' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/morph/mutate' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      try {
+        const result = this.hub.mutateOrgan(body.organ, body.key, body.value, body.author || 'ai-developer', {
+          expectedHash: body.expectedHash,
+          expectedSchemaVersion: body.expectedSchemaVersion
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // Static Assets
+    if (pathname === '/' || pathname === '/index.html') {
+      this._serveFile(res, path.join(this.staticDir, 'index.html'), 'text/html; charset=utf-8');
+      return;
+    }
+    if (pathname === '/app.css') {
+      this._serveFile(res, path.join(this.staticDir, 'app.css'), 'text/css; charset=utf-8');
+      return;
+    }
+    if (pathname === '/app.js') {
+      this._serveFile(res, path.join(this.staticDir, 'app.js'), 'application/javascript; charset=utf-8');
+      return;
+    }
+
+    if (pathname === '/internalSessionGrouping.js') {
+      this._serveFile(res, path.join(this.staticDir, 'internalSessionGrouping.js'), 'application/javascript; charset=utf-8');
+      return;
+    }
+
+    if (pathname === '/sessionDropMapping.js') {
+      this._serveFile(res, path.join(this.staticDir, 'sessionDropMapping.js'), 'application/javascript; charset=utf-8');
+      return;
+    }
+
+    if (pathname === '/workspaceOwnershipPresentation.js') {
+      this._serveFile(res, path.join(this.staticDir, 'workspaceOwnershipPresentation.js'), 'application/javascript; charset=utf-8');
+      return;
+    }
+
+    if (pathname === '/chatPresentation.js') {
+      this._serveFile(res, path.join(this.staticDir, 'chatPresentation.js'), 'application/javascript; charset=utf-8');
+      return;
+    }
+
+    if (pathname === '/browser-address.js') {
+      this._serveFile(res, path.join(this.staticDir, 'browser-address.js'), 'application/javascript; charset=utf-8');
+      return;
+    }
+
+    // API Routes
+    if (pathname === '/api/status' && req.method === 'GET') {
+      const status = this.getPriorityStatus();
+      status.defaultWorkspaceDir = this.engine.defaultWorkspaceDir || this.engine.workspaceDir;
+      status.sessionWorkspaceDir = this.engine.currentSession?.workspaceDir || null;
+      status.workspaceDir = status.sessionWorkspaceDir || status.defaultWorkspaceDir;
+      status.windowsChangesPending = this.evolutionInbox?.status().pending.length || 0;
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(status));
+      return;
+    }
+
+    if (pathname === '/api/settings/approval-policy' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ policy: this.engine.tools.approvalPolicy }));
+      return;
+    }
+
+    if (pathname === '/api/settings/approval-policy' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      if (!APPROVAL_POLICIES.has(body.policy)) {
+        res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: '승인 정책은 on-request, never, read-only 중 하나여야 합니다.' }));
+        return;
+      }
+      if (this.activeTurns > 0) {
+        res.writeHead(409, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: '실행 중인 작업이 끝난 뒤 승인 정책을 변경해 주세요.' }));
+        return;
+      }
+      try {
+        writeApprovalPolicy(this.approvalPolicyFile, body.policy);
+        this.approvalPolicy = body.policy;
+        this.engine.tools.approvalPolicy = body.policy;
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, policy: body.policy }));
+      } catch (_) {
+        res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: '승인 정책을 저장하지 못했습니다. 기존 설정을 유지합니다.' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/evolution/inbox' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(this.evolutionInbox?.status() || { configured: false, enabled: false, pending: [], error: 'isolated_mode' }));
+      return;
+    }
+
+    if (pathname === '/api/evolution/configure' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      try {
+        const status = this.evolutionInbox.configure({ relayRoot: body.relayRoot });
+        this._bindEvolutionInbox();
+        this._broadcastEvolutionInbox();
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, status }));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: String(error.message || error) }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/evolution/disable' && req.method === 'POST') {
+      const status = this.evolutionInbox.disable();
+      this._broadcastEvolutionInbox();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, status }));
+      return;
+    }
+
+    if (pathname === '/api/spacekeeper/session-report' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      if (typeof body.taskKey !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(body.taskKey)) {
+        res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: '유효한 Space Keeper task key가 필요합니다.' }));
+        return;
+      }
+      try {
+        const report = await this.engine.tools.spaceKeeperSessionReport(body.taskKey);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(report));
+      } catch (_) {
+        res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'Space Keeper 보고서를 불러오지 못했습니다.' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/spacekeeper/capacity' && req.method === 'GET') {
+      try {
+        const status = await this.engine.tools.spaceKeeperCapacityStatus();
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(status));
+      } catch (_) {
+        res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'Space Keeper 용량 상태를 불러오지 못했습니다.' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/sessions' && req.method === 'GET') {
+      const internal = this.engine.sessions.listSessions();
+      const unified = this.nativeSessions.listUnifiedSessions();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        internal,
+        unified
+      }));
+      return;
+    }
+
+    if (pathname === '/api/codex-queue' && req.method === 'GET') {
+      const inbox = this.nativeSessions.loadCodexQueuedItems();
+      if (inbox.available) {
+        const metadataByThread = new Map(this.nativeSessions.loadCodexThreadMetadata().map(session => [session.rawId, session]));
+        inbox.items = inbox.items.map(item => {
+          const source = metadataByThread.get(item.threadId);
+          return {
+            ...item,
+            threadTitle: source?.title || 'Codex 대화',
+            threadArchived: source?.isArchived === true,
+            threadVerified: Boolean(source)
+          };
+        });
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ...inbox, readOnly: true }));
+      return;
+    }
+
+    if (pathname === '/api/sessions/storage-report' && req.method === 'GET') {
+      const requestedDays = Number(url.searchParams.get('days'));
+      const days = Number.isInteger(requestedDays) && requestedDays >= 1 && requestedDays <= 90 ? requestedDays : 7;
+      try {
+        const report = await this.engine.sessions.storageReport({ days });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(report));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: `Only Chat 세션 저장량을 읽지 못했습니다: ${String(error.message || error).slice(0, 200)}` }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/sessions/metadata' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const sessionId = body.sessionId;
+      const action = body.action;
+      if (typeof sessionId !== 'string' || !/^ses_[a-f0-9]{16}$/.test(sessionId)
+        || !['rename', 'pin', 'move', 'archive', 'delete'].includes(action)
+        || !body.payload || typeof body.payload !== 'object' || Array.isArray(body.payload)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '잘못된 세션 변경 요청입니다.' }));
+        return;
+      }
+      try {
+        const result = this.engine.sessions.updateSessionMetadata(sessionId, action, body.payload);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, result }));
+      } catch (_) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '내부 세션 또는 변경 내용이 올바르지 않습니다.' }));
+      }
+      return;
+    }
+
+    if ((pathname === '/api/sessions/search' || pathname === '/api/sessions/search/stream') && req.method === 'POST') {
+      const streamResults = pathname === '/api/sessions/search/stream';
+      const body = await this._readBody(req);
+      const query = typeof body.query === 'string' ? body.query.trim() : '';
+      if (!query || query.length > 200) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '검색어는 1~200자여야 합니다.' }));
+        return;
+      }
+      const controller = new AbortController();
+      let timedOut = false;
+      let settled = false;
+      const timeoutMs = streamResults
+        ? Math.max(this.sessionSearchStreamTimeoutMs || 120000, this.sessionSearchTimeoutMs)
+        : this.sessionSearchTimeoutMs;
+      const sendStreamEvent = event => {
+        if (!streamResults || res.destroyed || res.writableEnded) return;
+        res.write(`${JSON.stringify(event)}\n`);
+      };
+      let streamedResultCount = 0;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        timedOut = true;
+        controller.abort();
+        cleanup();
+        if (res.destroyed) return;
+        if (streamResults) {
+          sendStreamEvent({ type: 'incomplete', reason: 'timeout' });
+          res.end();
+          return;
+        }
+        res.writeHead(504, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: '세션 검색 시간이 초과되었습니다.' }));
+      }, timeoutMs);
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        res.removeListener('close', onClose);
+      };
+      const onClose = () => {
+        if (!res.writableEnded) {
+          cleanup();
+          controller.abort();
+        }
+      };
+      res.once('close', onClose);
+      if (streamResults) {
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'Connection': 'keep-alive' });
+        sendStreamEvent({ type: 'started' });
+      }
+      Promise.resolve().then(() => this.nativeSessions.searchSessions(query, streamResults ? {
+        signal: controller.signal,
+        onResult: item => { streamedResultCount++; sendStreamEvent({ type: 'result', item }); },
+        onProgress: progress => { if (!progress?.complete) sendStreamEvent({ type: 'progress', ...progress }); }
+      } : { signal: controller.signal })).then(results => {
+        if (timedOut) return;
+        cleanup();
+        if (res.destroyed) return;
+        if (streamResults) {
+          // Keep test doubles and older bridge implementations compatible with the stream contract.
+          if (streamedResultCount === 0) {
+            for (const item of results || []) sendStreamEvent({ type: 'result', item });
+          }
+          sendStreamEvent({ type: 'complete', resultCount: Array.isArray(results) ? results.length : 0 });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ results }));
+      }).catch(() => {
+        if (timedOut) return;
+        cleanup();
+        if (res.destroyed) return;
+        if (streamResults) {
+          sendStreamEvent({ type: 'error' });
+          res.end();
+          return;
+        }
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '세션 검색을 완료하지 못했습니다.' }));
+      });
+      return;
+    }
+
+    if (pathname === '/api/sessions/resume' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const sessionId = body.sessionId;
+      const isInternal = typeof sessionId === 'string' && /^ses_[a-f0-9]{16}$/.test(sessionId);
+      const isInternalCandidate = typeof sessionId === 'string' && sessionId.startsWith('ses_');
+      const resumed = isInternal
+        ? this.engine.sessions.resumeSession(sessionId)
+        : isInternalCandidate ? null : this.nativeSessions.resumeSession(sessionId);
+      if (resumed) {
+        // Load into AgentEngine so subsequent turns continue right here in Only Chat!
+        const activeSession = resumed.source === 'internal'
+          ? this.engine.loadInternalSession(resumed)
+          : this.engine.loadResumedSession(resumed);
+        const session = {
+          ...resumed,
+          id: activeSession.sessionId,
+          sessionId: activeSession.sessionId
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, session }));
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: '세션을 찾을 수 없습니다.' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/priority/switch' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const tierId = body.tierId;
+      const ok = this.engine.priorityChain.setManualTier(tierId);
+      const status = this.getPriorityStatus();
+      const tier = ok ? status.activeTier : null;
+      const selected = this.engine.priorityChain.chain.tiers.find(item => item.id === tierId);
+      const readiness = selected?.provider === 'codex' ? this.codexAdapter?.getReadiness(selected) : null;
+      const health = selected ? this.engine.priorityChain.tierHealth.get(selected.id) : null;
+      const error = !selected ? '계정을 찾을 수 없습니다.'
+        : readiness && !readiness.connected ? readiness.message
+          : health?.isThrottled || (Number.isFinite(health?.totalRemainingPercent) && health.totalRemainingPercent <= this.engine.priorityChain.thresholdPercent)
+            ? '한도 소진 또는 10% 이하인 계정은 수동 선택할 수 없습니다.'
+              : '사용 가능한 계정을 선택하지 못했습니다.';
+      res.writeHead(ok ? 200 : 409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok, tier, status, error: ok ? undefined : error }));
+      return;
+    }
+
+    if (pathname === '/api/priority/mode' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const ok = this.engine.priorityChain.setAutomaticPriority(body.enabled);
+      res.writeHead(ok ? 200 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok, status: this.getPriorityStatus(), error: ok ? undefined : '자동 우선순위 값이 올바르지 않습니다.' }));
+      return;
+    }
+
+    if (pathname === '/api/priority/set-rank' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const { tierId, rank } = body;
+      const ok = this.engine.priorityChain.setTierRank(tierId, rank);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok, status: this.getPriorityStatus() }));
+      return;
+    }
+
+    if (pathname === '/api/priority/connect' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const { id, name, provider, model, email, apiKey } = body;
+      const ok = this.engine.priorityChain.upsertTier({
+        id: id || `${provider}-${Date.now()}`,
+        name: name || provider,
+        provider,
+        model,
+        email,
+        description: apiKey ? 'API Key configured' : 'Active Connection'
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok, status: this.getPriorityStatus() }));
+      return;
+    }
+
+    // =========================================================================
+    // Google Workspace & Notion Connectors Endpoints
+    // =========================================================================
+    if (pathname === '/api/connectors/status' && req.method === 'GET') {
+      const googleConnected = this.engine.tools.google.isConnected();
+      const notionConnected = this.engine.tools.notion.isConnected();
+      const notionMcp = await this.engine.tools.notionMcp.status().catch(error => ({
+        connected: false, workspaceName: null, auth: 'Notion MCP OAuth + PKCE', error: error.message
+      }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        google: {
+          connected: googleConnected,
+          scopes: ['Google Drive (Full Edit)', 'Gmail (Read, Compose, Modify & Send)', 'User Profile']
+        },
+        notion: {
+          connected: notionConnected || notionMcp.connected,
+          personalLogin: notionMcp.connected,
+          workspaceName: notionMcp.workspaceName,
+          auth: notionMcp.auth,
+          connectionError: notionMcp.error || null,
+          apiVersion: '2026-03-11',
+          capabilities: ['Notion hosted MCP tools granted by user-selected pages', 'OAuth refresh with macOS Keychain credential storage', 'Approval-gated Notion changes']
+        }
+      }));
+      return;
+    }
+
+    if (pathname === '/api/connectors/google/auth-url' && req.method === 'GET') {
+      try {
+        const url = this.engine.tools.google.getAuthUrl();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ url }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/connectors/notion/auth-url' && req.method === 'GET') {
+      try {
+        const redirectUri = `http://localhost:${this.port}/api/connectors/notion/callback`;
+        const url = await this.engine.tools.notionMcp.getAuthUrl(redirectUri);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ url }));
+      } catch (err) {
+        res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/connectors/notion/auth-status' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(this.engine.tools.notionMcp.authStatus()));
+      return;
+    }
+
+    if (pathname === '/api/connectors/notion/callback' && req.method === 'GET') {
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+      const issuer = url.searchParams.get('iss');
+      const providerError = url.searchParams.get('error');
+      try {
+        if (providerError) {
+          this.engine.tools.notionMcp.cancelPendingAuth();
+          throw new Error(providerError === 'access_denied' ? 'Notion 접근을 허용하지 않았습니다.' : `Notion 로그인 실패 (${providerError}).`);
+        }
+        const connected = await this.engine.tools.notionMcp.exchangeOAuthCallback(code, state, issuer);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+        res.end(`<html lang="ko"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Notion 연결 완료</title><body style="font:16px system-ui;background:#f6f7f8;color:#242424;padding:48px"><h2>Notion 연결 완료</h2><p>${connected.workspaceName ? '워크스페이스 ' + String(connected.workspaceName).replace(/[&<>"']/g, '') + '에 연결했습니다.' : 'Only Chat에서 Notion을 사용할 수 있습니다.'}</p><p>이 창을 닫고 Only Chat으로 돌아가세요.</p></body></html>`);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+        res.end(`<html lang="ko"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Notion 연결 실패</title><body style="font:16px system-ui;background:#f6f7f8;color:#242424;padding:48px"><h2>Notion 연결 실패</h2><p>${String(err.message || 'Notion 연결을 완료하지 못했습니다.').replace(/[&<>"']/g, '')}</p><p>Only Chat 설정에서 다시 연결해 주세요.</p></body></html>`);
+      }
+      return;
+    }
+
+    if (pathname === '/api/connectors/notion/disconnect' && req.method === 'POST') {
+      try {
+        await this.engine.tools.notionMcp.disconnect();
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/connectors/google/callback' && req.method === 'GET') {
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+      if (code) {
+        try {
+          await this.engine.tools.google.exchangeCode(code, state);
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(`<html><body style="font-family: sans-serif; background:#131416; color:#00d2ff; text-align:center; padding:50px;">
+            <h2>✓ Google Workspace (Drive & Gmail) 연동 성공!</h2>
+            <p style="color:#aaa;">AI가 구글 드라이브 및 이메일 편집 권한을 획득했습니다. 이 창을 닫으셔도 좋습니다.</p>
+            <script>setTimeout(() => window.close(), 2500);</script>
+          </body></html>`);
+          return;
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Google OAuth Exchange Failed: ' + e.message);
+          return;
+        }
+      }
+    }
+
+    if (pathname === '/api/connectors/notion/token' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const token = body.token || '';
+      try {
+        await this.engine.tools.notion.verifyToken(token);
+        this.engine.tools.notion.saveToken(token);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, connected: this.engine.tools.notion.isConnected() }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    // =========================================================================
+    // Built-in Aside / REA Browser Endpoints
+    // =========================================================================
+    if (pathname === '/api/browser/threef/settings' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ enabled: this.isThreefControlEnabled() }));
+      return;
+    }
+    if (pathname === '/api/browser/threef/settings' && req.method === 'POST') {
+      if (this.isolated) {
+        res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: '분리 실행 모드에서는 3F Browser 제어를 사용할 수 없습니다.' }));
+        return;
+      }
+      const body = await this._readBody(req);
+      try {
+        this.threefControlSettings.set(body.enabled);
+        if (!body.enabled) {
+          for (const waiter of this.browserCommandWaiters.splice(0)) { clearTimeout(waiter.timeout); waiter.resolve({ error: '3F Browser 제어가 꺼져 있습니다.' }); }
+          this.browserCommands.length = 0;
+          if (this.browserPanelWaiter) {
+            const panelWaiter = this.browserPanelWaiter;
+            this.browserPanelWaiter = null;
+            clearTimeout(panelWaiter.timeout);
+            panelWaiter.res.writeHead(204, { 'Cache-Control': 'no-store' });
+            panelWaiter.res.end();
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify({ ok: true, enabled: this.isThreefControlEnabled() }));
+      } catch (error) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: error.message })); }
+      return;
+    }
+    if (pathname === '/api/browser/status' && req.method === 'GET') {
+      if (!this.isThreefControlEnabled()) {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ enabled: false, available: false, isOpen: false, controlAvailable: false, activeUrl: '', statusText: '3F Browser 제어가 꺼져 있습니다.' }));
+        return;
+      }
+      const status = await this.engine.tools.browserStatus();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(status));
+      return;
+    }
+    if (pathname.startsWith('/api/browser/') && !this.isThreefControlEnabled()) return this._respondThreefDisabled(res);
+
+    if (pathname === '/api/browser/authorize' && req.method === 'POST') {
+      if (this.isolated) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ allowed: false, reason: 'isolated' }));
+        return;
+      }
+      try {
+        const body = await this._readBody(req);
+        const decision = await this.focusFencePolicy.check(body.url);
+        const status = decision.allowed ? 200 : decision.reason === 'blocked' ? 403 : 503;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(decision));
+      } catch (_) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ allowed: false, reason: 'focus_fence_unavailable' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/browser/nav' && req.method === 'POST') {
+      if (this.isolated) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '분리 실행 모드에서는 브라우저를 열 수 없습니다.' }));
+        return;
+      }
+      const body = await this._readBody(req);
+      const urlToOpen = body.url || 'https://google.com';
+      try {
+        const result = await this.engine.tools.browserOpen(urlToOpen);
+        const status = result?.blocked ? 403 : result?.ok === false ? 502 : 200;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (_) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '3F Browser를 실행하지 못했습니다.' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/browser/threef/open' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const deepLink = buildThreefDeepLink(body.url);
+      if (!deepLink) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '유효한 HTTP 또는 HTTPS 주소가 필요합니다.' }));
+        return;
+      }
+      try {
+        const result = await this.engine.tools.browserOpen(body.url);
+        if (result?.blocked || result?.ok === false) {
+          res.writeHead(result?.blocked ? 403 : 502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (_) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '3F Browser를 열지 못했습니다.' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/browser/aria' && req.method === 'POST') {
+      if (this.isolated) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '분리 실행 모드에서는 브라우저를 사용할 수 없습니다.' }));
+        return;
+      }
+      const body = await this._readBody(req);
+      try {
+        const result = await this.engine.tools.browserAria(body.tabId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (_) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '3F Browser 정보를 읽지 못했습니다.' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/browser/read' && req.method === 'POST') {
+      if (this.isolated) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '분리 실행 모드에서는 브라우저를 사용할 수 없습니다.' }));
+        return;
+      }
+      try {
+        const result = await this.engine.tools.browserRead();
+        res.writeHead(result?.blocked ? 403 : result?.ok === false ? 502 : 200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (_) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '3F Browser 페이지 텍스트를 읽지 못했습니다.' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/browser/history' && req.method === 'POST') {
+      if (this.isolated) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '분리 실행 모드에서는 브라우저를 사용할 수 없습니다.' }));
+        return;
+      }
+      const body = await this._readBody(req);
+      try {
+        const result = await this.engine.tools.browserHistory(body.action);
+        res.writeHead(result?.blocked ? 403 : result?.ok === false ? 502 : 200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (_) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '3F Browser 탐색 동작을 실행하지 못했습니다.' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/browser/act' && req.method === 'POST') {
+      if (this.isolated) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '분리 실행 모드에서는 브라우저를 사용할 수 없습니다.' }));
+        return;
+      }
+      const body = await this._readBody(req);
+      try {
+        const result = await this.engine.tools.browserAct(body.action);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (_) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '3F Browser 작업을 실행하지 못했습니다.' }));
+      }
+      return;
+    }
+
+    // =========================================================================
+    // Local app catalog (REA is used during development, not embedded here)
+    // =========================================================================
+    if (pathname === '/api/rea/apps' && req.method === 'GET') {
+      const apps = this.localApps.listCandidateApps();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(apps));
+      return;
+    }
+
+    // =========================================================================
+    // Passkey & Credential Vault Endpoints
+    // =========================================================================
+    if (pathname === '/api/vault/list' && req.method === 'GET') {
+      const list = this.engine.tools.vault.listCredentials();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(list));
+      return;
+    }
+
+    if (pathname === '/api/vault/save' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      try {
+        const saved = this.engine.tools.vault.saveCredential(body.service, {
+          username: body.username,
+          secret: body.secret,
+          type: body.type || 'passkey',
+          allowAiUse: body.allowAiUse !== false
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, credential: saved }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/vault/delete' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const ok = this.engine.tools.vault.deleteCredential(body.id);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok }));
+      return;
+    }
+
+    if (pathname === '/api/skills' && req.method === 'GET') {
+      const skills = this.engine.skills.listSkills();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(skills));
+      return;
+    }
+
+    if (pathname === '/api/dispatcher' && req.method === 'GET') {
+      const snapshot = this.engine.dispatcher.getSnapshot();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(snapshot));
+      return;
+    }
+
+    if (pathname === '/api/dispatcher/enqueue' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const requestedTasks = Array.isArray(body.tasks) ? body.tasks : [body];
+      if (requestedTasks.length === 0 || requestedTasks.some(task => !Array.isArray(task?.allowedTools)
+        || task.allowedTools.length < 1 || task.allowedTools.length > 32
+        || task.allowedTools.some(name => typeof name !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/i.test(name)))) {
+        res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: '각 작업에는 유효한 비어 있지 않은 허용 도구 목록이 필요합니다.' }));
+        return;
+      }
+      const tasks = requestedTasks
+        .map(task => ({ ...task, requireToolExecution: true }));
+      const enqueued = this.engine.dispatcher.enqueueTasks(tasks);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, enqueued, snapshot: this.engine.dispatcher.getSnapshot() }));
+      return;
+    }
+
+    if (pathname === '/api/dispatcher/approval' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const pending = this.pendingDispatcherToolApprovals.get(body.requestId);
+      const active = pending && this.engine.dispatcher.activeWorkers.get(pending.taskId);
+      if (!pending || pending.taskId !== body.taskId || pending.sessionId !== body.sessionId
+        || !active || active.task.pendingApproval?.requestId !== body.requestId
+        || !['approve', 'reject'].includes(body.decision)) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '승인 요청이 만료되었거나 다른 작업/세션의 요청입니다.' }));
+        return;
+      }
+      clearTimeout(pending.timer);
+      this.pendingDispatcherToolApprovals.delete(body.requestId);
+      active.task.pendingApproval = null;
+      pending.resolve(body.decision === 'approve');
+      this.engine.dispatcher.emit('queue_updated', { queueLength: this.engine.dispatcher.queue.length });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (pathname === '/api/ownership' && req.method === 'GET') {
+      const locks = this.engine.ownership.getActiveLocks();
+      const gitStatus = this.engine.ownership.getGitStatus();
+      const workspaceLease = this.engine.workspaceExecutionLease.getStatus(this.engine.workspaceDir);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ locks, uncommitted: gitStatus.uncommitted, gitStatus: {
+        available: gitStatus.available,
+        error: gitStatus.error
+      }, workspaceLease }));
+      return;
+    }
+
+    if (pathname === '/api/accounts/login' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const account = await this.engine.auth.loginProvider(body.provider, {
+        email: body.email,
+        token: body.token
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, account }));
+      return;
+    }
+
+    // SSE Turn Execution Endpoint
+    if (pathname === '/api/turn' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const prompt = body.prompt || '';
+      const requestedSessionId = body.sessionId;
+      const isNewChatSession = typeof requestedSessionId === 'string' && /^session_\d{10,16}$/.test(requestedSessionId);
+      const isInternalSession = typeof requestedSessionId === 'string' && /^ses_[a-f0-9]{16}$/.test(requestedSessionId);
+      if (requestedSessionId !== undefined && !isNewChatSession && !isInternalSession) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '대화 세션 식별자가 올바르지 않습니다.' }));
+        return;
+      }
+      const reasoningEffort = parseReasoningEffort(body.reasoningEffort);
+      if (!reasoningEffort) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'reasoningEffort는 low, medium, high, xhigh 또는 max여야 합니다.' }));
+        return;
+      }
+      if (body.modelSelection !== undefined && (typeof body.modelSelection !== 'string' || body.modelSelection.length > 128)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '모델 선택 값이 올바르지 않습니다.' }));
+        return;
+      }
+      const modelSelection = typeof body.modelSelection === 'string' ? body.modelSelection : 'auto';
+      const normalizedModelSelection = modelSelection.trim().toLowerCase();
+      const configuredModels = this.engine.priorityChain.chain.tiers
+        .filter(tier => tier.enabled !== false && typeof tier.model === 'string' && tier.model.trim() && tier.model !== 'auto')
+        .map(tier => tier.model.trim().toLowerCase());
+      if (normalizedModelSelection !== 'auto' && !configuredModels.includes(normalizedModelSelection)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '선택한 모델이 현재 우선순위 계정에 설정되어 있지 않습니다.' }));
+        return;
+      }
+      if (normalizedModelSelection !== 'auto' && !this.engine.priorityChain.chain.enabled) {
+        const manualTier = this.engine.priorityChain.chain.tiers.find(tier => tier.id === this.engine.priorityChain.chain.manualTierId);
+        if (!manualTier || String(manualTier.model || '').trim().toLowerCase() !== normalizedModelSelection) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '현재 수동 계정에서 선택한 모델을 사용할 수 없습니다.' }));
+          return;
+        }
+      }
+        const overrideTierId = !this.engine.priorityChain.chain.enabled && body.overrideTierId || null;
+      const managerMode = body.managerMode === true;
+      let managerSystemMessage = null;
+      if (managerMode) {
+        try {
+          const manager = await this._loadAdminManager();
+          managerSystemMessage = manager.buildAdminManagerSystemMessage(this._adminManagerSnapshot(manager.ADMIN_MANAGER_MODULE_VERSION));
+        } catch (_) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '관리자 capability 목록을 검증할 수 없습니다.' }));
+          return;
+        }
+      }
+
+      if (this.activeTurns > 0) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Only Chat에서 다른 작업을 실행 중입니다. 현재 작업이 끝난 뒤 다시 요청해 주세요.' }));
+        return;
+      }
+
+      let announcedSessionId = null;
+      try {
+        const defaultWorkspaceDir = this.engine.defaultWorkspaceDir || this.engine.workspaceDir;
+        if (isNewChatSession) {
+          let sessionId = this.newChatSessionAliases.get(requestedSessionId);
+          if (sessionId && !this.engine.sessions.resumeSession(sessionId)) {
+            this.newChatSessionAliases.delete(requestedSessionId);
+            sessionId = null;
+          }
+          if (!sessionId) {
+            const created = this.engine.initSession({ workspaceDir: defaultWorkspaceDir });
+            sessionId = created.sessionId;
+            const resumed = this.engine.sessions.resumeSession(sessionId);
+            if (!resumed) throw new Error('New chat session disappeared before its turn started.');
+            this.engine.loadInternalSession(resumed);
+          }
+          this.newChatSessionAliases.set(requestedSessionId, sessionId);
+          while (this.newChatSessionAliases.size > 128) {
+            this.newChatSessionAliases.delete(this.newChatSessionAliases.keys().next().value);
+          }
+          if (this.engine.currentSession?.sessionId !== sessionId) {
+            const resumed = this.engine.sessions.resumeSession(sessionId);
+            if (!resumed) throw new Error('New chat session disappeared before its turn started.');
+            this.engine.loadInternalSession(resumed);
+          }
+          announcedSessionId = sessionId;
+        } else if (isInternalSession && this.engine.currentSession?.sessionId !== requestedSessionId) {
+          const resumed = this.engine.sessions.resumeSession(requestedSessionId);
+          if (!resumed) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '요청한 대화 세션을 찾을 수 없습니다.' }));
+            return;
+          }
+          this.engine.loadInternalSession(resumed);
+        } else if (!this.engine.currentSession) {
+          this.engine.initSession();
+        }
+      } catch (_) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Only Chat에서 대화 세션을 준비하지 못했습니다.' }));
+        return;
+      }
+
+      this.activeTurns += 1;
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+
+      const sendSse = data => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+      if (announcedSessionId) sendSse({ type: 'session_started', clientSessionId: requestedSessionId, sessionId: announcedSessionId });
+
+      const requestToolApproval = request => new Promise(resolve => {
+        const currentSessionId = this.engine.currentSession?.sessionId;
+        if (!currentSessionId || currentSessionId !== request.sessionId || res.destroyed) return resolve(false);
+        const timer = setTimeout(() => {
+          this.pendingToolApprovals.delete(request.requestId);
+          resolve(false);
+        }, 120000);
+        this.pendingToolApprovals.set(request.requestId, { sessionId: currentSessionId, resolve, timer });
+        sendSse({ type: 'tool_approval_required', requestId: request.requestId, sessionId: currentSessionId, name: request.name, args: request.args });
+        res.once('close', () => {
+          const pending = this.pendingToolApprovals.get(request.requestId);
+          if (!pending) return;
+          clearTimeout(pending.timer);
+          this.pendingToolApprovals.delete(request.requestId);
+          pending.resolve(false);
+        });
+      });
+
+      const turnSessionId = this.engine.currentSession?.sessionId;
+      try {
+        if (overrideTierId) {
+          this.engine.priorityChain.resolveActiveTier(overrideTierId);
+        }
+
+        await this.engine.executeTurn(prompt, {
+          reasoningEffort,
+          modelSelection: normalizedModelSelection,
+          managerMode,
+          managerSystemMessage,
+          requestToolApproval,
+          onTierResolved: tier => sendSse({ type: 'tier_resolved', tier }),
+          onReasoningDelta: delta => sendSse({ type: 'reasoning_delta', delta }),
+          onMessageDelta: delta => sendSse({ type: 'message_delta', delta }),
+          onToolStart: call => sendSse({ type: 'tool_start', call }),
+          onToolOutput: out => sendSse({ type: 'tool_output', text: out.text }),
+          onToolEnd: result => sendSse({ type: 'tool_end', result }),
+          onManagerDelegation: delegation => sendSse({ type: 'manager_delegated', delegation }),
+          onTurnComplete: summary => sendSse({ type: 'turn_complete', summary })
+        });
+
+        res.write('data: [DONE]\n\n');
+        res.end();
+      } catch (err) {
+        const allowedFailureCategories = new Set([
+          'quota_rate_limit', 'authentication', 'model_unavailable',
+          'sandbox_permission_blocked', 'approval_required', 'approval_denied', 'network_unavailable', 'provider_failure'
+        ]);
+        const event = { type: 'error', message: 'The request could not be completed.' };
+        if (allowedFailureCategories.has(err.category)) {
+          event.category = err.category;
+          if (typeof err.model === 'string' && err.model) event.model = err.model.slice(0, 80);
+          if (Number.isSafeInteger(err.rank) && err.rank > 0) event.rank = err.rank;
+        }
+        if (turnSessionId && this.engine.currentSession?.sessionId === turnSessionId) {
+          try {
+            this.engine.sessions.appendItem(turnSessionId, {
+              type: 'turn_error',
+              category: event.category,
+              ...(event.model ? { model: event.model } : {}),
+              ...(event.rank ? { rank: event.rank } : {})
+            });
+          } catch (persistError) {
+            console.warn('[DesktopServer] Failed to persist sanitized turn error:', persistError.message);
+          }
+        }
+        sendSse(event);
+        res.end();
+      } finally {
+        this.activeTurns = Math.max(0, this.activeTurns - 1);
+        void this.engine.dispatcher.tick();
+      }
+      return;
+    }
+
+    if (pathname === '/api/tool-approval' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const pending = this.pendingToolApprovals.get(body.requestId);
+      if (!pending || pending.sessionId !== body.sessionId || this.engine.currentSession?.sessionId !== pending.sessionId) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '승인 요청이 만료되었거나 다른 세션의 요청입니다.' }));
+        return;
+      }
+      clearTimeout(pending.timer);
+      this.pendingToolApprovals.delete(body.requestId);
+      pending.resolve(body.decision === 'approve');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    // 404 Not Found
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not Found');
+  }
+
+  _serveFile(res, filePath, contentType) {
+    if (fs.existsSync(filePath)) {
+      res.writeHead(200, { 'Content-Type': contentType });
+      fs.createReadStream(filePath).pipe(res);
+    } else {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('File not found');
+    }
+  }
+
+  _requestDispatcherToolApproval(task, request) {
+    const active = this.engine.dispatcher.activeWorkers.get(task.id);
+    if (!active || active.task !== task || task.status !== 'running' || task.sessionId !== request.sessionId) {
+      return Promise.reject(new Error('Approval request expired or belongs to another task or session.'));
+    }
+    return new Promise((resolve, reject) => {
+      const pending = { taskId: task.id, sessionId: request.sessionId, resolve, reject, timer: null };
+      pending.timer = setTimeout(() => {
+        this.pendingDispatcherToolApprovals.delete(request.requestId);
+        task.pendingApproval = null;
+        reject(new Error('Approval request expired.'));
+        this.engine.dispatcher.emit('queue_updated', { queueLength: this.engine.dispatcher.queue.length });
+      }, 120000);
+      task.pendingApproval = {
+        requestId: request.requestId,
+        sessionId: request.sessionId,
+        name: request.name,
+        args: request.args || {}
+      };
+      this.pendingDispatcherToolApprovals.set(request.requestId, pending);
+      this.engine.dispatcher.emit('queue_updated', { queueLength: this.engine.dispatcher.queue.length });
+    });
+  }
+
+  async _loadAdminManager() {
+    const modulePath = path.join(this.projectRoot, 'src/features/admin-manager/v1.mjs');
+    return import(`${pathToFileURL(modulePath).href}?reload=${Date.now()}`);
+  }
+
+  _adminManagerSnapshot(adminManagerVersion, dispatcherAllowedProviderIds = []) {
+    const packageVersion = JSON.parse(fs.readFileSync(path.join(this.projectRoot, 'package.json'), 'utf8')).version;
+    const processStartedAt = Date.now() - process.uptime() * 1000;
+    const dispatcherReady = Array.isArray(dispatcherAllowedProviderIds) && dispatcherAllowedProviderIds.length > 0;
+    const dispatcherBlockedReason = this.isolated ? 'isolated_runtime' : dispatcherReady ? null : 'no_verified_free_provider';
+    const moduleFiles = {
+      'admin-manager': ['src/features/admin-manager/v1.mjs', true, true, adminManagerVersion],
+      'agent-engine': ['src/core/AgentEngine.js', Boolean(this.engine.executeTurn), false, packageVersion],
+      'tool-registry': ['src/tools/ToolRegistry.js', Boolean(this.engine.tools.execCommand), false, packageVersion],
+      'session-store': ['src/core/SessionStore.js', Boolean(this.engine.sessions.appendItem), false, packageVersion],
+      'native-session-bridge': ['src/core/NativeSessionBridge.js', Boolean(this.nativeSessions.listUnifiedSessions), false, packageVersion],
+      'metamorphic-hub': ['src/morph/Hub.js', Boolean(this.hub.mutateOrgan), false, packageVersion],
+      'installed-app-catalog': ['src/morph/ReaAppBridge.js', Boolean(this.localApps.listCandidateApps), false, packageVersion],
+      'parallel-dispatcher': ['src/core/ParallelDispatcher.js', Boolean(this.engine.dispatcher.enqueueTasks), false, packageVersion],
+      'evolution-relay': ['src/sync/EvolutionRelay.js', false, false, packageVersion],
+      'external-qa': ['src/features/qa/v1.mjs', false, false, 'unavailable']
+    };
+    const modules = Object.entries(moduleFiles).map(([id, [relativePath, loaded, dynamic, version]]) => {
+      const file = path.join(this.projectRoot, relativePath);
+      if (!fs.existsSync(file)) return { id, version, state: 'unavailable', sourceHash: null };
+      const sourceHash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+      if (!loaded) return { id, version, state: 'unavailable', sourceHash };
+      const changedAfterProcessStart = !dynamic && fs.statSync(file).mtimeMs > processStartedAt;
+      return { id, version, state: changedAfterProcessStart ? 'stale' : 'loaded', sourceHash: changedAfterProcessStart ? null : sourceHash };
+    });
+    const moduleStates = new Map(modules.map(module => [module.id, module.state]));
+    const available = (moduleId, check) => moduleStates.get(moduleId) === 'loaded' && Boolean(check);
+    const capabilities = [
+      { id: 'chat.respond', name: '채팅 응답', moduleId: 'agent-engine', state: available('agent-engine', this.engine.executeTurn) ? 'executable' : 'unavailable' },
+      { id: 'workspace.command', name: '워크스페이스 명령 실행', moduleId: 'tool-registry', state: available('tool-registry', this.engine.tools.execCommand) ? 'executable' : 'unavailable' },
+      { id: 'workspace.file-read', name: '워크스페이스 파일 읽기', moduleId: 'tool-registry', state: available('tool-registry', this.engine.tools.readFile) ? 'executable' : 'unavailable' },
+      { id: 'workspace.file-write', name: '워크스페이스 파일 수정', moduleId: 'tool-registry', state: available('tool-registry', this.engine.tools.writeFile && this.engine.tools.editFile) ? 'executable' : 'unavailable' },
+      { id: 'sessions.read', name: '로컬 Codex 세션 읽기', moduleId: 'native-session-bridge', state: available('native-session-bridge', this.nativeSessions.listUnifiedSessions) ? 'executable' : 'unavailable' },
+      { id: 'sessions.resume', name: '로컬 세션 이어가기', moduleId: 'native-session-bridge', state: available('native-session-bridge', this.nativeSessions.resumeSession) ? 'executable' : 'unavailable' },
+      { id: 'apps.inventory', name: '설치 앱 후보 조회', moduleId: 'installed-app-catalog', state: available('installed-app-catalog', this.localApps.listCandidateApps) ? 'executable' : 'unavailable' },
+      { id: 'work.priority', name: '작업 우선순위 조정', moduleId: 'parallel-dispatcher', state: available('parallel-dispatcher', this.engine.dispatcher.enqueueTasks) ? 'settings-only' : 'unavailable' },
+      { id: 'work.delegate', name: '격리 실행자에게 작업 위임', moduleId: 'parallel-dispatcher', state: available('parallel-dispatcher', this.engine.dispatcher.enqueueTasks) && !dispatcherBlockedReason ? 'executable' : 'unavailable' },
+      { id: 'hotreload.settings', name: '테마·레이아웃 설정 변경', moduleId: 'metamorphic-hub', state: available('metamorphic-hub', this.hub.mutateOrgan) ? 'settings-only' : 'unavailable' },
+      { id: 'drive.sync', name: '기기 간 변경 동기화', moduleId: 'evolution-relay', state: this.syncEnabled ? 'executable' : 'unavailable' },
+      { id: 'external.qa', name: '외부 앱 QA 실행', moduleId: 'external-qa', state: 'unavailable' },
+      { id: 'self-improvement', name: 'Only Chat 코드 자체 개선', moduleId: 'admin-manager', state: 'proposal-only' }
+    ];
+    return {
+      modules,
+      capabilities,
+      dispatcher: { ready: dispatcherReady && !this.isolated, blockedReason: dispatcherBlockedReason }
+    };
+  }
+
+  _readBody(req) {
+    return new Promise(resolve => {
+      let data = '';
+      req.on('data', chunk => data += chunk);
+      req.on('end', () => {
+        try {
+          resolve(JSON.parse(data || '{}'));
+        } catch (_) {
+          resolve({});
+        }
+      });
+    });
+  }
+
+  _readLimitedBody(req, maxBytes) {
+    return new Promise(resolve => {
+      const chunks = [];
+      let size = 0;
+      let exceeded = false;
+      req.on('data', chunk => {
+        size += chunk.length;
+        if (size > maxBytes) { exceeded = true; chunks.length = 0; return; }
+        if (!exceeded) chunks.push(chunk);
+      });
+      req.on('end', () => {
+        if (exceeded) return resolve(null);
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
+        catch (_) { resolve(null); }
+      });
+      req.on('error', () => resolve(null));
+    });
+  }
+
+  _scheduleInput(body) {
+    if (!Array.isArray(body.attachments)) return body;
+    if (body.attachments.length > 5) throw new RangeError('첨부 파일은 최대 5개까지 등록할 수 있습니다.');
+    const attachments = body.attachments.map(item => {
+      if (item && typeof item.id === 'string' && item.contentBase64 === undefined) return { id: item.id };
+      if (typeof item?.name !== 'string' || typeof item.contentBase64 !== 'string' || item.contentBase64.length > 88_000) {
+        throw new TypeError('첨부 파일 내용이 올바르지 않습니다.');
+      }
+      const bytes = Buffer.from(item.contentBase64, 'base64');
+      if (bytes.toString('base64') !== item.contentBase64) throw new TypeError('첨부 파일 인코딩이 올바르지 않습니다.');
+      return { name: item.name, content: bytes };
+    });
+    return { ...body, attachments };
+  }
+
+  _respondJson(res, value, status = 200) {
+    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(value));
+  }
+
+  isThreefControlEnabled() {
+    return !this.isolated && this.threefControlSettings.get().enabled === true;
+  }
+
+  isMacScreenControlEnabled() {
+    return this.isNativeMacScreenControlAvailable() && this.macScreenControlSettings.get().enabled === true;
+  }
+
+  isNativeMacScreenControlAvailable() {
+    return !this.isolated && process.platform === 'darwin' && this.macScreenNativeBridgeAvailable === true;
+  }
+
+  _dispatchMacScreenCommand(action, input) {
+    if (!this.isMacScreenControlEnabled()) return Promise.reject(new Error('Mac 화면 제어가 꺼져 있습니다.'));
+    const allowed = new Set(['status', 'permissions', 'capture', 'click', 'type', 'key', 'scroll']);
+    if (!allowed.has(action)) return Promise.reject(new Error('지원하지 않는 Mac 화면 도구입니다.'));
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return Promise.reject(new Error('입력 인수가 올바르지 않습니다.'));
+    if (action === 'type' && (typeof input.text !== 'string' || input.text.length > 4000)) return Promise.reject(new Error('텍스트 입력은 최대 4,000자입니다.'));
+    if (action === 'click' && (!Number.isFinite(input.x) || !Number.isFinite(input.y))) return Promise.reject(new Error('클릭 좌표가 올바르지 않습니다.'));
+    if (action === 'scroll' && (!Number.isInteger(input.vertical) || !Number.isInteger(input.horizontal)
+      || Math.abs(input.vertical) > 10 || Math.abs(input.horizontal) > 10)) return Promise.reject(new Error('스크롤은 -10~10 범위여야 합니다.'));
+    if (this.macScreenCommandWaiters.length >= 8) return Promise.reject(new Error('Mac 화면 명령 대기열이 가득 찼습니다.'));
+    const id = `mac-screen-${++this.macScreenCommandSequence}-${crypto.randomBytes(4).toString('hex')}`;
+    return new Promise((resolve, reject) => {
+      const waiter = { id, resolve, timeout: null };
+      waiter.timeout = setTimeout(() => {
+        const index = this.macScreenCommandWaiters.indexOf(waiter);
+        if (index >= 0) this.macScreenCommandWaiters.splice(index, 1);
+        const queued = this.macScreenCommands.findIndex(command => command.id === id);
+        if (queued >= 0) this.macScreenCommands.splice(queued, 1);
+        reject(new Error('Only Chat의 Mac 화면 제어 브리지가 응답하지 않습니다. Only Chat 네이티브 앱을 열어 주세요.'));
+      }, 30000);
+      this.macScreenCommandWaiters.push(waiter);
+      this.macScreenCommands.push({ id, action, input });
+    });
+  }
+
+  _dispatchEmbeddedBrowserCommand(command) {
+    if (!this.isThreefControlEnabled()) return Promise.reject(new Error('3F Browser 제어가 꺼져 있습니다.'));
+    if (this.browserCommandWaiters.length >= 16) return Promise.reject(new Error('3F Browser 명령 대기열이 가득 찼습니다.'));
+    const id = `threef-${++this.browserCommandSequence}`;
+    return new Promise((resolve, reject) => {
+      const waiter = { id, resolve, reject, timeout: null };
+      waiter.timeout = setTimeout(() => {
+        const index = this.browserCommandWaiters.findIndex(waiter => waiter.id === id);
+        if (index >= 0) this.browserCommandWaiters.splice(index, 1);
+        const queuedIndex = this.browserCommands.findIndex(command => command.id === id);
+        if (queuedIndex >= 0) this.browserCommands.splice(queuedIndex, 1);
+        reject(new Error('Only Chat 안의 3F Browser가 명령에 응답하지 않습니다. 브라우저 패널을 열어 주세요.'));
+      }, 30000);
+      this.browserCommandWaiters.push(waiter);
+      const entry = { id, ...command };
+      const panelWaiter = this.browserPanelWaiter;
+      if (panelWaiter) {
+        this.browserPanelWaiter = null;
+        clearTimeout(panelWaiter.timeout);
+        panelWaiter.res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        panelWaiter.res.end(JSON.stringify(entry));
+      } else {
+        this.browserCommands.push(entry);
+      }
+    });
+  }
+
+  _respondThreefDisabled(res) {
+    res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ ok: false, enabled: false, error: '3F Browser 제어가 꺼져 있습니다.', stderr: '3F Browser 제어가 꺼져 있습니다.' }));
+  }
+}
+
+function buildThreefDeepLink(value) {
+  if (typeof value !== 'string' || value.length > 4096) return null;
+  let destination;
+  try { destination = new URL(value); } catch (_) { return null; }
+  if (!['http:', 'https:'].includes(destination.protocol) || !destination.hostname || destination.username || destination.password) return null;
+  const deepLink = new URL('threef://open');
+  deepLink.searchParams.set('url', destination.href);
+  return deepLink.toString();
+}
+
+function createMacThreefOpener(execFileImpl = execFile) {
+  return deepLink => new Promise((resolve, reject) => {
+    execFileImpl('/usr/bin/open', ['-b', 'com.rogan.threef.browser', deepLink], error => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+module.exports = { DesktopServer, buildThreefDeepLink, createMacThreefOpener, QUOTA_REFRESH_INTERVAL_MS };
