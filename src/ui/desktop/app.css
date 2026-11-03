@@ -1246,6 +1246,38 @@ body {
   flex-direction: column;
 }
 
+/* Keep embedded browser work beside the conversation instead of covering it. */
+#drawerBrowser {
+  right: 12px;
+  top: 12px;
+  bottom: 12px;
+  width: clamp(420px, 42vw, 760px) !important;
+  max-width: calc(100% - 24px);
+  height: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.app-layout:has(#drawerBrowser.open) .chat-stage {
+  margin-right: clamp(420px, 42vw, 760px);
+  transition: margin-right 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Settings remains a focused workspace panel with the conversation visible around it. */
+.settings-stage {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  left: auto;
+  width: min(1080px, calc(100% - 24px));
+  height: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  box-shadow: -12px 8px 36px rgba(0, 0, 0, 0.18);
+}
+
 .drawer.open {
   right: 0;
 }
