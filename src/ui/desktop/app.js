@@ -29,9 +29,13 @@ let macScreenControlAllowed = false;
 let isGenerating = false;
 let currentAbortController = null;
 let isRecording = false;
-let speechRecognition = null;
+let speechRecorder = null;
+let speechMediaStream = null;
+let speechChunks = [];
+let speechTranscribing = false;
 let speechDraftPrefix = null;
 let speechDraftSuffix = '';
+let fullAccessEnabled = false;
 let pendingUiMorphReload = false;
 let uiMorphReloadTimer = null;
 const UI_ZOOM_KEY = 'onlyChatUiZoom';
@@ -123,6 +127,7 @@ const reasoningEffortLevels = [
 const REASONING_EFFORT_KEY = 'onlyChatReasoningEffort';
 let selectedReasoningEffort = localStorage.getItem(REASONING_EFFORT_KEY) || 'low';
 const btnMicrophone = document.getElementById('btnMicrophone');
+const btnAccessToggle = document.getElementById('btnAccessToggle');
 
 function normalizeUiReasoningEffort(value) {
   return reasoningEffortLevels.find(level => level.value === value)?.value || 'low';
@@ -377,6 +382,23 @@ function setupEventListeners() {
     modelSelectorPopup.classList.remove('open');
   });
 
+  document.getElementById('userAvatarBtn')?.addEventListener('click', () => {
+    usageQuotaPopup.classList.remove('open');
+    setExclusiveDrawerOpen(drawerPriority, true);
+    void refreshPriorityStatus();
+  });
+
+  btnAccessToggle?.addEventListener('click', () => {
+    if (!fullAccessEnabled && !window.confirm('Full access는 Codex가 작업공간 밖의 파일과 시스템 경로에도 접근하고 셸 명령을 실행할 수 있게 합니다. 다음 요청 한 번에만 적용하며, 실행 전에 별도 승인을 받습니다. 켤까요?')) return;
+    fullAccessEnabled = !fullAccessEnabled;
+    btnAccessToggle.setAttribute('aria-pressed', String(fullAccessEnabled));
+    btnAccessToggle.classList.toggle('enabled', fullAccessEnabled);
+    btnAccessToggle.querySelector('.access-text').textContent = fullAccessEnabled ? 'Full access · 다음 Codex 요청' : 'Workspace sandbox';
+    btnAccessToggle.title = fullAccessEnabled
+      ? '다음 Codex 요청 한 번만 전체 경로 접근을 요청합니다. Codex 실행 전에 별도 승인이 필요합니다.'
+      : '현재 요청은 Only Chat 작업공간 안에서만 실행됩니다.';
+  });
+
   btnManageUsage.addEventListener('click', () => {
     usageQuotaPopup.classList.remove('open');
     setExclusiveDrawerOpen(drawerPriority, true);
@@ -472,6 +494,30 @@ function setupEventListeners() {
 
   // Reference 3: Microphone Button
   btnMicrophone.addEventListener('click', toggleSpeechInput);
+  document.getElementById('btnVoiceMemoClose')?.addEventListener('click', () => {
+    if (isRecording || speechTranscribing) return;
+    document.getElementById('voiceMemoDialog')?.close();
+  });
+  document.getElementById('btnVoiceMemoUse')?.addEventListener('click', () => {
+    const transcript = document.getElementById('voiceMemoTranscript')?.value || '';
+    if (!transcript.trim()) return;
+    applySpeechTranscript(`음성 메모를 요약하고 핵심 내용, 할 일, 쟁점을 분석해 주세요.\n\n${transcript.trim()}`);
+    document.getElementById('voiceMemoDialog')?.close();
+  });
+  document.getElementById('voiceMemoDialog')?.addEventListener('cancel', event => {
+    if (isRecording || speechTranscribing) {
+      event.preventDefault();
+      if (isRecording) stopSpeechMemo();
+    }
+  });
+  document.getElementById('voiceMemoDialog')?.addEventListener('close', () => {
+    const audio = document.getElementById('voiceMemoAudio');
+    if (audio?.src.startsWith('blob:')) URL.revokeObjectURL(audio.src);
+    if (audio) { audio.removeAttribute('src'); audio.hidden = true; }
+  });
+  document.getElementById('voiceMemoTranscript')?.addEventListener('input', event => {
+    document.getElementById('btnVoiceMemoUse').disabled = !event.currentTarget.value.trim();
+  });
 
   // Keyboard Shortcuts: Ctrl+, and Cmd+, to open Full-Stage Settings View (Ref User UI)
   window.addEventListener('keydown', e => {
@@ -829,6 +875,16 @@ function priorityRouteHealth(tier) {
 
 function renderActiveModelSelection() {
   syncAvailableModelOptions();
+  const accountButton = document.getElementById('userAvatarBtn');
+  const codexAccounts = (priorityStatus?.tiers || []).filter(tier => String(tier.provider || '').toLowerCase() === 'codex');
+  const connectedCodex = codexAccounts.filter(tier => tier.providerReady?.connected === true).length;
+  if (accountButton) {
+    const accountSummary = codexAccounts.length
+      ? `Codex 계정 ${connectedCodex}/${codexAccounts.length}개 연결 · 클릭해 모든 계정 확인`
+      : 'Codex 계정 연결 상태 확인 중 · 클릭해 우선순위 계정 보기';
+    accountButton.title = accountSummary;
+    accountButton.setAttribute('aria-label', accountSummary);
+  }
   const routeTier = resolveSelectedModelTier();
   const routingMode = priorityStatus?.enabled === false ? '수동 계정' : '자동';
   const selectedModel = selectedModelId === 'auto'
@@ -1174,68 +1230,95 @@ async function switchTier(tierId) {
 // ============================================================================
 
 function toggleSpeechInput() {
-  const nativeSpeech = window.webkit?.messageHandlers?.speech;
   if (isRecording) {
-    stopRecording();
+    stopSpeechMemo();
     return;
   }
-
-  if (nativeSpeech) {
-    btnMicrophone.title = '음성 인식 권한을 확인하는 중...';
-    nativeSpeech.postMessage('start');
-    return;
-  }
-
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-  if (SpeechRecognition) {
-    try {
-      const recognition = new SpeechRecognition();
-      speechRecognition = recognition;
-      recognition.lang = 'ko-KR';
-      recognition.interimResults = true;
-
-      recognition.onstart = () => {
-        setSpeechRecording(true);
-      };
-
-      recognition.onresult = event => {
-        const transcript = Array.from(event.results)
-          .map(result => result[0].transcript)
-          .join('');
-        applySpeechTranscript(transcript);
-      };
-
-      recognition.onerror = event => {
-        setSpeechRecording(false);
-        showMorphToast(`음성 인식 실패: ${event.error || '다시 시도해 주세요.'}`);
-      };
-      recognition.onend = () => {
-        speechRecognition = null;
-        setSpeechRecording(false);
-      };
-      recognition.start();
-      return;
-    } catch (error) {
-      speechRecognition = null;
-      showMorphToast(`음성 인식을 시작하지 못했습니다: ${error.message}`);
-      return;
-    }
-  }
-
-  showMorphToast('이 앱 런타임은 음성 인식을 지원하지 않습니다.');
+  void startSpeechMemo();
 }
 
-function stopRecording() {
-  const recognition = speechRecognition;
-  speechRecognition = null;
-  if (recognition) {
-    try { recognition.stop(); return; } catch (_) { setSpeechRecording(false); }
+async function startSpeechMemo() {
+  const status = document.getElementById('voiceMemoStatus');
+  const dialog = document.getElementById('voiceMemoDialog');
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    showMorphToast('이 앱 런타임에서 오디오 녹음을 사용할 수 없습니다.');
+    return;
   }
-  if (window.webkit?.messageHandlers?.speech) {
-    try { window.webkit.messageHandlers.speech.postMessage('stop'); return; } catch (_) {}
+  try {
+    speechMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']
+      .find(type => MediaRecorder.isTypeSupported(type));
+    speechRecorder = new MediaRecorder(speechMediaStream, mimeType ? { mimeType } : undefined);
+    speechChunks = [];
+    const transcript = document.getElementById('voiceMemoTranscript');
+    transcript.value = '';
+    document.getElementById('btnVoiceMemoUse').disabled = true;
+    document.getElementById('voiceMemoAudio').hidden = true;
+    if (!dialog.open) dialog.showModal();
+    speechRecorder.addEventListener('dataavailable', event => { if (event.data?.size) speechChunks.push(event.data); });
+    speechRecorder.addEventListener('stop', () => {
+      const blob = new Blob(speechChunks, { type: speechRecorder?.mimeType || mimeType || 'audio/webm' });
+      speechRecorder = null;
+      speechChunks = [];
+      speechMediaStream?.getTracks().forEach(track => track.stop());
+      speechMediaStream = null;
+      setSpeechRecording(false);
+      if (blob.size) void transcribeSpeechMemo(blob);
+      else status.textContent = '녹음에 오디오가 없습니다.';
+    }, { once: true });
+    speechRecorder.start();
+    setSpeechRecording(true);
+    status.textContent = '녹음 중 · 다시 마이크를 누르면 중지 후 로컬 AI 전사를 시작합니다.';
+  } catch (error) {
+    speechMediaStream?.getTracks().forEach(track => track.stop());
+    speechMediaStream = null;
+    speechRecorder = null;
+    setSpeechRecording(false);
+    status.textContent = `녹음을 시작하지 못했습니다: ${error.message}`;
+    showMorphToast(`녹음 시작 실패: ${error.message}`);
   }
-  setSpeechRecording(false);
+}
+
+function stopSpeechMemo() {
+  if (speechRecorder?.state === 'recording') {
+    speechTranscribing = true;
+    document.getElementById('voiceMemoStatus').textContent = '녹음을 마무리하고 있습니다…';
+    speechRecorder.stop();
+  }
+}
+
+async function transcribeSpeechMemo(blob) {
+  const status = document.getElementById('voiceMemoStatus');
+  const audio = document.getElementById('voiceMemoAudio');
+  const transcript = document.getElementById('voiceMemoTranscript');
+  const useButton = document.getElementById('btnVoiceMemoUse');
+  speechTranscribing = true;
+  status.textContent = `로컬 Whisper AI가 전사 중입니다 · ${(blob.size / (1024 * 1024)).toFixed(1)} MB`;
+  try {
+    if (blob.size > 20 * 1024 * 1024) throw new Error('녹음은 20 MB 이하로 나누어 주세요.');
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('녹음 파일을 읽지 못했습니다.'));
+      reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+      reader.readAsDataURL(blob);
+    });
+    const response = await fetch('/api/audio/transcribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audioBase64: dataUrl, mimeType: blob.type || 'audio/webm' })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `전사 실패 (${response.status})`);
+    transcript.value = String(result.transcript || '');
+    useButton.disabled = !transcript.value.trim();
+    audio.src = URL.createObjectURL(blob);
+    audio.hidden = false;
+    status.textContent = `${result.language || '언어 자동 감지'} · 전사 완료. 내용을 고친 뒤 분석 초안에 추가하세요. 녹음 파일은 임시 처리 후 삭제됩니다.`;
+  } catch (error) {
+    status.textContent = `전사하지 못했습니다: ${error.message}`;
+  } finally {
+    speechTranscribing = false;
+    composerInput.readOnly = false;
+  }
 }
 
 function setSpeechRecording(recording) {
@@ -1247,13 +1330,12 @@ function setSpeechRecording(recording) {
     speechDraftSuffix = value.slice(offset);
     composerInput.readOnly = true;
   } else if (!recording && isRecording) {
-    composerInput.readOnly = false;
-    speechDraftPrefix = null;
-    speechDraftSuffix = '';
+    composerInput.readOnly = speechTranscribing;
   }
   isRecording = recording;
   btnMicrophone.classList.toggle('recording', recording);
-  btnMicrophone.title = recording ? '듣고 있습니다... 클릭 시 중단' : '음성 받아쓰기 / 오디오 명령';
+  btnMicrophone.setAttribute('aria-pressed', String(recording));
+  btnMicrophone.title = recording ? '녹음 중 · 클릭 시 중지하고 로컬 AI로 전사' : '로컬 AI 음성 메모 녹음 시작';
   if (!recording) composerInput.placeholder = 'Work with Only Chat...';
 }
 
@@ -1268,14 +1350,13 @@ function applySpeechTranscript(value) {
   const cursor = prefix.length + separator.length + transcript.length;
   composerInput.setSelectionRange?.(cursor, cursor);
   composerInput.dispatchEvent(new Event('input'));
+  speechDraftPrefix = null;
+  speechDraftSuffix = '';
 }
 
 window.onlyChatSpeechState = recording => setSpeechRecording(Boolean(recording));
 window.onlyChatSpeechResult = text => applySpeechTranscript(text);
-window.onlyChatSpeechError = message => {
-  setSpeechRecording(false);
-  showMorphToast(message);
-};
+window.onlyChatSpeechError = message => { setSpeechRecording(false); showMorphToast(message); };
 
 // ============================================================================
 // Turn Execution & Streaming (With Reference 3 Stop / Send Button)
@@ -1339,6 +1420,11 @@ async function refreshAdminManagerStatus() {
 async function handleSend() {
   const prompt = composerInput.value.trim();
   if (!prompt || isGenerating) return;
+  const fullAccessForTurn = fullAccessEnabled;
+  fullAccessEnabled = false;
+  btnAccessToggle?.setAttribute('aria-pressed', 'false');
+  btnAccessToggle?.classList.remove('enabled');
+  if (btnAccessToggle?.querySelector('.access-text')) btnAccessToggle.querySelector('.access-text').textContent = 'Workspace sandbox';
 
   const composerStatus = document.getElementById('composerStatus');
   const submittedFromCodexQueue = isCodexQueueComposerNotice(composerStatus?.textContent);
@@ -1481,7 +1567,8 @@ async function handleSend() {
         modelSelection: selectedModelId,
         overrideTierId: activeTier?.id,
         managerMode: managerModeToggle?.checked === true,
-        sandboxPolicy: 'workspace-write'
+        sandboxPolicy: 'workspace-write',
+        fullAccess: fullAccessForTurn
       }),
       signal: turnAbortController.signal
     });
@@ -1965,28 +2052,46 @@ function handleStreamEvent(event, card) {
       heading.setAttribute('role', 'status');
       heading.setAttribute('aria-live', 'polite');
       heading.tabIndex = -1;
-      heading.textContent = `승인 대기 · ${toolDisplayName(event.name)}`;
+      heading.textContent = `실행 허용 여부 · ${toolDisplayName(event.name)}`;
       const summary = document.createElement('pre');
       summary.textContent = JSON.stringify(event.args || {}, null, 2).slice(0, 4000);
+      const scopeNote = document.createElement('small');
+      scopeNote.textContent = event.scopeRequiresExplicit
+        ? 'Full access는 이 요청에서만 적용되며 매번 별도로 확인합니다.'
+        : '항상 허용은 이 대화가 끝날 때까지 유지됩니다. 터보는 이 대화의 모든 도구 승인 질문을 건너뜁니다.';
       const approve = document.createElement('button');
-      approve.type = 'button'; approve.textContent = '승인';
-      approve.setAttribute('aria-label', `${toolDisplayName(event.name)} 승인`);
+      approve.type = 'button'; approve.textContent = '이번 요청 허용';
+      approve.setAttribute('aria-label', `${toolDisplayName(event.name)} 이번 요청만 허용`);
+      const allowTool = document.createElement('button');
+      allowTool.type = 'button'; allowTool.textContent = '이 도구 항상 허용';
+      allowTool.disabled = event.scopeRequiresExplicit === true;
+      allowTool.title = allowTool.disabled ? 'Full access 요청은 매번 별도로 확인합니다.' : '현재 대화가 끝날 때까지 이 도구를 허용합니다.';
+      const turbo = document.createElement('button');
+      turbo.type = 'button'; turbo.textContent = '터보 · 이 대화에서 항상 허용';
+      turbo.disabled = event.scopeRequiresExplicit === true;
+      turbo.title = '현재 대화가 끝날 때까지 모든 앱 도구 승인 질문을 건너뜁니다.';
       const reject = document.createElement('button');
       reject.type = 'button'; reject.textContent = '거절';
       reject.setAttribute('aria-label', `${toolDisplayName(event.name)} 거절`);
       const decide = async decision => {
-        approve.disabled = reject.disabled = true;
+        if (decision === 'turbo' && !window.confirm('이 대화가 끝날 때까지 모든 앱 도구 승인 질문을 건너뜁니다. 35Closer와 macOS 보안 확인은 별도로 유지됩니다. 계속할까요?')) return;
+        approve.disabled = allowTool.disabled = turbo.disabled = reject.disabled = true;
         try {
           const response = await fetch('/api/tool-approval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId: event.requestId, sessionId: event.sessionId, decision }) });
           if (!response.ok) throw new Error('승인 요청이 만료되었거나 세션이 변경되었습니다.');
-          heading.textContent = decision === 'approve' ? '승인됨 · 실행을 계속합니다' : '거절됨 · 호출을 건너뜁니다';
+          heading.textContent = decision === 'approve' ? '허용됨 · 이번 요청만 실행합니다'
+            : decision === 'allow_tool' ? '항상 허용됨 · 이 대화에서 이 도구만 허용합니다'
+              : decision === 'turbo' ? '터보 허용됨 · 이 대화의 앱 도구 질문을 건너뜁니다'
+                : '거절됨 · 호출을 건너뜁니다';
         } catch (error) { heading.textContent = error.message; }
-        approve.remove(); reject.remove();
+        approve.remove(); allowTool.remove(); turbo.remove(); reject.remove(); scopeNote.remove();
         heading.focus();
       };
       approve.addEventListener('click', () => void decide('approve'));
+      allowTool.addEventListener('click', () => void decide('allow_tool'));
+      turbo.addEventListener('click', () => void decide('turbo'));
       reject.addEventListener('click', () => void decide('reject'));
-      panel.append(heading, summary, approve, reject);
+      panel.append(heading, summary, scopeNote, approve, allowTool, turbo, reject);
       card.content.appendChild(panel);
       setAssistantWorkStatus(card, '도구 실행 전 사용자 승인을 기다리고 있습니다…');
       timeline.scrollTop = timeline.scrollHeight;

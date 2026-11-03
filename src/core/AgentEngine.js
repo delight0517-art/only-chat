@@ -301,7 +301,7 @@ class AgentEngine {
     const requestId = require('node:crypto').randomUUID();
     const approve = callbacks.requestToolApproval;
     if (typeof approve !== 'function') throw new Error(`Approval unavailable; blocked tool call '${call.name}'.`);
-    const accepted = await approve({ requestId, sessionId, name: call.name, args: call.args || {} });
+    const accepted = await approve({ requestId, sessionId, name: call.name, args: call.args || {}, scopeRequiresExplicit: call.scopeRequiresExplicit === true });
     if (this.currentSession?.sessionId !== sessionId || accepted !== true) throw new Error(`Tool call '${call.name}' was not approved for this session.`);
     return true;
   }
@@ -550,7 +550,7 @@ class AgentEngine {
     let turnSuccess = false;
     let attempts = 0;
     let lastProviderFailure = null;
-    const maxAttempts = this.priorityChain.chain.tiers.length;
+    const maxAttempts = callbacks.fullAccess === true ? 1 : this.priorityChain.chain.tiers.length;
 
     while (!turnSuccess && attempts < maxAttempts) {
       const activeTier = this.priorityChain.resolveActiveTier(null, preferredModel,
@@ -577,9 +577,11 @@ class AgentEngine {
         }, {
           reasoningEffort,
           approvalPolicy: this.tools.approvalPolicy,
+          fullAccess: callbacks.fullAccess === true,
           requestWorkspaceWriteApproval: request => this._requestToolApproval({
             name: 'codex_cli_workspace_write_scope',
-            args: { directory: request.directory, reason: request.reason }
+            args: { directory: request.directory, reason: request.reason },
+            scopeRequiresExplicit: callbacks.fullAccess === true
           }, callbacks)
         });
         const hasToolCalls = Array.isArray(response?.toolCalls) && response.toolCalls.length > 0;
@@ -895,6 +897,7 @@ class AgentEngine {
     const reasoningEffort = parseReasoningEffort(options.reasoningEffort);
     if (!reasoningEffort) throw new Error('Unsupported reasoning effort.');
     if (tier?.provider === 'account-router') {
+      if (options.fullAccess === true) throw new Error('Full access는 Codex CLI 직접 실행에서만 지원됩니다.');
       if (this.isolated) throw new Error('AI Account Router is disabled in isolated mode.');
       const accountRouterAdapter = await this._getAccountRouterAdapter();
       return accountRouterAdapter.call(tier, history, streamingHooks, {
@@ -905,6 +908,7 @@ class AgentEngine {
       });
     }
     if (this.isolated) {
+      if (options.fullAccess === true) throw new Error('격리 실행에서는 Full access를 사용할 수 없습니다.');
       if (!this.providerAdapter) throw new Error('Provider calls require an injected synthetic adapter in isolated mode.');
       return this.providerAdapter(tier, history, streamingHooks, { reasoningEffort });
     }
@@ -916,6 +920,7 @@ class AgentEngine {
       workspaceDir: this.workspaceDir,
       reasoningEffort,
       approvalPolicy: options.approvalPolicy,
+      fullAccess: options.fullAccess === true,
       requestWorkspaceWriteApproval: options.requestWorkspaceWriteApproval
     });
   }

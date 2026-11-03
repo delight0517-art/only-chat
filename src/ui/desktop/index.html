@@ -83,7 +83,7 @@
           </div>
         </button>
         <!-- User Avatar Circle -->
-        <div class="user-avatar-circle" id="userAvatarBtn" title="Rogan Kim (RK)">RK</div>
+        <button class="user-avatar-circle" id="userAvatarBtn" type="button" title="계정과 Codex 연결 상태 보기" aria-label="계정과 Codex 연결 상태 보기">RK</button>
       </div>
     </aside>
 
@@ -237,10 +237,10 @@
                 <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
               </button>
               
-              <div class="access-pill" id="btnAccessToggle" title="Codex 실행은 현재 Only Chat 작업공간 안에서만 파일을 수정합니다.">
+              <button class="access-pill" id="btnAccessToggle" type="button" aria-pressed="false" title="현재 요청은 Only Chat 작업공간 안에서만 실행됩니다.">
                 <span class="warning-icon">⚠️</span>
                 <span class="access-text">Workspace sandbox</span>
-              </div>
+              </button>
             </div>
 
             <!-- Right Controls: Model Selector, Mic, Orange Circle Button (Ref 3) -->
@@ -278,7 +278,7 @@
               </div>
 
               <!-- Microphone Button -->
-              <button class="composer-tool-btn" id="btnMicrophone" title="음성 받아쓰기 / 오디오 명령">
+              <button class="composer-tool-btn" id="btnMicrophone" title="로컬 AI 음성 메모 녹음 시작">
                 <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg>
               </button>
 
@@ -1083,7 +1083,7 @@
   <!-- 1. Drawer: Priority Chain & Accounts -->
   <aside class="drawer" id="drawerPriority" aria-hidden="true" inert>
     <div class="drawer-header">
-      <h3 style="font-size: 14px; font-weight: 700;">🔀 무중단 우선순위 체인 & 계정 관리</h3>
+      <h3 style="font-size: 14px; font-weight: 700;">🔀 연결된 계정과 Codex 로그인 상태</h3>
       <button class="btn-icon" id="btnClosePriority">✕</button>
     </div>
     <div class="drawer-content">
@@ -1335,6 +1335,18 @@
       </div>
     </section>
   </div>
+  <dialog class="voice-memo-dialog" id="voiceMemoDialog" aria-labelledby="voiceMemoTitle" aria-describedby="voiceMemoDescription">
+    <h2 id="voiceMemoTitle">음성 메모</h2>
+    <p id="voiceMemoDescription">오디오는 이 Mac의 Whisper AI가 전사합니다. 음성 파일은 이 채팅에 자동 전송되지 않으며, 전사문을 검토해 분석 초안에 추가할 수 있습니다. 첫 사용 시 음성 모델을 내려받을 수 있습니다.</p>
+    <audio id="voiceMemoAudio" controls hidden></audio>
+    <div id="voiceMemoStatus" role="status" aria-live="polite">녹음 준비 중</div>
+    <label for="voiceMemoTranscript">한국어·영어 자동 전사</label>
+    <textarea id="voiceMemoTranscript" rows="8" spellcheck="true" placeholder="전사문이 여기에 표시됩니다."></textarea>
+    <div class="voice-memo-actions">
+      <button id="btnVoiceMemoClose" type="button">닫기</button>
+      <button id="btnVoiceMemoUse" type="button" disabled>분석 초안에 추가</button>
+    </div>
+  </dialog>
 </body>
 </html>
 

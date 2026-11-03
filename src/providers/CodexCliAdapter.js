@@ -129,17 +129,21 @@ class CodexCliAdapter {
 
     const workspaceDir = path.resolve(context.workspaceDir || process.cwd());
     if (!['on-request', 'never', 'read-only'].includes(approvalPolicy)) throw new Error('지원하지 않는 도구 승인 정책입니다.');
+    const fullAccess = context.fullAccess === true;
+    if (fullAccess && approvalPolicy === 'read-only') throw new Error('읽기 전용 승인 정책에서는 Full access를 사용할 수 없습니다.');
     const screenBridge = approvalPolicy === 'read-only' ? null : this.macScreenBridge?.();
-    if (approvalPolicy === 'on-request') {
+    if (fullAccess || approvalPolicy === 'on-request') {
       const approve = context.requestWorkspaceWriteApproval;
       if (typeof approve !== 'function') {
-        const error = new Error('Codex 작업공간 쓰기 승인을 요청할 수 없습니다.');
+        const error = new Error(fullAccess ? 'Codex Full access 확인을 요청할 수 없습니다.' : 'Codex 작업공간 쓰기 승인을 요청할 수 없습니다.');
         error.category = 'approval_required';
         throw error;
       }
       let approved = false;
       try {
-        let reason = 'Codex CLI는 이 요청 중 셸 명령을 실행하고 작업공간 파일을 수정할 수 있습니다.';
+        let reason = fullAccess
+          ? 'Full access: Codex CLI가 작업공간 밖의 파일과 시스템 경로에도 접근하고 셸 명령을 실행할 수 있습니다.'
+          : 'Codex CLI는 이 요청 중 셸 명령을 실행하고 작업공간 파일을 수정할 수 있습니다.';
         if (process.platform === 'darwin') {
           reason += ' Only Chat의 35Closer 도구로 대기 중 전원 요청을 등록하거나 취소할 수 있으며, 실제 절전·깨우기는 35Closer 앱에서 별도 승인이 필요합니다.';
         }
@@ -150,7 +154,7 @@ class CodexCliAdapter {
         });
       } catch (_) {}
       if (approved !== true) {
-        const error = new Error('Codex 작업공간 쓰기 승인이 거부되었습니다.');
+        const error = new Error(fullAccess ? 'Codex Full access가 승인되지 않았습니다.' : 'Codex 작업공간 쓰기 승인이 거부되었습니다.');
         error.category = 'approval_denied';
         throw error;
       }
@@ -161,7 +165,7 @@ class CodexCliAdapter {
     try {
       const args = [
         'exec', '--ignore-user-config', '--model', tier.model,
-        '--sandbox', approvalPolicy === 'read-only' ? 'read-only' : 'workspace-write', '--ephemeral', '--json', '--skip-git-repo-check',
+        '--sandbox', fullAccess ? 'danger-full-access' : approvalPolicy === 'read-only' ? 'read-only' : 'workspace-write', '--ephemeral', '--json', '--skip-git-repo-check',
         '--cd', workspaceDir,
         '--output-last-message', outputFile,
         '-c', 'mcp_servers.onlychat_google.enabled=true',
@@ -179,7 +183,7 @@ class CodexCliAdapter {
           '-c', `mcp_servers.onlychat_35closer.command=${JSON.stringify(process.execPath)}`,
           '-c', `mcp_servers.onlychat_35closer.args=${JSON.stringify([path.join(this.projectRoot, 'src/connectors/OnlyChat35CloserMcpServer.js')])}`);
       }
-      const flutterCache = flutterCacheFor(workspaceDir, prompt);
+      const flutterCache = fullAccess ? null : flutterCacheFor(workspaceDir, prompt);
       if (flutterCache) {
         if (context.approvalPolicy === 'read-only') {
           const error = new Error('읽기 전용 정책에서는 Flutter SDK 캐시 쓰기를 허용할 수 없습니다.');

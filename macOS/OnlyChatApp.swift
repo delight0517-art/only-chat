@@ -632,6 +632,33 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         webView.evaluateJavaScript("document.querySelector('.mac-titlebar .traffic-lights')?.remove()")
     }
 
+    @available(macOS 12.3, *)
+    func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        guard frame.isMainFrame, frame.request.url.map(isLocalAppURL) == true,
+              origin.host == "127.0.0.1", type == .microphone else {
+            decisionHandler(.deny)
+            return
+        }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            decisionHandler(.grant)
+        case .denied, .restricted:
+            decisionHandler(.deny)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                DispatchQueue.main.async { decisionHandler(granted ? .grant : .deny) }
+            }
+        @unknown default:
+            decisionHandler(.deny)
+        }
+    }
+
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,

@@ -156,6 +156,7 @@ class DesktopServer {
     if (this.codexAdapter) this.codexAdapter.macScreenBridge = () => ({ enabled: this.isMacScreenControlEnabled(), port: this.port, token: this.macScreenToken });
     this.activeTurns = 0;
     this.pendingToolApprovals = new Map();
+    this.sessionToolApprovals = new Map();
     this.newChatSessionAliases = new Map();
     this.pendingDispatcherToolApprovals = new Map();
     this.engine.dispatcherApprovalHandler = (task, request) => this._requestDispatcherToolApproval(task, request);
@@ -849,6 +850,43 @@ class DesktopServer {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({ policy: this.engine.tools.approvalPolicy }));
       return;
+    }
+
+    if (pathname === '/api/audio/transcribe' && req.method === 'POST') {
+      const body = await this._readLimitedBody(req, 27 * 1024 * 1024);
+      if (!body) return this._respondJson(res, { error: '녹음 파일이 너무 크거나 요청 형식이 올바르지 않습니다.' }, 413);
+      const encoded = body.audioBase64;
+      const mimeType = String(body.mimeType || '').split(';')[0].toLowerCase();
+      const extension = ({ 'audio/webm': '.webm', 'audio/mp4': '.mp4', 'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/ogg': '.ogg' })[mimeType];
+      if (!extension || typeof encoded !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+        return this._respondJson(res, { error: '지원하지 않는 오디오 형식입니다.' }, 400);
+      }
+      const audioBytes = Buffer.from(encoded, 'base64');
+      if (audioBytes.length < 128 || audioBytes.length > 20 * 1024 * 1024 || audioBytes.toString('base64') !== encoded) {
+        return this._respondJson(res, { error: '오디오 파일은 20 MB 이하이어야 합니다.' }, 413);
+      }
+      const whisper = [...(process.env.PATH || '').split(path.delimiter).map(directory => path.join(directory, 'whisper')),
+        '/opt/homebrew/bin/whisper', '/usr/local/bin/whisper'].find(candidate => {
+          try { return fs.statSync(candidate).isFile(); } catch (_) { return false; }
+        });
+      if (!whisper) return this._respondJson(res, { error: '이 Mac에서 로컬 Whisper AI를 찾지 못했습니다.' }, 503);
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-voice-'));
+      const audioPath = path.join(tempDir, `voice-memo${extension}`);
+      try {
+        fs.writeFileSync(audioPath, audioBytes, { mode: 0o600, flag: 'wx' });
+        await new Promise((resolve, reject) => {
+          execFile(whisper, [audioPath, '--model', 'base', '--device', process.platform === 'darwin' && process.arch === 'arm64' ? 'mps' : 'cpu', '--output_dir', tempDir, '--output_format', 'json', '--verbose', 'False'], {
+            cwd: tempDir, timeout: 600000, maxBuffer: 2 * 1024 * 1024
+          }, error => error ? reject(error) : resolve());
+        });
+        const result = JSON.parse(fs.readFileSync(path.join(tempDir, 'voice-memo.json'), 'utf8'));
+        return this._respondJson(res, { transcript: String(result.text || '').trim(), language: String(result.language || '자동 감지') });
+      } catch (error) {
+        const timedOut = error?.killed || error?.signal === 'SIGTERM';
+        return this._respondJson(res, { error: timedOut ? '10분 안에 전사를 끝내지 못했습니다. 짧은 녹음으로 나누어 주세요.' : '로컬 Whisper 전사에 실패했습니다. Whisper 모델 또는 오디오 형식을 확인해 주세요.' }, 503);
+      } finally {
+        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
+      }
     }
 
     if (pathname === '/api/settings/approval-policy' && req.method === 'POST') {
@@ -1618,6 +1656,31 @@ class DesktopServer {
       }
       const modelSelection = typeof body.modelSelection === 'string' ? body.modelSelection : 'auto';
       const normalizedModelSelection = modelSelection.trim().toLowerCase();
+      if (body.fullAccess !== undefined && typeof body.fullAccess !== 'boolean') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Full access 상태가 올바르지 않습니다.' }));
+        return;
+      }
+      if (body.fullAccess === true) {
+        const chain = this.engine.priorityChain;
+        const selectedTier = !chain.chain.enabled && typeof body.overrideTierId === 'string'
+          ? chain.chain.tiers.find(tier => tier.id === body.overrideTierId)
+          : normalizedModelSelection === 'auto'
+            ? chain.resolveActiveTier()
+            : chain.chain.tiers.filter(tier => tier.enabled !== false
+              && String(tier.model || '').trim().toLowerCase() === normalizedModelSelection
+              && (tier.provider !== 'codex' || this.codexAdapter?.getReadiness(tier).connected === true)
+              && tier.health?.isThrottled !== true)
+              .sort((a, b) => (Number(a.tier) || Number.MAX_SAFE_INTEGER) - (Number(b.tier) || Number.MAX_SAFE_INTEGER))[0];
+        const codexConnected = selectedTier?.provider === 'codex' && this.codexAdapter?.getReadiness(selectedTier).connected === true;
+        if (this.approvalPolicy === 'read-only' || !codexConnected) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: this.approvalPolicy === 'read-only'
+            ? '읽기 전용 정책에서는 Full access를 사용할 수 없습니다.'
+            : 'Full access는 연결된 Codex 계정으로 요청할 수 있습니다. 모델 또는 계정을 Codex로 선택해 주세요.' }));
+          return;
+        }
+      }
       const configuredModels = this.engine.priorityChain.chain.tiers
         .filter(tier => tier.enabled !== false && typeof tier.model === 'string' && tier.model.trim() && tier.model !== 'auto')
         .map(tier => tier.model.trim().toLowerCase());
@@ -1716,12 +1779,16 @@ class DesktopServer {
       const requestToolApproval = request => new Promise(resolve => {
         const currentSessionId = this.engine.currentSession?.sessionId;
         if (!currentSessionId || currentSessionId !== request.sessionId || res.destroyed) return resolve(false);
+        const grants = this.sessionToolApprovals.get(currentSessionId);
+        if (request.scopeRequiresExplicit !== true && (grants?.has('*') || grants?.has(request.name))) return resolve(true);
         const timer = setTimeout(() => {
           this.pendingToolApprovals.delete(request.requestId);
           resolve(false);
         }, 120000);
-        this.pendingToolApprovals.set(request.requestId, { sessionId: currentSessionId, resolve, timer });
-        sendSse({ type: 'tool_approval_required', requestId: request.requestId, sessionId: currentSessionId, name: request.name, args: request.args });
+        this.pendingToolApprovals.set(request.requestId, {
+          sessionId: currentSessionId, name: request.name, scopeRequiresExplicit: request.scopeRequiresExplicit === true, resolve, timer
+        });
+        sendSse({ type: 'tool_approval_required', requestId: request.requestId, sessionId: currentSessionId, name: request.name, args: request.args, scopeRequiresExplicit: request.scopeRequiresExplicit === true });
         res.once('close', () => {
           const pending = this.pendingToolApprovals.get(request.requestId);
           if (!pending) return;
@@ -1739,6 +1806,7 @@ class DesktopServer {
 
         await this.engine.executeTurn(prompt, {
           reasoningEffort,
+          fullAccess: body.fullAccess === true,
           modelSelection: normalizedModelSelection,
           managerMode,
           managerSystemMessage,
@@ -1791,14 +1859,21 @@ class DesktopServer {
     if (pathname === '/api/tool-approval' && req.method === 'POST') {
       const body = await this._readBody(req);
       const pending = this.pendingToolApprovals.get(body.requestId);
-      if (!pending || pending.sessionId !== body.sessionId || this.engine.currentSession?.sessionId !== pending.sessionId) {
+      if (!pending || pending.sessionId !== body.sessionId || this.engine.currentSession?.sessionId !== pending.sessionId
+        || !['approve', 'reject', 'allow_tool', 'turbo'].includes(body.decision)
+        || (pending.scopeRequiresExplicit && !['approve', 'reject'].includes(body.decision))) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: '승인 요청이 만료되었거나 다른 세션의 요청입니다.' }));
         return;
       }
       clearTimeout(pending.timer);
       this.pendingToolApprovals.delete(body.requestId);
-      pending.resolve(body.decision === 'approve');
+      if (body.decision === 'allow_tool' || body.decision === 'turbo') {
+        const grants = this.sessionToolApprovals.get(pending.sessionId) || new Set();
+        grants.add(body.decision === 'turbo' ? '*' : pending.name);
+        this.sessionToolApprovals.set(pending.sessionId, grants);
+      }
+      pending.resolve(body.decision !== 'reject');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -1824,6 +1899,8 @@ class DesktopServer {
     if (!active || active.task !== task || task.status !== 'running' || task.sessionId !== request.sessionId) {
       return Promise.reject(new Error('Approval request expired or belongs to another task or session.'));
     }
+    const grants = this.sessionToolApprovals.get(request.sessionId);
+    if (grants?.has('*') || grants?.has(request.name)) return Promise.resolve(true);
     return new Promise((resolve, reject) => {
       const pending = { taskId: task.id, sessionId: request.sessionId, resolve, reject, timer: null };
       pending.timer = setTimeout(() => {

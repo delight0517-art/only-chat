@@ -112,7 +112,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSpeechRecognitionUsageDescription</key><string>Only Chat uses speech recognition to turn your spoken words into text in the chat composer.</string>
-  <key>NSMicrophoneUsageDescription</key><string>Only Chat uses the microphone only while you tap the dictation button.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Only Chat records audio only while you tap the voice memo button; transcription runs locally on this Mac.</string>
 </dict>
 </plist>
 PLIST
