@@ -2632,7 +2632,7 @@ body {
 .assistant-tool-approval button:disabled { opacity: .55; cursor: not-allowed; }
 .voice-capture-btn.recording, .voice-capture-btn.transcribing { width: 102px; min-width: 102px; height: 38px; padding: 4px 9px; border: 1px solid var(--border-subtle); border-radius: 999px; color: var(--accent-orange); background: var(--bg-input); animation: none; }
 .voice-capture-indicator { display: flex; align-items: center; gap: 10px; }
-.voice-capture-indicator[hidden], .voice-mic-icon[hidden], .voice-capture-status[hidden], .voice-retry-btn[hidden] { display: none; }
+.voice-capture-indicator[hidden], .voice-mic-icon[hidden], .voice-capture-status[hidden], .voice-retry-btn[hidden], .developer-feedback-btn[hidden] { display: none; }
 .voice-waveform { display: flex; align-items: center; justify-content: center; gap: 3px; width: 62px; height: 28px; overflow: hidden; }
 .voice-waveform i { display: block; flex: 0 0 3px; height: 12px; border-radius: 3px; background: currentColor; transform: scaleY(var(--wave-scale, .22)); transition: transform 70ms linear; }
 .voice-capture-btn.transcribing .voice-waveform i { animation: voice-wave-loading .8s ease-in-out infinite alternate; }
@@ -2645,6 +2645,9 @@ body {
 .voice-capture-btn.transcribing .voice-stop-square { display: none; }
 .voice-capture-status { max-width: 180px; overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .voice-retry-btn { padding: 5px 8px; border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); background: var(--bg-card); font-size: 11px; cursor: pointer; }
+.developer-feedback-btn { padding: 5px 8px; border: 0; border-radius: 8px; color: var(--text-muted); background: transparent; font: inherit; font-size: 11px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.developer-feedback-btn:hover { color: var(--text-main); background: var(--surface-secondary, rgba(127,127,127,.08)); }
+.developer-feedback-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 @keyframes voice-wave-loading { from { transform: scaleY(.25); } to { transform: scaleY(1.1); } }
 @media (prefers-reduced-motion: reduce) { .voice-waveform i { transition: none; } .voice-capture-btn.transcribing .voice-waveform i { animation: none; } }
 .codex-reauth-dialog { width: min(520px, calc(100vw - 36px)); max-height: min(80vh, 720px); overflow: auto; padding: 22px; border: 1px solid var(--border-subtle); border-radius: 18px; color: var(--text-main); background: var(--bg-panel); box-shadow: 0 24px 80px rgba(0,0,0,.35); }

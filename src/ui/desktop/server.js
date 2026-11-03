@@ -13,6 +13,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
+const packageMetadata = require('../../../package.json');
 const { pathToFileURL } = require('node:url');
 const { AgentEngine } = require('../../core/AgentEngine.js');
 const { MetamorphicHub } = require('../../morph/Hub.js');
@@ -910,6 +911,39 @@ class DesktopServer {
         return this._respondJson(res, { error: timedOut ? '10분 안에 전사를 끝내지 못했습니다. 짧은 녹음으로 나누어 주세요.' : '로컬 Whisper 전사에 실패했습니다. Whisper 모델 또는 오디오 형식을 확인해 주세요.' }, 503);
       } finally {
         try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
+      }
+    }
+
+    if (pathname === '/api/feedback/developer-email' && req.method === 'POST') {
+      if (!this.openExternal) return this._respondJson(res, { error: '메일 앱 연결을 사용할 수 없습니다.' }, 503);
+      const body = await this._readLimitedBody(req, 4096);
+      if (!body || typeof body.source !== 'string' || typeof body.error !== 'string') {
+        return this._respondJson(res, { error: '오류 피드백 형식이 올바르지 않습니다.' }, 400);
+      }
+      const email = String(packageMetadata.author || '').match(/<([^<>]+)>/)?.[1];
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return this._respondJson(res, { error: '앱에 개발자 연락처가 설정되어 있지 않습니다.' }, 503);
+      }
+      const safeText = value => String(value)
+        .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, '[인증 정보 숨김]')
+        .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/g, '[토큰 숨김]')
+        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[이메일 숨김]')
+        .replace(/(?:\/Users\/|[A-Z]:\\Users\\)[^/\\\s]+/g, '~')
+        .replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 500);
+      const subject = `Only Chat 오류 피드백 · ${safeText(body.source).slice(0, 60)}`;
+      const message = [
+        'Only Chat 오류 피드백',
+        `발생 위치: ${safeText(body.source).slice(0, 60)}`,
+        `발생 시각: ${new Date().toISOString()}`,
+        `오류 내용: ${safeText(body.error)}`,
+        '',
+        '이 메일 초안에는 대화 내용, 첨부 파일, 음성 녹음이 포함되지 않습니다. 내용을 확인한 뒤 직접 보내 주세요.'
+      ].join('\n');
+      try {
+        await this.openExternal(`mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message)}`);
+        return this._respondJson(res, { ok: true });
+      } catch (_) {
+        return this._respondJson(res, { error: '기본 메일 앱을 열지 못했습니다.' }, 503);
       }
     }
 

@@ -499,6 +499,9 @@ function setupEventListeners() {
   // Reference 3: Microphone Button
   btnMicrophone.addEventListener('click', toggleSpeechInput);
   document.getElementById('btnVoiceRetry')?.addEventListener('click', () => { void transcribeSpeechMemo(pendingSpeechMemoBlob, true); });
+  document.getElementById('btnVoiceFeedback')?.addEventListener('click', event => {
+    void openDeveloperFeedback(event.currentTarget, '음성 전사', event.currentTarget.dataset.error || '');
+  });
 
   // Keyboard Shortcuts: Ctrl+, and Cmd+, to open Full-Stage Settings View (Ref User UI)
   window.addEventListener('keydown', e => {
@@ -1355,6 +1358,7 @@ async function startSpeechMemo() {
     speechStarting = false;
     status.textContent = '이 앱 런타임에서 오디오 녹음을 사용할 수 없습니다.';
     updateVoiceCaptureUI();
+    setVoiceFeedbackError(status.textContent);
     showMorphToast('이 앱 런타임에서 오디오 녹음을 사용할 수 없습니다.');
     return;
   }
@@ -1366,6 +1370,7 @@ async function startSpeechMemo() {
     speechChunks = [];
     pendingSpeechMemoBlob = null;
     document.getElementById('btnVoiceRetry').hidden = true;
+    document.getElementById('btnVoiceFeedback').hidden = true;
     speechRecorder.addEventListener('dataavailable', event => { if (event.data?.size) speechChunks.push(event.data); });
     speechRecorder.addEventListener('stop', () => {
       const blob = new Blob(speechChunks, { type: speechRecorder?.mimeType || mimeType || 'audio/webm' });
@@ -1387,6 +1392,7 @@ async function startSpeechMemo() {
         const status = document.getElementById('voiceCaptureStatus');
         status.textContent = '녹음된 음성이 없습니다. 다시 말해 주세요.';
         status.hidden = false;
+        setVoiceFeedbackError(status.textContent);
         updateVoiceCaptureUI();
       }
     }, { once: true });
@@ -1403,6 +1409,7 @@ async function startSpeechMemo() {
     const status = document.getElementById('voiceCaptureStatus');
     status.textContent = `녹음을 시작하지 못했습니다: ${error.message}`;
     status.hidden = false;
+    setVoiceFeedbackError(status.textContent);
     showMorphToast(`녹음 시작 실패: ${error.message}`);
   } finally {
     speechStarting = false;
@@ -1454,11 +1461,13 @@ async function transcribeSpeechMemo(blob = pendingSpeechMemoBlob, autoSend = tru
     if (!isUsableSpeechTranscript(transcript)) {
       status.textContent = '음성을 글자로 인식하지 못했습니다. 녹음은 보존했습니다. 더 선명하게 말하거나 짧게 녹음한 뒤 다시 전사해 주세요.';
       retryButton.hidden = blob.size > 20 * 1024 * 1024;
+      setVoiceFeedbackError(status.textContent);
       return;
     }
     // The recognized text is now preserved in the composer; retrying the same
     // recording could insert and send it twice.
     pendingSpeechMemoBlob = null;
+    document.getElementById('btnVoiceFeedback').hidden = true;
     applySpeechTranscript(transcript);
     if (autoSend) {
       if (isGenerating) {
@@ -1481,6 +1490,7 @@ async function transcribeSpeechMemo(blob = pendingSpeechMemoBlob, autoSend = tru
   } catch (error) {
     status.textContent = `전사하지 못했습니다: ${error.message}`;
     retryButton.hidden = blob.size > 20 * 1024 * 1024;
+    setVoiceFeedbackError(status.textContent);
   } finally {
     window.clearInterval(elapsedTimer);
     speechTranscriptionRunning = false;
@@ -2144,6 +2154,56 @@ function appendTurnNotice(card, text, kind) {
   notice.className = `assistant-turn-notice ${kind || ''}`;
   notice.textContent = text;
   card.content.appendChild(notice);
+  if (kind === 'error') card.content.appendChild(createDeveloperFeedbackButton('채팅 요청', text));
+}
+
+function safeFeedbackError(value) {
+  return String(value || '')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, '[인증 정보 숨김]')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,})\b/g, '[토큰 숨김]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[이메일 숨김]')
+    .replace(/(?:\/Users\/|[A-Z]:\\Users\\)[^/\\\s]+/g, '~')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .trim().slice(0, 500);
+}
+
+function createDeveloperFeedbackButton(source, errorText) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'developer-feedback-btn';
+  button.textContent = '개발자에게 피드백 보내기';
+  button.title = '대화·첨부·음성은 포함하지 않습니다. 오류 정보가 담긴 메일 초안을 열어 직접 확인 후 보냅니다.';
+  button.addEventListener('click', () => { void openDeveloperFeedback(button, source, errorText); });
+  return button;
+}
+
+function setVoiceFeedbackError(errorText) {
+  const button = document.getElementById('btnVoiceFeedback');
+  button.dataset.error = errorText;
+  button.disabled = false;
+  button.textContent = '개발자에게 피드백 보내기';
+  button.hidden = false;
+}
+
+async function openDeveloperFeedback(button, source, errorText) {
+  if (button.disabled) return;
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  button.textContent = '메일 초안 여는 중…';
+  try {
+    const response = await fetch('/api/feedback/developer-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, error: safeFeedbackError(errorText) })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) throw new Error(result.error || `메일 초안을 열지 못했습니다 (${response.status})`);
+    button.textContent = '메일 초안을 열었습니다 · 확인 후 보내기';
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = originalLabel;
+    showMorphToast(`피드백 메일 초안을 열지 못했습니다: ${error.message}`);
+  }
 }
 
 function setAssistantWorkStatus(card, text) {
