@@ -375,7 +375,7 @@ class DesktopServer {
 
     if (pathname === '/api/joint-development/tasks' && req.method === 'GET') {
       if (!this.macWindowsDevelopment) return this._respondJson(res, { error: 'joint_development_unavailable' }, 503);
-      return this._respondJson(res, { tasks: this.macWindowsDevelopment.list(url.searchParams.get('limit')) });
+      return this._respondJson(res, { tasks: this.macWindowsDevelopment.list(url.searchParams.get('limit')), localPlatform: this.macWindowsDevelopment.localPlatform() });
     }
 
     if (pathname === '/api/joint-development/tasks' && req.method === 'POST') {
@@ -400,15 +400,26 @@ class DesktopServer {
       if (!body || typeof body.fileId !== 'string' || !body.fileId.trim() || body.fileId.length > 256) return this._respondJson(res, { error: 'joint_development_drive_file_id_invalid' }, 400);
       try {
         const read = await this.engine.tools.google.driveReadFile(body.fileId.trim());
-        if (typeof read?.content !== 'string' || Buffer.byteLength(read.content, 'utf8') > 100 * 1024) throw new Error('joint development packet is missing or exceeds 100 KiB');
+        if (typeof read?.content !== 'string' || Buffer.byteLength(read.content, 'utf8') > 1024 * 1024) throw new Error('joint development packet is missing or exceeds 1 MiB');
         const packet = JSON.parse(read.content);
         const sha256 = crypto.createHash('sha256').update(read.content).digest('hex');
+        if (packet.schema === 'only-chat-joint-development/patch-v1') {
+          const task = this.macWindowsDevelopment.receivePatch(packet, body.fileId.trim(), sha256);
+          return this._respondJson(res, { task, drive: { fileId: body.fileId.trim(), sha256, readback: 'verified', receiverRead: 'verified', apply: 'pending-user-action' } }, 200);
+        }
         const task = this.macWindowsDevelopment.importPacket(packet, body.fileId.trim(), sha256);
-        return this._respondJson(res, { task, drive: { fileId: body.fileId.trim(), sha256, readback: 'verified', receiverRead: 'verified' } }, 200);
+        return this._respondJson(res, { task, drive: { fileId: body.fileId.trim(), sha256, readback: 'verified', receiverRead: 'verified', apply: 'not-applicable-contract-only' } }, 200);
       } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_packet_receive_failed' }, 400); }
     }
 
-    const jointTaskMatch = /^\/api\/joint-development\/tasks\/([a-z0-9._-]+)(?:\/(mac|windows|publish))?$/i.exec(pathname);
+    const jointPatchMatch = /^\/api\/joint-development\/tasks\/([a-z0-9._-]+)\/patches\/([a-z0-9_-]+)$/i.exec(pathname);
+    if (jointPatchMatch && req.method === 'GET') {
+      const patch = this.macWindowsDevelopment?.readIncomingPatch(jointPatchMatch[1], jointPatchMatch[2]);
+      if (!patch) return this._respondJson(res, { error: 'joint_development_patch_not_found' }, 404);
+      return this._respondJson(res, { fileId: patch.fileId, sender: patch.sender, filePaths: patch.filePaths, patchSha256: patch.patchSha256, state: patch.state, patch: patch.patch });
+    }
+
+    const jointTaskMatch = /^\/api\/joint-development\/tasks\/([a-z0-9._-]+)(?:\/(mac|windows|publish|export|apply))?$/i.exec(pathname);
     if (jointTaskMatch && req.method === 'POST') {
       if (!this.macWindowsDevelopment) return this._respondJson(res, { error: 'joint_development_unavailable' }, 503);
       const body = await this._readLimitedBody(req, 16 * 1024);
@@ -416,6 +427,37 @@ class DesktopServer {
       const [, taskKey, action] = jointTaskMatch;
       const task = this.macWindowsDevelopment.get(taskKey);
       if (!task) return this._respondJson(res, { error: 'joint_development_task_not_found' }, 404);
+      if (action === 'export') {
+        try {
+          if (task[this.macWindowsDevelopment.localPlatform()].patch?.fileId) return this._respondJson(res, { error: 'joint_development_source_patch_already_published' }, 409);
+          if (this.activeTurns > 0) return this._respondJson(res, { error: 'joint_development_active_ai_turn' }, 409);
+          if (!this.taskRegistryStore) return this._respondJson(res, { error: 'joint_development_workspace_lease_unavailable' }, 503);
+          const source = task[this.macWindowsDevelopment.localPlatform()].source;
+          const packet = await this.taskRegistryStore.lease.run(source, `joint-development-export:${taskKey}`, () => this.macWindowsDevelopment.createPatch(taskKey));
+          const content = JSON.stringify(packet);
+          const payloadSha256 = crypto.createHash('sha256').update(content).digest('hex');
+          const created = await this.engine.tools.google.driveCreateFile(`OnlyChat-JointDev-${taskKey}-${packet.platform}-${Date.now()}-patch.json`, 'application/json', content);
+          const fileId = String(created?.id || '');
+          if (!fileId) throw new Error('Drive created a source patch without returning a file ID');
+          this.macWindowsDevelopment.recordPatch(taskKey, packet.platform, { fileId, patchSha256: packet.patchSha256, payloadSha256, filePaths: packet.filePaths, readback: null });
+          const readback = await this.engine.tools.google.driveReadFile(fileId);
+          const verified = readback?.content === content && crypto.createHash('sha256').update(readback.content).digest('hex') === payloadSha256;
+          const updated = this.macWindowsDevelopment.recordPatch(taskKey, packet.platform, { fileId, patchSha256: packet.patchSha256, payloadSha256, filePaths: packet.filePaths, readback: verified });
+          return this._respondJson(res, { task: updated, packet: { fileId, platform: packet.platform, filePaths: packet.filePaths, patchSha256: packet.patchSha256, payloadSha256, readback: verified ? 'verified' : 'mismatch' } }, verified ? 200 : 502);
+        } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_patch_export_failed' }, 409); }
+      }
+      if (action === 'apply') {
+        if (!this.taskRegistryStore) return this._respondJson(res, { error: 'joint_development_workspace_lease_unavailable' }, 503);
+        try {
+          const fileId = String(body.fileId || '');
+          const incoming = (task.incomingPatches || []).find(item => item.fileId === fileId);
+          if (!incoming) return this._respondJson(res, { error: 'joint_development_patch_not_received' }, 404);
+          if (this.activeTurns > 0) return this._respondJson(res, { error: 'joint_development_active_ai_turn' }, 409);
+          const source = task[this.macWindowsDevelopment.localPlatform()].source;
+          const applied = await this.taskRegistryStore.lease.run(source, `joint-development-apply:${taskKey}`, () => this.macWindowsDevelopment.applyPatch(taskKey, fileId));
+          return this._respondJson(res, { task: applied, apply: 'applied-on-canonical-main', commit: 'not-created' });
+        } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_patch_apply_failed' }, 409); }
+      }
       if (action === 'publish') {
         try {
           if (task.drive.fileId) return this._respondJson(res, { error: 'joint_development_packet_already_uploaded', drive: task.drive }, 409);

@@ -3698,6 +3698,7 @@ let workbenchSnapshot = null;
 let workbenchReadAt = null;
 let workbenchFilter = 'open';
 let workbenchRefreshing = false;
+let jointDevLocalPlatform = 'mac';
 
 function workbenchText(tag, className, text) {
   const node = document.createElement(tag);
@@ -3796,6 +3797,7 @@ async function refreshJointDevelopment() {
     const response = await fetch('/api/joint-development/tasks?limit=50', { cache: 'no-store' });
     const data = await response.json();
     if (!response.ok) throw new Error('공동 작업 기록을 읽을 수 없습니다.');
+    jointDevLocalPlatform = data.localPlatform === 'windows' ? 'windows' : 'mac';
     list.replaceChildren();
     if (!data.tasks.length) { list.textContent = '등록된 공동 개발 작업 없음'; return; }
     for (const task of data.tasks) {
@@ -3829,6 +3831,45 @@ async function refreshJointDevelopment() {
       }
       const drive = document.createElement('p'); drive.className = 'joint-dev-drive';
       drive.textContent = `Drive: ${task.drive.state} · readback ${task.drive.readback} · receiver read ${task.drive.receiverRead || 'not-checked'} · 적용·상대 확인 별도`; card.append(drive);
+      const localSide = task[jointDevLocalPlatform];
+      if (localSide.state === 'active' && !localSide.patch?.fileId) {
+        const exportButton = document.createElement('button'); exportButton.type = 'button'; exportButton.textContent = '내 담당 파일 변경을 패킷으로 Drive에 게시';
+        exportButton.addEventListener('click', async () => {
+          exportButton.disabled = true; exportButton.textContent = '정본 main·기준 커밋·파일 범위 확인 중';
+          try {
+            const response = await fetch(`/api/joint-development/tasks/${encodeURIComponent(task.taskKey)}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+            const payload = await response.json(); if (!response.ok) throw new Error(payload.error || '변경 패킷 생성 실패');
+            await refreshJointDevelopment();
+          } catch (error) { exportButton.disabled = false; exportButton.textContent = error.message || '변경 패킷 생성 실패'; }
+        }); card.append(exportButton);
+      }
+      for (const patch of task.incomingPatches || []) {
+        const incoming = document.createElement('p'); incoming.className = 'joint-dev-side';
+        incoming.textContent = `${patch.sender} 패치 · ${patch.filePaths.join(', ')} · SHA-256 ${patch.patchSha256.slice(0, 12)} · ${patch.state}`; card.append(incoming);
+        const preview = document.createElement('details'); preview.className = 'joint-dev-patch-preview';
+        const previewSummary = document.createElement('summary'); previewSummary.textContent = '변경 diff 검토'; preview.append(previewSummary);
+        const code = document.createElement('pre'); code.textContent = '열어서 정확한 변경 내용을 읽습니다.'; preview.append(code);
+        preview.addEventListener('toggle', async () => {
+          if (!preview.open || preview.dataset.loaded) return;
+          try {
+            const response = await fetch(`/api/joint-development/tasks/${encodeURIComponent(task.taskKey)}/patches/${encodeURIComponent(patch.fileId)}`, { cache: 'no-store' });
+            const data = await response.json(); if (!response.ok) throw new Error(data.error || 'diff를 읽지 못했습니다.');
+            code.textContent = data.patch; preview.dataset.loaded = 'true';
+          } catch (error) { code.textContent = error.message || 'diff를 읽지 못했습니다.'; }
+        });
+        card.append(preview);
+        if (patch.state === 'receiver-read') {
+          const applyButton = document.createElement('button'); applyButton.type = 'button'; applyButton.textContent = '확인 후 지정 파일을 canonical main에 적용';
+          applyButton.addEventListener('click', async () => {
+            applyButton.disabled = true; applyButton.textContent = 'main·기준 커밋·충돌·patch 검사 중';
+            try {
+              const response = await fetch(`/api/joint-development/tasks/${encodeURIComponent(task.taskKey)}/apply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId: patch.fileId }) });
+              const payload = await response.json(); if (!response.ok) throw new Error(payload.error || '안전 적용을 거부했습니다.');
+              applyButton.textContent = '적용됨 · 커밋과 통합 검증은 별도'; await refreshJointDevelopment();
+            } catch (error) { applyButton.disabled = false; applyButton.textContent = error.message || '적용 거부'; }
+          }); card.append(applyButton);
+        }
+      }
       if (!task.drive.fileId) {
         const publish = document.createElement('button'); publish.type = 'button'; publish.textContent = '공동 작업 패킷을 Drive에 게시';
         publish.addEventListener('click', async () => {

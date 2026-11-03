@@ -2722,6 +2722,9 @@ body {
 .joint-dev-report summary { cursor: pointer; color: var(--oc-connection); padding: 4px 0; }
 .joint-dev-report form { display: grid; gap: 5px; }
 .joint-dev-report input, .joint-dev-report select { width: 100%; min-width: 0; padding: 6px; border: 1px solid var(--border-subtle); border-radius: 5px; background: var(--bg-card); color: var(--text-main); font: 9px var(--font-sans); }
+.joint-dev-patch-preview { max-height: 320px; overflow: auto; border-top: 1px solid var(--border-subtle); padding-top: 5px; font-size: 9px; }
+.joint-dev-patch-preview summary { cursor: pointer; color: var(--oc-connection); }
+.joint-dev-patch-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; padding: 8px; background: var(--bg-subtle); color: var(--text-main); font: 9px/1.5 var(--font-mono); user-select: text; }
 .workbench-module-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0; font-size: 11px; color: var(--text-muted); }
 .workbench-module { display: inline-flex; align-items: center; gap: 12px; padding: 7px 9px; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 6px; }
 .workbench-module small { font: 9px var(--font-mono); color: var(--text-dim); }
