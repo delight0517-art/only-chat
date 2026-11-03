@@ -384,7 +384,7 @@ class DesktopServer {
       const body = await this._readLimitedBody(req, 64 * 1024);
       if (!body || typeof body !== 'object' || Array.isArray(body)) return this._respondJson(res, { error: 'joint_development_body_invalid' }, 400);
       try {
-        const result = this.macWindowsDevelopment.createAfterAssessment(body);
+        const result = await this.macWindowsDevelopment.createAfterAssessment(body, 'joint-development-http-create');
         return this._respondJson(res, result, result.created ? 201 : 200);
       } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_contract_invalid' }, 400); }
     }
@@ -400,6 +400,7 @@ class DesktopServer {
       const body = await this._readLimitedBody(req, 4096);
       if (!body || typeof body.fileId !== 'string' || !body.fileId.trim() || body.fileId.length > 256) return this._respondJson(res, { error: 'joint_development_drive_file_id_invalid' }, 400);
       try {
+        return await this.macWindowsDevelopment.withLock(`joint-development-receive:${body.fileId.trim()}`, async () => {
         const read = await this.engine.tools.google.driveReadFile(body.fileId.trim());
         if (typeof read?.content !== 'string' || Buffer.byteLength(read.content, 'utf8') > 1024 * 1024) throw new Error('joint development packet is missing or exceeds 1 MiB');
         const packet = JSON.parse(read.content);
@@ -414,6 +415,7 @@ class DesktopServer {
         }
         const task = this.macWindowsDevelopment.importPacket(packet, body.fileId.trim(), sha256);
         return this._respondJson(res, { task, drive: { fileId: body.fileId.trim(), sha256, readback: 'verified', receiverRead: 'verified', apply: 'not-applicable-contract-only' } }, 200);
+        });
       } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_packet_receive_failed' }, 400); }
     }
 
@@ -434,11 +436,13 @@ class DesktopServer {
       if (!task) return this._respondJson(res, { error: 'joint_development_task_not_found' }, 404);
       if (action === 'export') {
         try {
-          if (task[this.macWindowsDevelopment.localPlatform()].patch?.fileId) return this._respondJson(res, { error: 'joint_development_source_patch_already_published' }, 409);
           if (this.activeTurns > 0) return this._respondJson(res, { error: 'joint_development_active_ai_turn' }, 409);
           if (!this.taskRegistryStore) return this._respondJson(res, { error: 'joint_development_workspace_lease_unavailable' }, 503);
           const source = task[this.macWindowsDevelopment.localPlatform()].source;
-          const packet = await this.taskRegistryStore.lease.run(source, `joint-development-export:${taskKey}`, () => this.macWindowsDevelopment.createPatch(taskKey));
+          return await this.taskRegistryStore.lease.run(source, `joint-development-export:${taskKey}`, () => this.macWindowsDevelopment.withLock(`joint-development-export:${taskKey}`, async () => {
+          const current = this.macWindowsDevelopment.get(taskKey);
+          if (current[this.macWindowsDevelopment.localPlatform()].patch?.fileId) return this._respondJson(res, { error: 'joint_development_source_patch_already_published' }, 409);
+          const packet = this.macWindowsDevelopment.createPatch(taskKey);
           const content = JSON.stringify(packet);
           const payloadSha256 = crypto.createHash('sha256').update(content).digest('hex');
           const created = await this.engine.tools.google.driveCreateFile(`OnlyChat-JointDev-${taskKey}-${packet.platform}-${Date.now()}-patch.json`, 'application/json', content);
@@ -449,6 +453,7 @@ class DesktopServer {
           const verified = readback?.content === content && crypto.createHash('sha256').update(readback.content).digest('hex') === payloadSha256;
           const updated = this.macWindowsDevelopment.recordPatch(taskKey, packet.platform, { fileId, patchSha256: packet.patchSha256, payloadSha256, filePaths: packet.filePaths, readback: verified });
           return this._respondJson(res, { task: updated, packet: { fileId, platform: packet.platform, filePaths: packet.filePaths, patchSha256: packet.patchSha256, payloadSha256, readback: verified ? 'verified' : 'mismatch' } }, verified ? 200 : 502);
+          }));
         } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_patch_export_failed' }, 409); }
       }
       if (action === 'apply') {
@@ -459,48 +464,54 @@ class DesktopServer {
           if (!incoming) return this._respondJson(res, { error: 'joint_development_patch_not_received' }, 404);
           if (this.activeTurns > 0) return this._respondJson(res, { error: 'joint_development_active_ai_turn' }, 409);
           const source = task[this.macWindowsDevelopment.localPlatform()].source;
-          const applied = await this.taskRegistryStore.lease.run(source, `joint-development-apply:${taskKey}`, () => this.macWindowsDevelopment.applyPatch(taskKey, fileId));
+          const applied = await this.taskRegistryStore.lease.run(source, `joint-development-apply:${taskKey}`, () => this.macWindowsDevelopment.withLock(`joint-development-apply:${taskKey}`, () => this.macWindowsDevelopment.applyPatch(taskKey, fileId)));
           return this._respondJson(res, { task: applied, apply: 'applied-on-canonical-main', commit: 'not-created' });
         } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_patch_apply_failed' }, 409); }
       }
       if (action === 'ack') {
         try {
-          const patchFileId = String(body.fileId || '');
-          const receipt = this.macWindowsDevelopment.createAppliedReceipt(taskKey, patchFileId);
-          const existing = (task.publishedReceipts || []).find(item => item.patchFileId === patchFileId);
-          if (existing?.fileId) return this._respondJson(res, { error: 'joint_development_ack_already_published', receipt: existing }, 409);
-          const content = JSON.stringify(receipt);
-          const sha256 = crypto.createHash('sha256').update(content).digest('hex');
-          const created = await this.engine.tools.google.driveCreateFile(`OnlyChat-JointDev-${taskKey}-${receipt.fromPlatform}-${Date.now()}-ack.json`, 'application/json', content);
-          const ackFileId = String(created?.id || '');
-          if (!ackFileId) throw new Error('Drive created an ACK without returning a file ID');
-          this.macWindowsDevelopment.recordPublishedReceipt(taskKey, receipt, ackFileId, sha256, false);
-          const readback = await this.engine.tools.google.driveReadFile(ackFileId);
-          const verified = readback?.content === content && crypto.createHash('sha256').update(readback.content).digest('hex') === sha256;
-          const updated = this.macWindowsDevelopment.recordPublishedReceipt(taskKey, receipt, ackFileId, sha256, verified);
-          return this._respondJson(res, { task: updated, receipt: { fileId: ackFileId, sha256, state: receipt.state, readback: verified ? 'verified' : 'mismatch' } }, verified ? 200 : 502);
+          return await this.macWindowsDevelopment.withLock(`joint-development-ack:${taskKey}`, async () => {
+            const current = this.macWindowsDevelopment.get(taskKey);
+            const patchFileId = String(body.fileId || '');
+            const receipt = this.macWindowsDevelopment.createAppliedReceipt(taskKey, patchFileId);
+            const existing = (current.publishedReceipts || []).find(item => item.patchFileId === patchFileId);
+            if (existing?.fileId) return this._respondJson(res, { error: 'joint_development_ack_already_published', receipt: existing }, 409);
+            const content = JSON.stringify(receipt);
+            const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+            const created = await this.engine.tools.google.driveCreateFile(`OnlyChat-JointDev-${taskKey}-${receipt.fromPlatform}-${Date.now()}-ack.json`, 'application/json', content);
+            const ackFileId = String(created?.id || '');
+            if (!ackFileId) throw new Error('Drive created an ACK without returning a file ID');
+            this.macWindowsDevelopment.recordPublishedReceipt(taskKey, receipt, ackFileId, sha256, false);
+            const readback = await this.engine.tools.google.driveReadFile(ackFileId);
+            const verified = readback?.content === content && crypto.createHash('sha256').update(readback.content).digest('hex') === sha256;
+            const updated = this.macWindowsDevelopment.recordPublishedReceipt(taskKey, receipt, ackFileId, sha256, verified);
+            return this._respondJson(res, { task: updated, receipt: { fileId: ackFileId, sha256, state: receipt.state, readback: verified ? 'verified' : 'mismatch' } }, verified ? 200 : 502);
+          });
         } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_ack_publish_failed' }, 409); }
       }
       if (action === 'publish') {
         try {
-          if (task.drive.fileId) return this._respondJson(res, { error: 'joint_development_packet_already_uploaded', drive: task.drive }, 409);
-          const packet = { schema: 'only-chat-joint-development/v1', taskKey: task.taskKey, title: task.title, app: task.app,
-            goal: task.goal, integrationBase: task.integrationBase, policy: task.policy,
-            mac: task.mac, windows: task.windows, publishedAt: new Date().toISOString() };
-          const content = JSON.stringify(packet);
-          const sha256 = crypto.createHash('sha256').update(content).digest('hex');
-          const created = await this.engine.tools.google.driveCreateFile(`OnlyChat-JointDev-${task.taskKey}-${Date.now()}.json`, 'application/json', content);
-          const fileId = String(created?.id || '');
-          if (!fileId) throw new Error('Drive created a packet without returning a file ID');
-          this.macWindowsDevelopment.recordPublished(taskKey, { fileId, sha256, readback: null });
-          const readback = await this.engine.tools.google.driveReadFile(fileId);
-          const verified = readback?.content === content && crypto.createHash('sha256').update(readback.content).digest('hex') === sha256;
-          const updated = this.macWindowsDevelopment.recordPublished(taskKey, { fileId, sha256, readback: verified });
-          return this._respondJson(res, { task: updated, drive: { state: 'uploaded', fileId, sha256, readback: verified ? 'verified' : 'mismatch' } }, verified ? 200 : 502);
+          return await this.macWindowsDevelopment.withLock(`joint-development-publish:${taskKey}`, async () => {
+            const current = this.macWindowsDevelopment.get(taskKey);
+            if (current.drive.fileId) return this._respondJson(res, { error: 'joint_development_packet_already_uploaded', drive: current.drive }, 409);
+            const packet = { schema: 'only-chat-joint-development/v1', taskKey: current.taskKey, title: current.title, app: current.app,
+              goal: current.goal, integrationBase: current.integrationBase, policy: current.policy,
+              mac: current.mac, windows: current.windows, publishedAt: new Date().toISOString() };
+            const content = JSON.stringify(packet);
+            const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+            const created = await this.engine.tools.google.driveCreateFile(`OnlyChat-JointDev-${current.taskKey}-${Date.now()}.json`, 'application/json', content);
+            const fileId = String(created?.id || '');
+            if (!fileId) throw new Error('Drive created a packet without returning a file ID');
+            this.macWindowsDevelopment.recordPublished(taskKey, { fileId, sha256, readback: null });
+            const readback = await this.engine.tools.google.driveReadFile(fileId);
+            const verified = readback?.content === content && crypto.createHash('sha256').update(readback.content).digest('hex') === sha256;
+            const updated = this.macWindowsDevelopment.recordPublished(taskKey, { fileId, sha256, readback: verified });
+            return this._respondJson(res, { task: updated, drive: { state: 'uploaded', fileId, sha256, readback: verified ? 'verified' : 'mismatch' } }, verified ? 200 : 502);
+          });
         } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_drive_publish_failed', drive: this.macWindowsDevelopment.get(taskKey)?.drive || null }, 502); }
       }
       try {
-        const updated = this.macWindowsDevelopment.updateSide(taskKey, action, body);
+        const updated = await this.macWindowsDevelopment.withLock(`joint-development-update:${taskKey}:${action}`, () => this.macWindowsDevelopment.updateSide(taskKey, action, body));
         return this._respondJson(res, { task: updated });
       } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_update_invalid' }, 400); }
     }

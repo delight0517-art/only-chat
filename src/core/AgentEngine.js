@@ -854,7 +854,7 @@ class AgentEngine {
         case 'joint_development_assess':
           return await this.tools.jointDevelopmentAssess(args);
         case 'joint_development_create':
-          return await this.tools.jointDevelopmentCreate(args);
+          return await this.tools.jointDevelopmentCreate(args, this.currentSession?.sessionId || 'unknown-session');
 
         // Built-in Aside / REA Browser Tools
         case 'browser_open':

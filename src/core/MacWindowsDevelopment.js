@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { WorkspaceExecutionLease } = require('./WorkspaceExecutionLease.js');
 
 const PLATFORMS = ['mac', 'windows'];
 const SIDE_STATES = new Set(['planned', 'active', 'ready-to-share', 'drive-readback', 'receiver-read', 'applied', 'tested', 'integrated', 'blocked']);
@@ -55,8 +56,11 @@ class MacWindowsDevelopment {
     this.dir = path.join(path.resolve(options.dataDir), 'mac-windows-development');
     this.file = path.join(this.dir, 'tasks.json');
     this.platform = options.platform || process.platform;
+    this.lease = options.lease || new WorkspaceExecutionLease({ lockRoot: path.join(path.resolve(options.dataDir), 'workspace-leases') });
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
   }
+
+  withLock(owner, operation) { return this.lease.run(this.dir, owner, operation); }
 
   localPlatform() { return this.platform === 'win32' ? 'windows' : 'mac'; }
 
@@ -249,10 +253,12 @@ class MacWindowsDevelopment {
     state.tasks.unshift(task); this._write(state); return { created: true, task };
   }
 
-  createAfterAssessment(input = {}) {
-    const assessment = this.assess(input);
-    if (assessment.feasible !== 'ready') throw new Error(`joint development is ${assessment.feasible}: ${assessment.reason || assessment.localSource?.reason || 'local source is not ready'}`);
-    return this.create(input);
+  async createAfterAssessment(input = {}, owner = 'joint-development-create') {
+    return this.withLock(owner, () => {
+      const assessment = this.assess(input);
+      if (assessment.feasible !== 'ready') throw new Error(`joint development is ${assessment.feasible}: ${assessment.reason || assessment.localSource?.reason || 'local source is not ready'}`);
+      return this.create(input);
+    });
   }
 
   list(limit = 100) {

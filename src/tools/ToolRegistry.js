@@ -541,9 +541,9 @@ class ToolRegistry {
     return this.macWindowsDevelopment.assess(input);
   }
 
-  jointDevelopmentCreate(input) {
+  jointDevelopmentCreate(input, ownerChatId) {
     if (!this.macWindowsDevelopment) throw new Error('Mac-Windows joint development is unavailable in this runtime.');
-    return this.macWindowsDevelopment.createAfterAssessment(input);
+    return this.macWindowsDevelopment.createAfterAssessment(input, `joint-development-create:${ownerChatId || 'unknown-session'}`);
   }
 
   // =========================================================================
