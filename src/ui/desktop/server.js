@@ -141,9 +141,10 @@ class DesktopServer {
       workspaceDir: this.workspaceDir,
       browser: this.isolated ? null : engineOptions.browser
     });
+    this.macWindowsDevelopment = this.isolated ? null : new MacWindowsDevelopment({ dataDir: this.dataDir });
+    engineOptions.macWindowsDevelopment = this.macWindowsDevelopment;
     this.engine = new AgentEngine(engineOptions);
     this.taskRegistryStore = this.isolated ? null : new TaskRegistryStore({ dataDir: this.dataDir });
-    this.macWindowsDevelopment = this.isolated ? null : new MacWindowsDevelopment({ dataDir: this.dataDir });
     this.scheduleStore = options.scheduleStore || new RecurringScheduleStore({ dataDir: this.dataDir });
     this.scheduleService = options.scheduleService || new RecurringScheduleService({
       store: this.scheduleStore,
@@ -383,7 +384,7 @@ class DesktopServer {
       const body = await this._readLimitedBody(req, 64 * 1024);
       if (!body || typeof body !== 'object' || Array.isArray(body)) return this._respondJson(res, { error: 'joint_development_body_invalid' }, 400);
       try {
-        const result = this.macWindowsDevelopment.create(body);
+        const result = this.macWindowsDevelopment.createAfterAssessment(body);
         return this._respondJson(res, result, result.created ? 201 : 200);
       } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_contract_invalid' }, 400); }
     }
@@ -403,6 +404,10 @@ class DesktopServer {
         if (typeof read?.content !== 'string' || Buffer.byteLength(read.content, 'utf8') > 1024 * 1024) throw new Error('joint development packet is missing or exceeds 1 MiB');
         const packet = JSON.parse(read.content);
         const sha256 = crypto.createHash('sha256').update(read.content).digest('hex');
+        if (packet.schema === 'only-chat-joint-development/ack-v1') {
+          const task = this.macWindowsDevelopment.recordRemoteReceipt(packet, body.fileId.trim(), sha256);
+          return this._respondJson(res, { task, receipt: { fileId: body.fileId.trim(), state: packet.state, readback: 'verified' } }, 200);
+        }
         if (packet.schema === 'only-chat-joint-development/patch-v1') {
           const task = this.macWindowsDevelopment.receivePatch(packet, body.fileId.trim(), sha256);
           return this._respondJson(res, { task, drive: { fileId: body.fileId.trim(), sha256, readback: 'verified', receiverRead: 'verified', apply: 'pending-user-action' } }, 200);
@@ -419,7 +424,7 @@ class DesktopServer {
       return this._respondJson(res, { fileId: patch.fileId, sender: patch.sender, filePaths: patch.filePaths, patchSha256: patch.patchSha256, state: patch.state, patch: patch.patch });
     }
 
-    const jointTaskMatch = /^\/api\/joint-development\/tasks\/([a-z0-9._-]+)(?:\/(mac|windows|publish|export|apply))?$/i.exec(pathname);
+    const jointTaskMatch = /^\/api\/joint-development\/tasks\/([a-z0-9._-]+)(?:\/(mac|windows|publish|export|apply|ack))?$/i.exec(pathname);
     if (jointTaskMatch && req.method === 'POST') {
       if (!this.macWindowsDevelopment) return this._respondJson(res, { error: 'joint_development_unavailable' }, 503);
       const body = await this._readLimitedBody(req, 16 * 1024);
@@ -457,6 +462,24 @@ class DesktopServer {
           const applied = await this.taskRegistryStore.lease.run(source, `joint-development-apply:${taskKey}`, () => this.macWindowsDevelopment.applyPatch(taskKey, fileId));
           return this._respondJson(res, { task: applied, apply: 'applied-on-canonical-main', commit: 'not-created' });
         } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_patch_apply_failed' }, 409); }
+      }
+      if (action === 'ack') {
+        try {
+          const patchFileId = String(body.fileId || '');
+          const receipt = this.macWindowsDevelopment.createAppliedReceipt(taskKey, patchFileId);
+          const existing = (task.publishedReceipts || []).find(item => item.patchFileId === patchFileId);
+          if (existing?.fileId) return this._respondJson(res, { error: 'joint_development_ack_already_published', receipt: existing }, 409);
+          const content = JSON.stringify(receipt);
+          const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+          const created = await this.engine.tools.google.driveCreateFile(`OnlyChat-JointDev-${taskKey}-${receipt.fromPlatform}-${Date.now()}-ack.json`, 'application/json', content);
+          const ackFileId = String(created?.id || '');
+          if (!ackFileId) throw new Error('Drive created an ACK without returning a file ID');
+          this.macWindowsDevelopment.recordPublishedReceipt(taskKey, receipt, ackFileId, sha256, false);
+          const readback = await this.engine.tools.google.driveReadFile(ackFileId);
+          const verified = readback?.content === content && crypto.createHash('sha256').update(readback.content).digest('hex') === sha256;
+          const updated = this.macWindowsDevelopment.recordPublishedReceipt(taskKey, receipt, ackFileId, sha256, verified);
+          return this._respondJson(res, { task: updated, receipt: { fileId: ackFileId, sha256, state: receipt.state, readback: verified ? 'verified' : 'mismatch' } }, verified ? 200 : 502);
+        } catch (error) { return this._respondJson(res, { error: error.message || 'joint_development_ack_publish_failed' }, 409); }
       }
       if (action === 'publish') {
         try {

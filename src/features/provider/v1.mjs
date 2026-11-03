@@ -9,15 +9,28 @@ const TOOL_NAMES = Object.freeze([
   'spacekeeper_session_report', 'spacekeeper_capacity_status', 'browser_open', 'browser_navigate',
   'browser_aria', 'browser_act', 'browser_read', 'browser_recipe', 'browser_status',
   'task_registry_list', 'task_registry_read', 'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint',
-  'task_registry_messages', 'task_registry_send', 'task_registry_ack'
+  'task_registry_messages', 'task_registry_send', 'task_registry_ack',
+  'joint_development_list', 'joint_development_read', 'joint_development_assess', 'joint_development_create'
 ]);
 const READ_ONLY_TOOL_NAMES = new Set([
   'read_file', 'google_drive_list', 'google_drive_read', 'gmail_list', 'gmail_read',
   'notion_search', 'notion_query', 'notion_api_read', 'spacekeeper_session_report', 'spacekeeper_capacity_status',
   'notion_mcp_list_tools', 'notion_mcp_call_tool',
   'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status',
-  'browser_aria', 'browser_read', 'browser_status', 'task_registry_list', 'task_registry_read', 'task_registry_messages'
+  'browser_aria', 'browser_read', 'browser_status', 'task_registry_list', 'task_registry_read', 'task_registry_messages',
+  'joint_development_list', 'joint_development_read', 'joint_development_assess'
 ]);
+
+const JOINT_DEVELOPMENT_CONTRACT = {
+  type: 'object',
+  properties: {
+    taskKey: { type: 'string', minLength: 1, maxLength: 80 }, title: { type: 'string', minLength: 1, maxLength: 160 },
+    app: { type: 'string', minLength: 1, maxLength: 120 }, goal: { type: 'string', minLength: 1, maxLength: 2000 },
+    integrationBase: { type: 'string', pattern: '^[a-fA-F0-9]{40}([a-fA-F0-9]{24})?$' },
+    mac: { type: 'object', properties: { owner: { type: 'string' }, source: { type: 'string' }, baseCommit: { type: 'string' }, paths: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'string' } } }, required: ['owner', 'source', 'baseCommit', 'paths'], additionalProperties: false },
+    windows: { type: 'object', properties: { owner: { type: 'string' }, source: { type: 'string' }, baseCommit: { type: 'string' }, paths: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'string' } } }, required: ['owner', 'source', 'baseCommit', 'paths'], additionalProperties: false }
+  }, required: ['taskKey', 'title', 'app', 'goal', 'integrationBase', 'mac', 'windows'], additionalProperties: false
+};
 
 function toolDefinitions(approvalPolicy = 'on-request') {
   const names = approvalPolicy === 'read-only' ? TOOL_NAMES.filter(name => READ_ONLY_TOOL_NAMES.has(name)) : TOOL_NAMES;
@@ -41,6 +54,14 @@ function toolDefinitions(approvalPolicy = 'on-request') {
                     ? 'Send a concise task-scoped message to another Only Chat session. Never include credentials, transcripts, or unrelated user data.'
                     : name === 'task_registry_ack'
                       ? 'Explicitly acknowledge receipt of a task message by its message ID; do not claim receipt without a successful result.'
+        : name === 'joint_development_assess'
+          ? 'Before creating a Mac-Windows joint-development task, validate the shared integration base, disjoint file ownership, local canonical main and base HEAD, local dirty-path conflicts, and any existing task overlap. Return unknown for the remote device; never infer that Windows is available or ready.'
+          : name === 'joint_development_create'
+            ? 'Create the coordinated Mac-Windows work contract only after the user explicitly asked to start the joint task and joint_development_assess reports ready. Both devices must share one base commit and own disjoint file paths. This records the task only; it does not publish to Drive or start a remote worker.'
+            : name === 'joint_development_list'
+              ? 'List current Mac-Windows task contracts and their separately reported stages. Drive receipt, patch application, tests and commits are distinct evidence.'
+              : name === 'joint_development_read'
+                ? 'Read one Mac-Windows task contract by stable task key. Treat device owners and progress as self-reported unless receiver evidence is attached.'
         : name === 'notion_api_read'
         ? 'Direct REST API read for the legacy integration-token connection only. For a personal Notion login, use notion_mcp_list_tools then notion_mcp_call_tool instead; the OAuth token cannot be sent to REST.'
         : name === 'notion_api_write'
@@ -54,7 +75,13 @@ function toolDefinitions(approvalPolicy = 'on-request') {
           : name.startsWith('notion_rea_')
             ? `Use Aside/REA for the user's free-plan Notion workspace. Open or navigate only HTTPS notion.so, notion.com, or notion.site URLs; use notion_rea_search to search workspace pages/content for the user's query, inspect returned result links, click the matching result with notion_rea_act, and read it with notion_rea_read. Use notion_rea_aria for current actionable refs. Edits use notion_rea_act under Only Chat approval, then verify with notion_rea_read. The user signs into Notion directly in Aside; never request, read, or enter passwords, passkeys, MFA codes, or recovery secrets. ${name}`
             : `Use Only Chat's ${name} capability when the user requests it.`,
-      parameters: name === 'task_registry_list'
+      parameters: name === 'joint_development_assess' || name === 'joint_development_create'
+        ? JOINT_DEVELOPMENT_CONTRACT
+        : name === 'joint_development_list'
+          ? { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 200 } }, additionalProperties: false }
+          : name === 'joint_development_read'
+            ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 80 } }, required: ['taskKey'], additionalProperties: false }
+        : name === 'task_registry_list'
         ? { type: 'object', properties: { status: { type: 'string', enum: ['planned', 'claimed', 'executing', 'verifying', 'integrating', 'reviewing', 'blocked', 'completed', 'failed'] }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, additionalProperties: false }
         : name === 'task_registry_read'
           ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 } }, required: ['taskKey'], additionalProperties: false }

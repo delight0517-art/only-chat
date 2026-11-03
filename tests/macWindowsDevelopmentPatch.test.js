@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { MacWindowsDevelopment } = require('../src/core/MacWindowsDevelopment.js');
 
@@ -36,22 +37,28 @@ try {
   macStore.updateSide('shared-patch', 'mac', { state: 'active' });
   const packet = macStore.createPatch('shared-patch');
   assert.deepEqual(packet.filePaths, ['shared.txt']);
+  macStore.recordPatch('shared-patch', 'mac', { fileId: 'drive-patch-1', patchSha256: packet.patchSha256,
+    payloadSha256: crypto.createHash('sha256').update(JSON.stringify(packet)).digest('hex'), filePaths: packet.filePaths, readback: true });
 
   const receiver = new MacWindowsDevelopment({ dataDir: path.join(root, 'windows-data'), platform: 'win32' });
-  const payloadHash = require('node:crypto').createHash('sha256').update(JSON.stringify(packet)).digest('hex');
+  const payloadHash = crypto.createHash('sha256').update(JSON.stringify(packet)).digest('hex');
   receiver.receivePatch(packet, 'drive-patch-1', payloadHash);
   assert.equal(receiver.list()[0].incomingPatches[0].patch, undefined, 'ordinary task list does not stream source diffs');
   assert.match(receiver.readIncomingPatch('shared-patch', 'drive-patch-1').patch, /Mac change/);
   const applied = receiver.applyPatch('shared-patch', 'drive-patch-1');
   assert.equal(applied.incomingPatches[0].state, 'applied');
   assert.equal(fs.readFileSync(path.join(windowsRepo, 'shared.txt'), 'utf8'), 'Mac change\n');
+  const receipt = receiver.createAppliedReceipt('shared-patch', 'drive-patch-1');
+  const receiptHash = crypto.createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
+  const sender = macStore.recordRemoteReceipt(receipt, 'drive-ack-1', receiptHash);
+  assert.equal(sender.remoteReceipts[0].state, 'applied');
 
   const conflictContract = { ...contract, taskKey: 'shared-patch-conflict', windows: { ...contract.windows, source: conflictRepo } };
   macStore.create(conflictContract);
   macStore.updateSide('shared-patch-conflict', 'mac', { state: 'active' });
   const conflictPacket = macStore.createPatch('shared-patch-conflict');
   const conflictReceiver = new MacWindowsDevelopment({ dataDir: path.join(root, 'windows-conflict-data'), platform: 'win32' });
-  const conflictHash = require('node:crypto').createHash('sha256').update(JSON.stringify(conflictPacket)).digest('hex');
+  const conflictHash = crypto.createHash('sha256').update(JSON.stringify(conflictPacket)).digest('hex');
   conflictReceiver.receivePatch(conflictPacket, 'drive-patch-2', conflictHash);
   fs.writeFileSync(path.join(conflictRepo, 'shared.txt'), 'Windows local change\n');
   assert.throws(() => conflictReceiver.applyPatch('shared-patch-conflict', 'drive-patch-2'), /local changes overlap/);

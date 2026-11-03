@@ -153,6 +153,7 @@ class ToolRegistry {
     this.notionMcp = options.notionMcpConnector || new NotionMcpConnector(options.notionMcpOptions || {});
     this.spaceKeeper = options.spaceKeeperConnector || new SpaceKeeperConnector(options.spaceKeeperOptions || {});
     this.taskRegistryStore = options.taskRegistryStore || null;
+    this.macWindowsDevelopment = options.macWindowsDevelopment || null;
 
     // Desktop hosts may inject their own embedded browser; CLI keeps Aside.
     this.browser = options.browserEnabled === false ? null : (options.browser || new AsideBrowser());
@@ -523,6 +524,26 @@ class ToolRegistry {
       text: input.text,
       idempotencyKey: input.idempotencyKey
     });
+  }
+
+  jointDevelopmentList(input = {}) {
+    if (!this.macWindowsDevelopment) throw new Error('Mac-Windows joint development is unavailable in this runtime.');
+    return this.macWindowsDevelopment.list(input.limit);
+  }
+
+  jointDevelopmentRead(taskKey) {
+    if (!this.macWindowsDevelopment) throw new Error('Mac-Windows joint development is unavailable in this runtime.');
+    return this.macWindowsDevelopment.get(taskKey);
+  }
+
+  jointDevelopmentAssess(input) {
+    if (!this.macWindowsDevelopment) throw new Error('Mac-Windows joint development is unavailable in this runtime.');
+    return this.macWindowsDevelopment.assess(input);
+  }
+
+  jointDevelopmentCreate(input) {
+    if (!this.macWindowsDevelopment) throw new Error('Mac-Windows joint development is unavailable in this runtime.');
+    return this.macWindowsDevelopment.createAfterAssessment(input);
   }
 
   // =========================================================================

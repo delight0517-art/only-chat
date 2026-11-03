@@ -31,7 +31,7 @@ const MUTATION_TOOL_NAMES = new Set([
   'browser_open', 'browser_navigate', 'browser_act', 'browser_recipe', 'browser_history',
   'vault_get_credential',
   'browser_workspace_snapshot', 'browser_workspace_restore', 'browser_workspace_focus', 'browser_workspace_open',
-  'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_send', 'task_registry_ack'
+  'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_send', 'task_registry_ack', 'joint_development_create'
 ]);
 
 function isMutationToolName(name) {
@@ -83,6 +83,7 @@ class AgentEngine {
       browserEnabled: !this.isolated,
       providerConnectionsEnabled: !this.isolated,
       taskRegistryStore: this.isolated ? null : new TaskRegistryStore({ dataDir: this.dataDir }),
+      macWindowsDevelopment: this.isolated ? null : (options.macWindowsDevelopment || null),
       connectorOptions: this.isolated ? { storageDir: path.join(this.dataDir, 'providers'), clientConfigFile: false, readEnvironment: false } : {},
       vaultOptions: this.isolated ? { vaultDir: path.join(this.dataDir, 'vault') } : {},
       browserWorkspaceOptions: this.isolated ? { enabled: false, workspaceDir: path.join(this.dataDir, 'browser-workspaces') } : {}
@@ -264,7 +265,7 @@ class AgentEngine {
     const notionMcpRead = this.tools.isNotionMcpReadOnlyCall(call);
     if (this.tools.approvalPolicy === 'read-only') return isMutationToolName(call?.name) && !notionMcpRead;
     if (this.tools.approvalPolicy === 'never') return false;
-    return !notionMcpRead && !['read_file', 'list_files', 'search_files', 'gmail_list', 'gmail_read', 'google_drive_list', 'google_drive_read', 'notion_search', 'notion_query', 'notion_api_read', 'notion_mcp_list_tools', 'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status', 'browser_aria', 'browser_read', 'browser_status', 'spacekeeper_session_report', 'spacekeeper_capacity_status', 'task_registry_list', 'task_registry_read', 'task_registry_messages'].includes(call?.name);
+    return !notionMcpRead && !['read_file', 'list_files', 'search_files', 'gmail_list', 'gmail_read', 'google_drive_list', 'google_drive_read', 'notion_search', 'notion_query', 'notion_api_read', 'notion_mcp_list_tools', 'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status', 'browser_aria', 'browser_read', 'browser_status', 'spacekeeper_session_report', 'spacekeeper_capacity_status', 'task_registry_list', 'task_registry_read', 'task_registry_messages', 'joint_development_list', 'joint_development_read', 'joint_development_assess'].includes(call?.name);
   }
 
   async _getAccountRouterAdapter() {
@@ -846,6 +847,14 @@ class AgentEngine {
           return await this.tools.taskRegistrySend({ ...args, idempotencyKey: args.idempotencyKey || call.id }, this.currentSession?.sessionId || 'unknown-session');
         case 'task_registry_ack':
           return await this.tools.taskRegistryAck({ ...args, idempotencyKey: args.idempotencyKey || call.id }, this.currentSession?.sessionId || 'unknown-session');
+        case 'joint_development_list':
+          return await this.tools.jointDevelopmentList(args);
+        case 'joint_development_read':
+          return await this.tools.jointDevelopmentRead(args.taskKey);
+        case 'joint_development_assess':
+          return await this.tools.jointDevelopmentAssess(args);
+        case 'joint_development_create':
+          return await this.tools.jointDevelopmentCreate(args);
 
         // Built-in Aside / REA Browser Tools
         case 'browser_open':

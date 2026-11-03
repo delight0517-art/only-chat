@@ -193,7 +193,7 @@ class MacWindowsDevelopment {
     } catch (error) { if (fd !== undefined) fs.closeSync(fd); try { fs.unlinkSync(tmp); } catch (_) {} throw error; }
   }
 
-  create(input = {}) {
+  _normalizeContract(input = {}) {
     const taskKey = text(input.taskKey, 'taskKey', 80);
     if (!SAFE_KEY.test(taskKey)) throw new TypeError('taskKey is invalid');
     const mac = normalizeSide(input.mac, 'mac');
@@ -209,7 +209,35 @@ class MacWindowsDevelopment {
     };
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(task.integrationBase)) throw new TypeError('integrationBase must be a Git commit hash');
     if (mac.baseCommit !== task.integrationBase || windows.baseCommit !== task.integrationBase) throw new Error('both devices must start from the same canonical integration commit before parallel work');
+    return task;
+  }
+
+  assess(input = {}) {
+    try {
+      const task = this._normalizeContract(input);
+      const side = task[this.localPlatform()];
+      let localSource = { state: 'unknown', reason: 'local canonical source has not been inspected' };
+      try {
+        const source = fs.realpathSync(side.source);
+        const root = this._git(source, ['rev-parse', '--show-toplevel']).trim();
+        const branch = this._git(source, ['branch', '--show-current']).trim();
+        const head = this._git(source, ['rev-parse', 'HEAD']).trim().toLowerCase();
+        const dirty = this._git(source, ['status', '--porcelain=v1', '-z', '--', ...side.paths]).split('\0').filter(Boolean);
+        const activeOverlap = this._read().tasks.find(item => item.taskKey !== task.taskKey && item[this.localPlatform()].state !== 'integrated'
+          && overlaps(item[this.localPlatform()].paths, side.paths));
+        localSource = fs.realpathSync(root) === source && branch === 'main' && head === side.baseCommit && !dirty.length && !activeOverlap
+          ? { state: 'ready', branch, baseCommit: head, dirtyOwnedPathCount: 0 }
+          : { state: 'blocked', reason: activeOverlap ? 'another open joint task owns overlapping local paths' : dirty.length ? 'assigned local paths already contain changes; reconcile those before parallel work' : 'local source root, canonical main, or base commit does not match the proposed contract', branch, baseCommit: head, dirtyOwnedPathCount: dirty.length, blockingTaskKey: activeOverlap?.taskKey };
+      } catch (_) { /* Missing remote/other-platform paths remain unknown, never ready. */ }
+      return { feasible: localSource.state === 'ready' ? 'ready' : 'needs-review', localPlatform: this.localPlatform(), localSource,
+        policy: task.policy, commonBase: task.integrationBase, disjointPaths: true, limits: ['Only Chat reports ownership labels; it does not authenticate the other device.', 'Drive is manual transport; this assessment does not claim receiver availability.'] };
+    } catch (error) { return { feasible: 'blocked', reason: error.message || 'joint development contract is invalid' }; }
+  }
+
+  create(input = {}) {
+    const task = this._normalizeContract(input);
     const state = this._read();
+    const taskKey = task.taskKey;
     const existing = state.tasks.find(item => item.taskKey === taskKey);
     if (existing) {
       const signature = item => JSON.stringify({ title: item.title, app: item.app, goal: item.goal, integrationBase: item.integrationBase,
@@ -219,6 +247,12 @@ class MacWindowsDevelopment {
       return { created: false, task: existing };
     }
     state.tasks.unshift(task); this._write(state); return { created: true, task };
+  }
+
+  createAfterAssessment(input = {}) {
+    const assessment = this.assess(input);
+    if (assessment.feasible !== 'ready') throw new Error(`joint development is ${assessment.feasible}: ${assessment.reason || assessment.localSource?.reason || 'local source is not ready'}`);
+    return this.create(input);
   }
 
   list(limit = 100) {
@@ -232,6 +266,40 @@ class MacWindowsDevelopment {
   readIncomingPatch(taskKey, fileId) {
     const task = this.get(taskKey);
     return task?.incomingPatches?.find(item => item.fileId === fileId) || null;
+  }
+
+  createAppliedReceipt(taskKey, patchFileId) {
+    const task = this.get(taskKey);
+    const patch = task?.incomingPatches?.find(item => item.fileId === patchFileId);
+    if (!task || !patch || patch.state !== 'applied') throw new Error('only an applied source patch can receive an applied ACK');
+    return { schema: 'only-chat-joint-development/ack-v1', taskKey, patchFileId, patchSha256: patch.patchSha256,
+      fromPlatform: this.localPlatform(), toPlatform: patch.sender, state: 'applied', sourceBaseCommit: patch.baseCommit,
+      filePaths: patch.filePaths, evidence: `Patch applied on canonical main; source remains uncommitted for review.`, createdAt: new Date().toISOString() };
+  }
+
+  recordPublishedReceipt(taskKey, receipt, fileId, sha256, verified) {
+    const state = this._read(); const task = state.tasks.find(item => item.taskKey === taskKey);
+    if (!task) return null;
+    task.publishedReceipts ||= [];
+    const existing = task.publishedReceipts.find(item => item.patchFileId === receipt.patchFileId);
+    const item = { patchFileId: receipt.patchFileId, fileId, sha256, readback: verified ? 'verified' : 'not-checked', state: receipt.state, createdAt: receipt.createdAt };
+    if (existing) Object.assign(existing, item); else task.publishedReceipts.push(item);
+    task.revision += 1; task.updatedAt = new Date().toISOString(); this._write(state); return task;
+  }
+
+  recordRemoteReceipt(receipt, fileId, sha256) {
+    if (!receipt || receipt.schema !== 'only-chat-joint-development/ack-v1' || !PLATFORMS.includes(receipt.fromPlatform)
+      || receipt.toPlatform !== this.localPlatform() || !['applied', 'tested', 'integrated'].includes(receipt.state)) throw new TypeError('unsupported or misaddressed joint development ACK');
+    const state = this._read(); const task = state.tasks.find(item => item.taskKey === receipt.taskKey);
+    if (!task) throw new Error('ACK refers to an unknown joint development task');
+    if (task[receipt.toPlatform].patch?.fileId !== receipt.patchFileId || task[receipt.toPlatform].patch.patchSha256 !== receipt.patchSha256) throw new Error('ACK does not match a patch published by this device');
+    const sha = crypto.createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
+    if (sha !== sha256) throw new Error('ACK content checksum did not match Drive readback');
+    task.remoteReceipts ||= [];
+    if (!task.remoteReceipts.some(item => item.fileId === fileId)) task.remoteReceipts.push({ fileId, fromPlatform: receipt.fromPlatform,
+      patchFileId: receipt.patchFileId, patchSha256: receipt.patchSha256, state: receipt.state, evidence: text(receipt.evidence, 'ACK evidence', 1000),
+      receivedAt: new Date().toISOString() });
+    task.revision += 1; task.updatedAt = new Date().toISOString(); this._write(state); return task;
   }
 
   updateSide(taskKey, platform, update = {}) {

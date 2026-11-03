@@ -215,8 +215,8 @@
 
 - [ ] **TODO-OC-JOINT-DEV-01. Mac·Windows 공동 개발을 Drive로 조정하고 실제 변경 패킷까지 적용/통합**:
   - 진행 (2026-11-03): 공동 작업 계약, UI 등록·진행 현황, 겹치는 파일 범위 거부, canonical `main` 고정, Drive 계약 패킷과 file ID를 통한 실제 내용/SHA-256 readback을 구현했습니다. 별도 소스 변경 패킷도 추가했습니다: 담당 플랫폼의 정본 루트·main·기준 HEAD·할당 파일만 확인하고, 체크섬/파일 allowlist가 포함된 제한 크기 unified/binary diff를 Drive에 수동 게시합니다. 수신 측 수동 목록/읽기 뒤에만 `git apply --check`와 기준 HEAD·dirty-path 충돌 검사를 거쳐 사람이 눌러 canonical main에 적용합니다. 분리된 Git clone으로 적용 성공과 dirty 충돌 보존을 검증했습니다.
-  - Drive packet은 내용 readback과 체크섬 확인까지 별개로 표시합니다. 계약 작성은 상대 채팅/기기를 인증하지 않으며, 상태·증거는 담당자가 보고하는 값입니다. 실제 Google 계정에 패킷을 쓰거나 Windows 앱에서 읽기/적용/ACK한 결과는 아직 없습니다. 양쪽 테스트, 안정화 승인, canonical main 커밋, 다른 기기의 readback은 미완료입니다.
-  - 다음: Windows receiver 실제 테스트, M-Oasis integration/commit sequencing, draft-preserving installed UI verification. 충돌이나 변경 경로 중복이면 fail closed; 자동 overwrite/merge/commit, background watcher, raw workspace sync는 하지 않습니다.
+  - Drive packet은 내용 readback과 체크섬 확인까지 별개로 표시합니다. 적용 ACK를 Drive에 게시하고 송신 기기가 읽어 patch file ID/hash와 대조하는 왕복 코드를 구현했습니다. Only Chat AI에도 feasibility assessment, create-after-assessment, list/read 도구를 연결했습니다. Assessment는 현재 기기의 정본 main·기준 커밋·담당 파일 dirty/중복 소유를 확인하고, Windows 원격 준비 여부는 unknown으로 둡니다. 생성은 사용자의 명시 요청과 승인 정책 아래 동작합니다. 계약 작성은 상대 채팅/기기를 인증하지 않으며, 진행 증거는 담당자가 보고하는 값입니다. 실제 Google 계정에 패킷이나 ACK를 쓰거나 Windows 앱에서 읽기/적용한 결과는 아직 없습니다. AI가 변경을 테스트하고 완성도를 판단해 양쪽 결과를 통합하는 검토 루프, Windows runtime, 안정화 승인, canonical main 커밋 및 원격 readback은 미완료입니다.
+  - 다음: Windows receiver 실기기·앱 테스트, AI의 패치·테스트 검토 루프, M-Oasis integration/commit sequencing, draft-preserving installed UI verification. 충돌이나 변경 경로 중복이면 fail closed; 자동 overwrite/merge/commit, background watcher, raw workspace sync는 하지 않습니다.
 
 ### 3F Browser 연결 및 실제 제어 검증 미완료
 - [ ] **TODO-3FBROWSER-01. Only Chat과 3F Browser가 실제 연결되어 탐색·페이지 읽기를 수행하는지 end-to-end 확인**:
