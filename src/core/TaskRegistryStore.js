@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { WorkspaceExecutionLease } = require('./WorkspaceExecutionLease.js');
@@ -143,6 +144,54 @@ function normalizeExecutionEvidence(value) {
   }
   evidence.disallowedToolNames = [...new Set(disallowedToolNames)];
   return evidence;
+}
+
+function verifyCompletionIntegration(task, evidenceRefs) {
+  const commitRefs = evidenceRefs
+    .map(ref => /^integration:commit:([a-f0-9]{7,40})$/iu.exec(ref)?.[1])
+    .filter(Boolean);
+  if (!commitRefs.length) throw new Error('completion requires an integration:commit:<sha> reference');
+  if (!evidenceRefs.includes('review:accepted')) throw new Error('completion requires review:accepted evidence');
+  if (!evidenceRefs.some(ref => /^check:/iu.test(ref))) throw new Error('completion requires a check: evidence reference');
+
+  const runGit = args => {
+    const result = spawnSync('git', ['--no-optional-locks', ...args], {
+      cwd: task.repositoryPath,
+      encoding: 'buffer',
+      timeout: 5000,
+      maxBuffer: 1024 * 1024
+    });
+    if (result.error) throw new Error(`completion Git verification failed: ${result.error.message}`);
+    if (result.status !== 0) throw new Error('completion Git verification failed; preserve task state and inspect the repository');
+    return result.stdout || Buffer.alloc(0);
+  };
+  const text = args => runGit(args).toString('utf8').trim();
+  const topLevel = path.resolve(text(['rev-parse', '--show-toplevel']));
+  const repositoryPath = path.resolve(task.repositoryPath);
+  const prefix = text(['rev-parse', '--show-prefix']).replace(/\\/gu, '/').replace(/\/$/u, '');
+  const rootPaths = task.paths.map(item => item === '.' ? (prefix || '.') : [prefix, item].filter(Boolean).join('/'));
+  const base = text(['rev-parse', '--verify', `${task.baseSha}^{commit}`]);
+
+  if (topLevel !== repositoryPath && !repositoryPath.startsWith(`${topLevel}${path.sep}`)) {
+    throw new Error('completion repository path is outside its Git worktree');
+  }
+  const commits = [...new Set(commitRefs.map(ref => text(['rev-parse', '--verify', `${ref}^{commit}`])))];
+  const changedPaths = [];
+  for (const commit of commits) {
+    const baseCheck = spawnSync('git', ['--no-optional-locks', 'merge-base', '--is-ancestor', base, commit], {
+      cwd: repositoryPath, encoding: 'utf8', timeout: 5000
+    });
+    if (baseCheck.error || baseCheck.status !== 0) throw new Error('integration commit does not descend from the task base');
+    const headCheck = spawnSync('git', ['--no-optional-locks', 'merge-base', '--is-ancestor', commit, 'HEAD'], {
+      cwd: repositoryPath, encoding: 'utf8', timeout: 5000
+    });
+    if (headCheck.error || headCheck.status !== 0) throw new Error('integration commit is not present in the current branch history');
+    changedPaths.push(...runGit(['show', '--pretty=format:', '--name-only', '-z', commit])
+      .toString('utf8').split('\0').filter(Boolean));
+  }
+  if (!pathsOverlap(rootPaths, changedPaths)) throw new Error('integration commit does not include task-owned paths');
+  const dirty = runGit(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...task.paths]);
+  if (dirty.length) throw new Error('task-owned paths still have uncommitted changes');
 }
 
 function initialExecutionProgress(taskKey, execution, now) {
@@ -597,11 +646,13 @@ class TaskRegistryStore {
       }
       const allowed = STATUS_TRANSITIONS.get(task.status);
       if (!allowed?.has(normalized.status)) throw new Error(`invalid task transition: ${task.status} -> ${normalized.status}`);
+      const evidenceRefs = [...new Set([...(task.checkpoint?.evidenceRefs || []), ...normalized.evidenceRefs])].slice(-20);
+      if (normalized.status === 'completed') verifyCompletionIntegration(task, evidenceRefs);
       task.status = normalized.status;
       task.checkpoint = {
         nextAction: normalized.nextAction,
         blocker: normalized.blocker,
-        evidenceRefs: [...new Set([...(task.checkpoint?.evidenceRefs || []), ...normalized.evidenceRefs])].slice(-20)
+        evidenceRefs
       };
       if (normalized.status === 'blocked' || normalized.status === 'completed' || normalized.status === 'failed') {
         task.ownerChatId = null;

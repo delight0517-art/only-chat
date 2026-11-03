@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -306,13 +306,27 @@ test('permits disjoint scopes and lets an expired lease be reclaimed without imp
 
 test('requires stage evidence before integration, review and completion, retaining the audit trail', async () => {
   await withFixture(async ({ repo, store }) => {
-    await createAndClaim(store, repo);
+    const sourcePath = path.join(repo, 'src/core/example.js');
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.writeFileSync(sourcePath, 'module.exports = "base";\n');
+    execFileSync('git', ['init', '--quiet', repo]);
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 'Only Chat Test']);
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 'only-chat-test@example.invalid']);
+    execFileSync('git', ['-C', repo, 'add', 'src/core/example.js']);
+    execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'task base']);
+    const baseSha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    await store.createTask(taskInput(repo, { baseSha, paths: ['src/core'] }));
+    await store.claimTask({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'claim-slice-1' });
     await assert.rejects(store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'bad-complete', status: 'completed', evidenceRefs: ['log:test'] }), /invalid task transition/);
     await assert.rejects(store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'bad-block', status: 'blocked' }), /blocker description/);
 
+    fs.writeFileSync(sourcePath, 'module.exports = "integrated";\n');
+    execFileSync('git', ['-C', repo, 'add', 'src/core/example.js']);
+    execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'integrate owned slice']);
+    const integrationSha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     const steps = [
       ['executing', 'step-1', []], ['verifying', 'step-2', ['source:sha256:abc']],
-      ['integrating', 'step-3', ['check:focused-tests:pass']], ['reviewing', 'step-4', ['integration:commit:def']]
+      ['integrating', 'step-3', ['check:focused-tests:pass']], ['reviewing', 'step-4', [`integration:commit:${integrationSha}`]]
     ];
     for (const [status, idempotencyKey, evidenceRefs] of steps) {
       if (['integrating', 'reviewing'].includes(status)) {
@@ -322,9 +336,18 @@ test('requires stage evidence before integration, review and completion, retaini
       assert.equal(result.updated, true);
     }
     await assert.rejects(store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'complete-no-evidence', status: 'completed' }), /completion requires/);
+    fs.writeFileSync(sourcePath, 'module.exports = "uncommitted";\n');
+    await assert.rejects(store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'complete-with-evidence', status: 'completed', evidenceRefs: ['review:accepted'] }), /task-owned paths still have uncommitted changes/);
+    assert.equal(store.getTask('slice-1').status, 'reviewing');
+    assert.equal(store.getTask('slice-1').ownerChatId, 'chat-a');
+    fs.writeFileSync(sourcePath, 'module.exports = "integrated";\n');
+    const untrackedPath = path.join(repo, 'src/core/new.js');
+    fs.writeFileSync(untrackedPath, 'module.exports = true;\n');
+    await assert.rejects(store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'complete-with-untracked', status: 'completed', evidenceRefs: ['review:accepted'] }), /task-owned paths still have uncommitted changes/);
+    fs.rmSync(untrackedPath);
     const completed = await store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'complete-with-evidence', status: 'completed', evidenceRefs: ['review:accepted'] });
     assert.equal(completed.updated, true);
-    assert.deepEqual(completed.task.checkpoint.evidenceRefs, ['source:sha256:abc', 'check:focused-tests:pass', 'integration:commit:def', 'review:accepted']);
+    assert.deepEqual(completed.task.checkpoint.evidenceRefs, ['source:sha256:abc', 'check:focused-tests:pass', `integration:commit:${integrationSha}`, 'review:accepted']);
     assert.equal(completed.task.ownerChatId, null);
     assert.equal((await store.claimTask({ taskKey: 'slice-1', ownerChatId: 'chat-b', idempotencyKey: 'claim-completed' })).reason, 'task_completed');
   });
