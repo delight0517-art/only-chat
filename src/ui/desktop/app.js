@@ -3505,7 +3505,14 @@ function setBrowserPanelOpen(open) {
 
 function setExclusiveDrawerOpen(activeDrawer, open) {
   const drawers = [drawerSettings, drawerPriority, drawerMorph, drawerBrowser];
-  drawers.forEach(drawer => drawer.classList.toggle('open', Boolean(open && drawer === activeDrawer)));
+  const focusDrawer = activeDrawer || (!open ? drawers.find(drawer => drawer.contains(document.activeElement)) : null);
+  const restoreFocus = !open && focusDrawer?.contains(document.activeElement);
+  drawers.forEach(drawer => {
+    const isOpen = Boolean(open && drawer === activeDrawer);
+    drawer.classList.toggle('open', isOpen);
+    drawer.inert = !isOpen;
+    drawer.setAttribute('aria-hidden', String(!isOpen));
+  });
   if (open) {
     usageQuotaPopup.classList.remove('open');
     modelSelectorPopup.classList.remove('open');
@@ -3518,6 +3525,12 @@ function setExclusiveDrawerOpen(activeDrawer, open) {
     workbenchToggle?.setAttribute('aria-expanded', 'false');
   }
   syncNativeBrowserPanel();
+  if (restoreFocus) {
+    const trigger = focusDrawer === drawerPriority ? btnTogglePriority
+      : focusDrawer === drawerMorph ? btnToggleMorph
+        : focusDrawer === drawerBrowser ? btnToggleBrowser : btnToggleSettings;
+    trigger?.focus();
+  }
 }
 
 let embeddedThreefPollRunning = false;
