@@ -186,7 +186,7 @@
     <main class="chat-stage">
       <header class="workbench-header">
         <div class="workbench-heading"><span class="workbench-eyebrow">THE CONNECTED WORKSPACE</span><strong>여러 앱, 하나의 흐름.</strong></div>
-        <button class="workbench-toggle" id="btnToggleWorkbench" type="button" aria-expanded="true" aria-controls="workbenchPanel"><span class="workbench-status-dot" aria-hidden="true"></span>작업 지도 <span aria-hidden="true">◫</span></button>
+        <button class="workbench-toggle" id="btnToggleWorkbench" type="button" aria-expanded="false" aria-controls="workbenchPanel"><span class="workbench-status-dot" aria-hidden="true"></span>작업 지도 <span aria-hidden="true">◫</span></button>
       </header>
       <div class="workbench-layout">
       <div class="conversation-surface">
@@ -342,14 +342,14 @@
           </div>
           <div class="settings-search-wrapper">
             <span class="settings-search-icon">🔍</span>
-            <input type="text" class="settings-search-input" id="settingsSearchInput" placeholder="Search..">
+            <input type="text" class="settings-search-input" id="settingsSearchInput" placeholder="설정 검색">
           </div>
         </div>
 
         <div class="settings-nav-scrollable">
           <!-- Group: Personal -->
-          <div class="settings-menu-group">
-            <div class="settings-group-label">Personal</div>
+          <details class="settings-menu-group" open>
+            <summary class="settings-group-label">기본 환경</summary>
             <button class="settings-nav-item active" data-tab="general">
               <span class="settings-nav-icon">⚙️</span>
               <span class="settings-nav-text">General</span>
@@ -379,11 +379,11 @@
               <span class="settings-nav-icon">🛡️</span>
               <span class="settings-nav-text">Security & Privacy</span>
             </button>
-          </div>
+          </details>
 
           <!-- Group: Agent -->
-          <div class="settings-menu-group">
-            <div class="settings-group-label">Agent</div>
+          <details class="settings-menu-group">
+            <summary class="settings-group-label">AI 작업</summary>
             <button class="settings-nav-item" data-tab="agents">
               <span class="settings-nav-icon">🤖</span>
               <span class="settings-nav-text">Agents</span>
@@ -410,11 +410,11 @@
               <span class="settings-nav-text">Windows changes</span>
               <span class="badge-pill-new" id="windowsChangesBadge" hidden>0</span>
             </button>
-          </div>
+          </details>
 
           <!-- Group: Features -->
-          <div class="settings-menu-group">
-            <div class="settings-group-label">Features</div>
+          <details class="settings-menu-group">
+            <summary class="settings-group-label">도구와 연결</summary>
             <button class="settings-nav-item" data-tab="passwords">
               <span class="settings-nav-icon">🔐</span>
               <span class="settings-nav-text">Passwords & Vault</span>
@@ -440,16 +440,16 @@
               <span class="settings-nav-icon">🎯</span>
               <span class="settings-nav-text">Lasso</span>
             </button>
-          </div>
+          </details>
 
           <!-- Group: Archived -->
-          <div class="settings-menu-group">
-            <div class="settings-group-label">Archived</div>
+          <details class="settings-menu-group">
+            <summary class="settings-group-label">대화 보관</summary>
             <button class="settings-nav-item" data-tab="archived">
               <span class="settings-nav-icon">🗃️</span>
               <span class="settings-nav-text">Archived chats</span>
             </button>
-          </div>
+          </details>
         </div>
       </aside>
 

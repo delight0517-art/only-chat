@@ -533,6 +533,7 @@ function setupEventListeners() {
       document.querySelectorAll('.settings-nav-item').forEach(i => i.classList.remove('active'));
       item.classList.add('active');
       const tabId = item.getAttribute('data-tab');
+      item.closest('.settings-menu-group')?.setAttribute('open', '');
       switchSettingsTab(tabId);
       if (tabId === 'general') void refreshWorkspaceOwnership();
     });
@@ -546,6 +547,12 @@ function setupEventListeners() {
       document.querySelectorAll('.settings-nav-item').forEach(item => {
         const text = item.innerText.toLowerCase();
         item.style.display = text.includes(q) ? 'flex' : 'none';
+      });
+      document.querySelectorAll('.settings-menu-group').forEach(group => {
+        const hasMatch = [...group.querySelectorAll('.settings-nav-item')].some(item => item.style.display !== 'none');
+        if (q) group.open = hasMatch;
+        else group.open = Boolean(group.querySelector('.settings-nav-item.active'));
+        group.hidden = Boolean(q) && !hasMatch;
       });
     });
   }
@@ -3715,7 +3722,7 @@ function initWorkbench() {
     panel.hidden = !open;
     toggle.setAttribute('aria-expanded', String(open));
   };
-  setOpen(window.matchMedia('(min-width: 1100px)').matches);
+  setOpen(false);
   toggle.addEventListener('click', () => setOpen(panel.hidden));
   panel.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
@@ -4087,6 +4094,7 @@ function toggleSettingsStage() {
 }
 
 function switchSettingsTab(tabId) {
+  document.querySelector(`.settings-nav-item[data-tab="${tabId}"]`)?.closest('.settings-menu-group')?.setAttribute('open', '');
   // Hide all panels
   document.querySelectorAll('.settings-panel-view').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.settings-nav-item').forEach(i => {

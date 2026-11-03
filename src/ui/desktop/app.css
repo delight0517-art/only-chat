@@ -1490,13 +1490,26 @@ body {
 }
 
 .settings-group-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  list-style: none;
   font-size: 11px;
   font-weight: 600;
   color: #9ca3af;
-  text-transform: uppercase;
   letter-spacing: 0.5px;
-  padding: 4px 10px 2px 10px;
+  padding: 7px 10px;
+  cursor: pointer;
+  border-radius: 6px;
 }
+
+.settings-group-label::-webkit-details-marker { display: none; }
+.settings-group-label::after { content: '＋'; color: #9ca3af; font-size: 12px; }
+.settings-menu-group[open] > .settings-group-label::after { content: '−'; }
+.settings-group-label:hover { color: var(--text-main); background: var(--bg-card-hover); }
+.settings-menu-group:not([open]) > .settings-nav-item { display: none !important; }
+.settings-menu-group[hidden] { display: none; }
+.settings-group-label:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 
 .settings-nav-item {
   display: flex;
