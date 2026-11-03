@@ -876,16 +876,17 @@ class DesktopServer {
     }
 
     if (pathname === '/api/audio/transcribe' && req.method === 'POST') {
-      const body = await this._readLimitedBody(req, 27 * 1024 * 1024);
-      if (!body) return this._respondJson(res, { error: '녹음 파일이 너무 크거나 요청 형식이 올바르지 않습니다.' }, 413);
-      const encoded = body.audioBase64;
-      const mimeType = String(body.mimeType || '').split(';')[0].toLowerCase();
+      const mimeType = String(req.headers['content-type'] || '').split(';')[0].toLowerCase();
       const extension = ({ 'audio/webm': '.webm', 'audio/mp4': '.mp4', 'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/ogg': '.ogg' })[mimeType];
-      if (!extension || typeof encoded !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+      if (!extension) {
         return this._respondJson(res, { error: '지원하지 않는 오디오 형식입니다.' }, 400);
       }
-      const audioBytes = Buffer.from(encoded, 'base64');
-      if (audioBytes.length < 128 || audioBytes.length > 20 * 1024 * 1024 || audioBytes.toString('base64') !== encoded) {
+      const audioBytes = await this._readLimitedBuffer(req, 20 * 1024 * 1024);
+      if (!audioBytes) return this._respondJson(res, { error: '녹음 파일이 너무 크거나 요청 형식이 올바르지 않습니다.' }, 413);
+      if (audioBytes.length < 128) {
+        return this._respondJson(res, { error: '녹음 파일이 비어 있거나 너무 짧습니다. 다시 녹음해 주세요.' }, 400);
+      }
+      if (audioBytes.length > 20 * 1024 * 1024) {
         return this._respondJson(res, { error: '오디오 파일은 20 MB 이하이어야 합니다.' }, 413);
       }
       const whisper = [...(process.env.PATH || '').split(path.delimiter).map(directory => path.join(directory, 'whisper')),
@@ -2066,6 +2067,22 @@ class DesktopServer {
         catch (_) { resolve(null); }
       });
       req.on('error', () => resolve(null));
+    });
+  }
+
+  _readLimitedBuffer(req, maxBytes) {
+    return new Promise(resolve => {
+      const chunks = [];
+      let size = 0;
+      let exceeded = false;
+      req.on('data', chunk => {
+        size += chunk.length;
+        if (size > maxBytes) { exceeded = true; chunks.length = 0; return; }
+        if (!exceeded) chunks.push(chunk);
+      });
+      req.on('end', () => resolve(exceeded ? null : Buffer.concat(chunks, size)));
+      req.on('error', () => resolve(null));
+      req.on('aborted', () => resolve(null));
     });
   }
 

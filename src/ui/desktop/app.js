@@ -27,6 +27,7 @@ let stagePriorityLoadRequestId = 0;
 let threefControlAllowed = false;
 let macScreenControlAllowed = false;
 let isGenerating = false;
+let activeSendInFlight = false;
 let currentAbortController = null;
 let isRecording = false;
 let speechRecorder = null;
@@ -36,6 +37,7 @@ let speechTranscribing = false;
 let speechTranscriptionRunning = false;
 let speechStarting = false;
 let pendingSpeechMemoBlob = null;
+let pendingSpeechAutoSendPrompt = null;
 let speechAudioContext = null;
 let speechAnalyser = null;
 let speechAnimationFrame = null;
@@ -1431,40 +1433,47 @@ async function transcribeSpeechMemo(blob = pendingSpeechMemoBlob, autoSend = tru
   const retryButton = document.getElementById('btnVoiceRetry');
   speechTranscribing = true;
   retryButton.hidden = true;
-  status.textContent = `전사 중 · ${(blob.size / (1024 * 1024)).toFixed(1)} MB · 첫 사용은 음성 모델 준비 때문에 몇 분 걸릴 수 있습니다`;
+  const startedAt = Date.now();
+  const updateElapsed = () => {
+    const seconds = Math.floor((Date.now() - startedAt) / 1000);
+    status.textContent = `로컬 Whisper 전사 중 · ${seconds}초 · ${(blob.size / (1024 * 1024)).toFixed(1)} MB${seconds < 15 ? ' · 첫 실행은 모델 준비로 더 걸릴 수 있습니다' : ''}`;
+  };
+  updateElapsed();
+  const elapsedTimer = window.setInterval(updateElapsed, 1000);
   status.hidden = false;
   updateVoiceCaptureUI();
   try {
     if (blob.size > 20 * 1024 * 1024) throw new Error('녹음은 20 MB 이하로 나누어 주세요.');
-    const dataUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('녹음 파일을 읽지 못했습니다.'));
-      reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
-      reader.readAsDataURL(blob);
-    });
     const response = await fetch('/api/audio/transcribe', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audioBase64: dataUrl, mimeType: blob.type || 'audio/webm' })
+      method: 'POST', headers: { 'Content-Type': blob.type || 'audio/webm' },
+      body: blob
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || `전사 실패 (${response.status})`);
     const transcript = String(result.transcript || '').trim();
     if (!isUsableSpeechTranscript(transcript)) {
-      status.textContent = '전사 결과를 읽을 수 없습니다. 녹음은 보존했습니다. 다시 녹음하거나 재전사를 눌러 주세요.';
+      status.textContent = '음성을 글자로 인식하지 못했습니다. 녹음은 보존했습니다. 더 선명하게 말하거나 짧게 녹음한 뒤 다시 전사해 주세요.';
       retryButton.hidden = blob.size > 20 * 1024 * 1024;
       return;
     }
+    // The recognized text is now preserved in the composer; retrying the same
+    // recording could insert and send it twice.
+    pendingSpeechMemoBlob = null;
     applySpeechTranscript(transcript);
     if (autoSend) {
       if (isGenerating) {
-        pendingSpeechMemoBlob = null;
-        status.textContent = '전사 완료 · 현재 응답이 끝나면 Enter를 눌러 전송하세요';
+        pendingSpeechAutoSendPrompt = composerInput.value.trim();
+        status.textContent = '전사 완료 · 현재 응답이 끝나면 자동 전송합니다';
       } else {
         status.textContent = '전사 완료 · 채팅으로 전송합니다';
-        await handleSend();
-        pendingSpeechMemoBlob = null;
-        status.textContent = '';
-        status.hidden = true;
+        const accepted = await handleSend();
+        if (accepted) {
+          status.textContent = '';
+          status.hidden = true;
+        } else {
+          status.textContent = '전사는 완료했지만 전송 대기열에 넣지 못했습니다. 작성된 문장을 확인한 뒤 Enter로 보내 주세요.';
+          status.hidden = false;
+        }
       }
     } else {
       status.textContent = `${result.language || '언어 자동 감지'} · 전사 완료`;
@@ -1473,10 +1482,12 @@ async function transcribeSpeechMemo(blob = pendingSpeechMemoBlob, autoSend = tru
     status.textContent = `전사하지 못했습니다: ${error.message}`;
     retryButton.hidden = blob.size > 20 * 1024 * 1024;
   } finally {
+    window.clearInterval(elapsedTimer);
     speechTranscriptionRunning = false;
     speechTranscribing = false;
     composerInput.readOnly = false;
     updateVoiceCaptureUI();
+    if (!isGenerating) flushPendingSpeechAutoSend();
   }
 }
 
@@ -1629,7 +1640,8 @@ async function refreshAdminManagerStatus() {
 
 async function handleSend() {
   const prompt = composerInput.value.trim();
-  if (!prompt || isGenerating) return;
+  if (!prompt || isGenerating) return false;
+  activeSendInFlight = true;
   const fullAccessForTurn = fullAccessEnabled;
   fullAccessEnabled = false;
   btnAccessToggle?.setAttribute('aria-pressed', 'false');
@@ -1703,10 +1715,11 @@ async function handleSend() {
     } finally {
       assistantTimer.finish();
       finishAssistantWork(assistantCard, assistantCard.workOutcome || 'complete');
+      activeSendInFlight = false;
       setGeneratingState(false);
       applyPendingUiMorphReloadWhenSafe();
     }
-    return;
+    return true;
   }
 
   if (prompt.trim() === '/capacity') {
@@ -1727,10 +1740,11 @@ async function handleSend() {
     } finally {
       assistantTimer.finish();
       finishAssistantWork(assistantCard, assistantCard.workOutcome || 'complete');
+      activeSendInFlight = false;
       setGeneratingState(false);
       applyPendingUiMorphReloadWhenSafe();
     }
-    return;
+    return true;
   }
 
   if (prompt.startsWith('/spacekeeper')) {
@@ -1756,10 +1770,11 @@ async function handleSend() {
       assistantCard.content.appendChild(message);
     } finally {
       assistantTimer.finish();
+      activeSendInFlight = false;
       setGeneratingState(false);
       applyPendingUiMorphReloadWhenSafe();
     }
-    return;
+    return true;
   }
 
   const turnAbortController = new AbortController();
@@ -1831,9 +1846,11 @@ async function handleSend() {
     finishAssistantMessage(assistantCard);
     assistantTimer.finish();
     finishAssistantWork(assistantCard, assistantCard.workOutcome || 'complete');
+    activeSendInFlight = false;
     setGeneratingState(false);
     applyPendingUiMorphReloadWhenSafe();
   }
+  return true;
 }
 
 function clearCurrentAbortControllerIfSame(turnAbortController) {
@@ -1871,6 +1888,30 @@ function setGeneratingState(generating) {
     iconStop.style.display = 'none';
     btnSend.title = '채팅 전송 (Send)';
   }
+
+  if (!generating && !activeSendInFlight && pendingSpeechAutoSendPrompt && !speechTranscribing) {
+    queueMicrotask(flushPendingSpeechAutoSend);
+  }
+}
+
+function flushPendingSpeechAutoSend() {
+  const expectedPrompt = pendingSpeechAutoSendPrompt;
+  if (!expectedPrompt || speechTranscribing || isGenerating || activeSendInFlight) return;
+  if (composerInput.value.trim() !== expectedPrompt) {
+    pendingSpeechAutoSendPrompt = null;
+    const status = document.getElementById('voiceCaptureStatus');
+    status.textContent = '작성 내용이 바뀌어 음성 자동 전송을 취소했습니다. 전사 문장은 작성창에 남아 있습니다.';
+    status.hidden = false;
+    return;
+  }
+  pendingSpeechAutoSendPrompt = null;
+  void handleSend().then(accepted => {
+    if (accepted) {
+      const status = document.getElementById('voiceCaptureStatus');
+      status.textContent = '';
+      status.hidden = true;
+    }
+  });
 }
 
 function appendUserMessage(text) {
