@@ -1,0 +1,24 @@
+Only Chat recurring schedule candidate E2E — 2026-10-30 KST
+
+Target
+- Existing installed app: 127.0.0.1:8899/api/schedules -> HTTP 404.
+- Existing isolated candidate: PID 78399, port 18998, ONLY_CHAT_ISOLATED=1, ONLY_CHAT_DATA_DIR=/tmp/onlychat-recurring-schedule-qa-20261030.
+- Candidate bundle: com.rogan.onlychat.schedule.qa, build 1.
+- Executable SHA-256: 1c1527651d5adb9c9a5f74957f19953658b72556533fe244b390b9ac0278a9ef.
+
+Runtime API check (synthetic disabled schedule, nextRunAt 2099; no /run call)
+- POST create -> HTTP 201; list and GET -> HTTP 200.
+- PUT edit -> HTTP 200; attached UTF-8 test content remained readable.
+- DELETE -> HTTP 200; schedule ID absent from persisted JSON and list; attachment directory empty.
+- No scheduled execution, dispatcher task, active app restart, or installation was requested/performed.
+
+Source checks
+- node --test tests/recurringScheduleStore.test.js tests/recurringScheduleServer.test.js -> 9/9 pass.
+- RecurringScheduleStore SHA-256 a5212aef894ce386cd04523d15add5fbad9a2dc63f42e10e16ba998b3fe2c519.
+- RecurringScheduleService SHA-256 c01c89e276c8f4ba78a0b14ece9d48e6335fe1a0e8173ab321e6faf20cdaa43b.
+- DesktopServer SHA-256 d2a29eed81f0d49f72235807e4ac3d3aabe84683891afe4da06a67c61069f1ec.
+
+Limitations
+- Candidate UI manager open/save and automatic dispatcher execution remain unverified.
+- Installed app remains on old runtime (schedules route 404); it was not restarted to protect active user session/draft.
+- Windows patch upload was previously read back from Drive; receiver application/build/runtime remain unverified.

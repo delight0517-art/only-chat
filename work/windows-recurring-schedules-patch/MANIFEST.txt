@@ -1,0 +1,7 @@
+Feature: Only Chat recurring schedules (Windows selective patch)
+Baseline evidence: OnlyChat_Windows_Source_Current.zip, package version 1.0.5
+Files changed by applier: src/ui/desktop/server.js, src/ui/desktop/app.js, src/ui/desktop/index.html, src/ui/desktop/app.css
+Files added by applier: src/scheduler/RecurringScheduleStore.js, src/scheduler/WindowsRecurringScheduleService.js
+Applier behavior: structural preflight first; stops on any missing/duplicate anchor or pre-existing schedule module; does not replace app_source or package metadata.
+Verification: isolated archive fixture patched successfully; node --check passed on modified server/renderer and both scheduler modules.
+Windows build/install/runtime: not verified; receiver acknowledgement pending.

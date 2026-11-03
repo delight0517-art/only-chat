@@ -1,0 +1,5 @@
+Only Chat recurring schedule retention checkpoint (2026-10-30)
+- Preserved active source edits and Windows patch package at work/OnlyChat_Windows_Recurring_Schedules_Patch.zip.
+- Preserved isolated Mac candidate `.build/Only Chat Schedule Candidate.app`; it remains needed for UI interaction diagnosis and has not passed visible modal QA.
+- No prior `.build` candidate directories were removed: they pre-existed this slice and may be referenced by other tasks; ownership/reference was not established.
+- No replacement was installed into the canonical Only Chat runtime. The canonical live draft/session remains untouched. Windows receiver build/install/runtime is still pending.

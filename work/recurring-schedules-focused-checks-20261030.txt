@@ -1,0 +1,21 @@
+Only Chat recurring schedules - focused evidence (2026-10-30 KST)
+
+Mac/source
+- recurringScheduleStore.test.js: 7 passed, 0 failed. Covers recurrence calendar logic/month-end clamp, persisted records/restart recovery, text attachment constraints, atomic update/delete safety, duplicate-run guard.
+- recurringScheduleServer.test.js: 2 passed, 0 failed. Covers create/list/read/update/run/delete HTTP routes and canonical base64/attachment count validation.
+- node --check passed: src/scheduler/RecurringScheduleStore.js, src/scheduler/RecurringScheduleService.js, src/ui/desktop/server.js, src/ui/desktop/app.js.
+- Isolated candidate app `com.rogan.onlychat.schedule.qa`, port 18998, build executable SHA-256 `1c1527651d5adb9c9a5f74957f19953658b72556533fe244b390b9ac0278a9ef`.
+- Live isolated candidate API CRUD E2E via localhost: created monthly disabled test schedule, listed/read it, updated it with a text attachment retained, deleted it, then verified list empty. No scheduled AI execution was triggered. Health endpoint returned HTTP 200 with an empty list afterward.
+- Candidate UI accessibility tree shows the calendar rail button `반복 스케줄 관리`; CUA click attempts did not open the modal. UI manager visual interaction remains unverified; canonical app was not restarted because its live draft/session must be preserved.
+
+Windows receiver patch
+- Baseline: Drive archive `OnlyChat_Windows_Source_Current.zip`, package version 1.0.5. Package is a selective overlay, not a replacement source tree.
+- Isolated fixture extracted only five baseline files into a Python TemporaryDirectory (finally-cleaned), applied `apply.js` successfully, and passed `node --check` on modified server.js/app.js plus both schedule modules.
+- WindowsRecurringScheduleService fake-engine integration check passed: manual scheduled run uses a separate session; blocks write_file without calling the engine tool; records approval-needed/blocked status; restores prior current session/history/requestSandbox and resets activeTurns.
+- Windows background scheduler is read-only in this patch; filesystem/shell commands, browser interaction, credentials and write/send tools are blocked. Run results indicate blocked changes for follow-up in normal chat.
+- Windows canonical checkout, patch application, Windows tests/build/install/runtime and receiver acknowledgement are NOT verified. `work/OnlyChat_Windows_Recurring_Schedules_Patch.zip` is awaiting Drive upload/readback.
+
+UI detail
+- CUA inspection of the isolated app showed current model pill `Default`, despite localStorage defaulting to GPT-6 Luna. This remains a distinct priority/model-selector issue; no fix is claimed in this schedule slice.
+- Windows Drive upload: file ID `1eiqorlqnt5xwcWS7eWbhiGfgL7pK9Jgf`; metadata readback reports parent `1lSk-fDWjrkPNAQtEk_xzkJyBaN60qgLb`, MIME `application/zip`, size 20,985 bytes. Raw fetch returns a Drive file reference with the same file ID and size. This confirms Drive receipt, not Windows application.
+- Isolated candidate UI inspection again showed the rail icon; click and Cmd+Q did not change the AX tree/process state. UI modal and normal candidate shutdown remain unresolved by CUA; keep the isolated candidate available for further diagnosis and preserve the live canonical app untouched.

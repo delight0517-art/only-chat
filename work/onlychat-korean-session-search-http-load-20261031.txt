@@ -1,0 +1,15 @@
+Only Chat TODO-202 focused isolated HTTP load check
+Date: 2026-10-31 KST
+
+Harness: current DesktopServer._handleRequest + NativeSessionBridge; temporary Codex state DB and rollout tree; all fixture text synthetic; no real ~/.codex or ~/.gemini session bodies read.
+
+Result:
+- POST /api/sessions/search returned HTTP 200.
+- 600 synthetic sessions × 120 JSONL records = 72,000 lines; one Korean 4-term match in the final session.
+- Correct single result: codex_599; snippet includes 회귀전용.
+- Elapsed 253 ms against configured 20,000 ms timeout.
+- Temporary database, rollout files and HTTP server were removed/stopped in finally.
+
+Limits:
+- This is an isolated current-source HTTP/API result over synthetic data, not the installed app, production user transcript corpus, sidebar UI, or Windows runtime.
+- Existing 20-second production timeout/UI error message and large real-history performance remain open.

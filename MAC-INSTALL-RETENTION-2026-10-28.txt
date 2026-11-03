@@ -1,0 +1,3 @@
+Preserved one rollback: /Users/rogan/Applications/Only Chat.app.rollback
+Installed current: /Users/rogan/Applications/Only Chat.app
+Older rollback moved to Trash if present.

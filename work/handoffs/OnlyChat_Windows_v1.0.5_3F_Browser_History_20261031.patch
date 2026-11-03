@@ -1,0 +1,116 @@
+diff --git a/app_source/src/browser/EmbeddedBrowser.js b/app_source/src/browser/EmbeddedBrowser.js
+index 014beed..12d87ec 100644
+--- a/app_source/src/browser/EmbeddedBrowser.js
++++ b/app_source/src/browser/EmbeddedBrowser.js
+@@ -45,6 +45,28 @@ class EmbeddedBrowser {
+     return { ok: true, stdout: `내장 브라우저에서 열었습니다: ${url}`, stderr: '', url };
+   }
+ 
++  async history(action) {
++    if (!this.window || this.window.isDestroyed()) return { ok: false, stderr: '브라우저가 열려 있지 않습니다.' };
++    const contents = this.window.webContents, h = contents.navigationHistory;
++    if (!h) return { ok: false, stderr: '브라우저 기록 API를 사용할 수 없습니다.' };
++    if (action === 'reload') {
++      const url = contents.getURL();
++      if (!/^https?:\/\//i.test(url)) return { ok: false, stderr: '현재 페이지를 다시 불러올 수 없습니다.' };
++      const decision = await this.policy.check(url);
++      if (!decision.allowed) return { ok: false, stderr: 'Focus Fence 정책이 허용하지 않아 다시 불러오지 않았습니다.', blocked: true };
++      contents.reload(); return { ok: true, url, stdout: '현재 페이지를 다시 불러옵니다.' };
++    }
++    if (!['back','forward'].includes(action)) return { ok: false, stderr: '지원 동작: back, forward, reload' };
++    if (!(action === 'back' ? h.canGoBack() : h.canGoForward())) return { ok: false, stderr: '이동할 기록이 없습니다.' };
++    const entry = h.getEntryAtIndex(h.getActiveIndex() + (action === 'back' ? -1 : 1));
++    if (!entry?.url || !/^https?:\/\//i.test(entry.url)) return { ok: false, stderr: '이 기록 항목은 열 수 없습니다.' };
++    const decision = await this.policy.check(entry.url);
++    if (!decision.allowed) return { ok: false, stderr: decision.reason === 'blocked' ? 'Focus Fence가 기록 이동을 차단했습니다.' : 'Focus Fence 정책 확인에 실패했습니다.', blocked: true };
++    this.approvedUrl = entry.url; h[action === 'back' ? 'goBack' : 'goForward']();
++    this.activeUrl = entry.url; this.lastError = '';
++    return { ok: true, url: entry.url, stdout: action === 'back' ? '이전 페이지로 이동했습니다.' : '다음 페이지로 이동했습니다.' };
++  }
++
+   _ensureWindow() {
+     if (this.window && !this.window.isDestroyed()) return;
+     this.window = new this.BrowserWindow({
+diff --git a/app_source/src/core/AgentEngine.js b/app_source/src/core/AgentEngine.js
+index dc10a47..02a3e1a 100644
+--- a/app_source/src/core/AgentEngine.js
++++ b/app_source/src/core/AgentEngine.js
+@@ -277,6 +277,8 @@ class AgentEngine {
+           return await this.tools.browserRecipe(args.name || args.recipe, args.tabId);
+         case 'browser_status':
+           return await this.tools.browserStatus();
++        case 'browser_history':
++          return await this.tools.browserHistory(args.action);
+ 
+         // Passkey & Credential Vault Tool
+         case 'vault_get_credential':
+diff --git a/app_source/src/tools/ToolRegistry.js b/app_source/src/tools/ToolRegistry.js
+index 1d6dbb1..4d5e7e3 100644
+--- a/app_source/src/tools/ToolRegistry.js
++++ b/app_source/src/tools/ToolRegistry.js
+@@ -285,6 +285,11 @@ class ToolRegistry {
+     return this.browser.recipePlay(recipeName, tabId);
+   }
+ 
++  async browserHistory(action) {
++    if (!this.browser) throw new Error('Browser is disabled in isolated mode.');
++    return this.browser.history(action);
++  }
++
+   async browserStatus() {
+     if (!this.browser) return { enabled: false };
+     return this.browser.getStatus();
+diff --git a/app_source/src/ui/desktop/app.js b/app_source/src/ui/desktop/app.js
+index 5bdeb44..4c2de37 100644
+--- a/app_source/src/ui/desktop/app.js
++++ b/app_source/src/ui/desktop/app.js
+@@ -1982,6 +1982,18 @@ async function navBrowser(url) {
+   }
+ }
+ 
++window.handleBrowserHistory = async function(action) {
++  const el = document.getElementById('browserAriaConsole');
++  try {
++    const res = await fetch('/api/browser/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
++    const data = await res.json();
++    if (!res.ok || !data.ok) throw new Error(data.stderr || data.error || ('HTTP ' + res.status));
++    el.textContent = data.stdout || '완료';
++    if (data.url) document.getElementById('browserUrlInput').value = data.url;
++    setTimeout(() => handleBrowserAria(), 400);
++  } catch (error) { el.textContent = '[브라우저 기록 오류] ' + error.message; }
++};
++
+ async function handleBrowserAria() {
+   const consoleEl = document.getElementById('browserAriaConsole');
+   consoleEl.textContent = `[REA / Aside ARIA 트리 캡처 중... (DOM 95% 압축)]`;
+diff --git a/app_source/src/ui/desktop/index.html b/app_source/src/ui/desktop/index.html
+index 18eef6d..db8dd6f 100644
+--- a/app_source/src/ui/desktop/index.html
++++ b/app_source/src/ui/desktop/index.html
+@@ -1124,6 +1124,9 @@
+     </div>
+     <div class="drawer-content" style="padding: 12px; gap: 10px;">
+       <div style="display: flex; gap: 6px;">
++        <button class="btn-secondary" type="button" onclick="handleBrowserHistory(&#39;back&#39;)" aria-label="뒤로">←</button>
++        <button class="btn-secondary" type="button" onclick="handleBrowserHistory(&#39;forward&#39;)" aria-label="앞으로">→</button>
++        <button class="btn-secondary" type="button" onclick="handleBrowserHistory(&#39;reload&#39;)" aria-label="새로고침">↻</button>
+         <input type="text" id="browserUrlInput" class="search-box-input" style="flex: 1;" placeholder="https://google.com" value="https://google.com">
+         <button class="btn-primary" id="btnBrowserNav" style="padding: 6px 12px;">이동</button>
+       </div>
+diff --git a/app_source/src/ui/desktop/server.js b/app_source/src/ui/desktop/server.js
+index 53e4b75..6708073 100644
+--- a/app_source/src/ui/desktop/server.js
++++ b/app_source/src/ui/desktop/server.js
+@@ -841,6 +841,12 @@ class DesktopServer {
+       return;
+     }
+ 
++    if (pathname === '/api/browser/history' && req.method === 'POST') {
++      const body = await this._readBody(req);
++      const result = await this.engine.tools.browserHistory(body.action);
++      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(result)); return;
++    }
++
+     if (pathname === '/api/browser/aria' && req.method === 'POST') {
+       const body = await this._readBody(req);
+       const result = await this.engine.tools.browserAria(body.tabId);

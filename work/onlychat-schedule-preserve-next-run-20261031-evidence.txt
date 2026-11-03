@@ -1,0 +1,18 @@
+Task: onlychat-schedule-preserve-next-run-20261031
+
+Source change:
+- src/scheduler/RecurringScheduleStore.js: metadata-only update preserves existing nextRunAt; recurrence-field change recalculates; explicit nextRunAt remains authoritative.
+- tests/recurringScheduleStore.test.js: regression for metadata preservation and recurrence recalculation.
+
+Verification:
+- node --test tests/recurringScheduleStore.test.js: 8 passed, 0 failed.
+- node --test tests/recurringScheduleServer.test.js: 2 passed, 0 failed.
+- node --check src/scheduler/RecurringScheduleStore.js: exit 0.
+- node --check tests/recurringScheduleStore.test.js: exit 0.
+- Isolated HTTP API: POST create 201; PUT title-only 200 and exact nextRunAt preserved; PUT localTime 200 and next run recalculated to 07:45 local; reloaded JSON store retained the same nextRunAt.
+- Isolated profile directory removed in finally.
+
+Limits:
+- Installed Only Chat and live draft were not restarted or modified.
+- Source tree is non-Git; no commit or agent-coord lease is available.
+- Windows v1.0.5 unified patch already carries equivalent behavior; Windows receiver apply/build/install/runtime/ACK remain pending.

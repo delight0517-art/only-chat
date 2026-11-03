@@ -1,0 +1,752 @@
+diff --git a/OnlyChat-Windows/app_source/assets/only-chat.ico b/OnlyChat-Windows/app_source/assets/only-chat.ico
+index 292c8b4efb44166a2ad6b86ec0c8e48b8ad3752e..72d4584912c29908b5cf3ab399b69ba2aa8d1cfd 100644
+GIT binary patch
+delta 1894
+zcmW-idsNL?6vyxBL4G==sEb~5yF@gTJTiqIG|dzhBD6{@??I2X(nD4cQ6r&Wxk*Zy
+zp&2ph*K##6g)}0AXnG7PLdr;yBFucZe?I%}y}xIlbN2b2b30qLdLL^YG-LdbS(+vn
+z_@SZ|j7!=~t_5SNt*-%NGc<rPeqyf<#rEnhf+N=RuSutOot#_x1>p7(A9T5J?Sy8^
+zmT@Nyytx!^V1ulbYq)`o_NY$Mb{qM^aW*z3CqQlj?vT3=<HE1Y?>#>j#-%FxN}AMs
+ztR*StnJB<DCLv&*$#pQ>bTj9IqV_>wKu%gu_&hG@n@uCBi}?YJyJP;AoT_mt;6lqH
+z@V#X@SUP??s8HB|ixiW!xZuX6XvJ_+Ct2+W4V8W<utE8VLJKDD1TRkvL&)CxlZL>B
+zrk;S&uM?GAa<DOD+FaOL%tikxwGdcMrNv4MY@2E67IsGDO`o<v6DDfLD)R2n{L;7a
+z4tDljxLdQQDk!VA@9OUKmM6PLbhYcFas7#|y(z=QrS<A4Sz|}%=Ud88y)qx8H>$Yf
+zTugL0g5{Xbo(=lVu0z3z-|VAxmN+(y;DS$*Ls#AD`$h9TTy14sR5`Un5i^I*O>CH3
+z2It_svkXF+N&L_|TCyBAOt#pSi(W3($QimahNJThlR4LVnY&nW(adch;)QO$wDkA$
+z^Jyd59%r#T(Zh2ooE*<Ka$*;u&C(F>@eqjCixc6TUTjaZK3b9vCuHg0lyUdB19$k(
+zN2uICgo@g%%ph6CD(p-04``s+SAnO=GzSe*?fNw*;6$z^ous?2hD`l>>Y}9B=!mjX
+z;1+)}=eNzEws(bGq+zGR9pO9<U#nq)?S|XSBAab@eNb+arw<+1pYZK7+3F(AI4%Z8
+zctdt3!Wi|$t2>T?t0Qf}w8+&+yoz+9#N=oc6W2vQ1YKhs!04C<;If@p!7;H7;Op2r
+z9G|9ZSd?8#<&40rDZN~}y(^H`GBrL3wNm3PnGqMfR(-z0WO){kbn+B$jH9+4>EKdj
+zLM2TTw>#8;3vtPP!4pbe=y;EoSKlw-=}C<k+?X_uc0900Afu5ygY>gf=u1sa`O<|y
+zQ@tr>oR$lgrd>fM;y@2gzaiZj&Z%^|#p3x45AbsamMqn0UZ5fSRk$&tX%-FqJu451
+z6-Qd2l^k-uBNLyiN0T1N`-#-{`N3dDz8Bb<Zw$W6KMEcypuW@;oPjjr#C96^^k+>P
+z(Q$GaIQLWwXjb?y62dP|^oY2hnM{R4&fcN(b1wOE`ts5M^1{_6G*(%LD=%f1MKin&
+zH7V6qYumVFTt1P;&AB+6OvI&JQjV%v0dB4ELFiJ29<_R;brRDtG${){m#sQzljwGP
+z7(U2KPsk=+#)*i@m+@P=cR7t36I^u|PJdM?6+2yxZ$N6Qo=FqvUms5~yP8Sh%9?AS
+z#f=j1?hRZUQFXHv^sJo&X>u(mY38lTV8yKjgk1hA)`sc1*NJV3|1?;GnvKPv)EJ6{
+zRnvKzq`7$vt>Vpt<>2=ZiTMw2BJsncb}H%9`WVi%w$0R>oc0wY?t7LA{`mYkdQ<MA
+zt4OWHMd>ghx%dLzkY2v{@-UZn(b2r@qTSAVxtE6i@v2^r3wv~%Y@G(K>PJV0axt&l
+z9f_yi&!D>bnvPs->VYFx^d{q3kQJ6KS(LchGl5IKZ&Z}+c$*A{^reCy`!0eP-o=3S
+z{pY~;{%!b}Pp%%gaYI#8)>deIV6-2)JP?TT6$7~%csYl+;I<8}hq!uhFTx8y4q$E4
+zg8w}6b*K(%vLqNIEp`&7T#HR-T-~k3=-p5U4PkPI$2*d%BZsm}L-1d4*vzMPj@yX*
+z;G<matjB&sqg34nOgWMZ>ZT{htMvvgCY*`eZW?{@16L^xSvm5ph76CWs$?WXt5vb1
+z*kaVaJ&I*x9qLVTW=M0zjArz*sEfxkKNMAKo3km1tL!WoE|xmff;rN9ixeyhMrp-x
+W1yprb47WnHRmpHhYK;kOqwqgy+kzYb
+
+delta 1389
+zcmWNRi8qxA7{>4WeOL5ZuC8p|tT!=8(J(|uNTYO!vXx^wrj%x~<dmf}S&E4Arb}e)
+zNQ=l@a}z~Gww5s_mnl+`R8y2j>ly#S^Zd^5d8VH7C!X++=^WS12JU!G0L=wWJ{iaf
+z7_yWPgo<nhKIJHR01hcHBY{c>piEGXiK?GDuC0R2*r{JR&yx<$GXts?h6Ab3pMYEq
+zFY?w{2pFj;!c5II^4xj9zh0b<p+U{f3|TKQ0Q3`yF;NtSuSFerbzy`eC+>MP9axk-
+zx!aM<b*un`b#v&g?gzk8{S4e?a1lj@4cKoOi9d_YaJSf$;asRptO!`W=qTD7`OtBr
+zA;2i(efY*WhC)ofF$&zkWT4i&6e9{Z(*c(Itrj!Pd&qZ*0Z^R9AVV81)q!?cxw2Ga
+zy#+||r`eL5Z7tQfKRXZI4$kkHZcWV{ewL*AYE*!wwmNvzwgCO@>@e4^m$t6R1e~<*
+zSK&6K*}m$%(06gQo3jNEWe%fsV`U)V0>^slbG!s998Yvm{sEs?1ao=b&Y0`eP65sU
+z9Oo6oTh+5(*U134xn$Cmix<#p*D{vI+%7Sg=e~(1+(#Jf@yH-wPeT^ty;JC$_i{kX
+zO}TV?(?b>u{VnmX|7sEjL;<C2J^`o|SU`1w{Xj>8E&$ntd|}Wktb!hfodDXowG+rX
+z+yf|eyFE+IJN;SGj<jaTGrEyMrC57%iw$G&;vQ{m-{VOddo=);#GS_OI1Bt77eZU&
+z9RTwa?6EK5G1ev8;;Y0**s-q_v-bDnFG;=19P1ntZ<*0-9h7fAMXm>e7(8<@nE1&C
+zpvJA=^1TIkC3-^&CF1uQ@w*DfX+=si;Fr{B0rz|Qbm-!`mkOR*n(ck%xIaxszK8UI
+z_8#VdlGCjLuVwg<%8}XF>yCN?p2{vpyPOvKnls7ZzqzYuDGC^L%yYx^ynYHfc@0oI
+zKL^j{7o%H235^#FGt^PEmLXw@3XnnR8Nl|kP&6rDufZiO6{p6Om)h}6nw+LZk=uDD
+z+6Rg;tGp0RDr_;dqM8I}A{jbR$pWUF^~J%n!+5>w4ON|U;M4PJQy|rv2P}=$%~G$w
+z63CLqwK~Ag`Y2j)Jptso&W!fkVIy>-!5HXyqaBdm&0@ftO#!IYyn%K!tIWbtGf4vl
+zp{PFe@+rwNvlN&6b200dJIZbaqiu^jrM6@<sMdCp&bM8e9mX9C%D!U*)Yf4LINtdK
+z3cK1+)>Vg@-R<bza|Pw^t|ZsH%77d1nPSqtWP<y(a#Yth!QyF|3AW2>aqmDhy&U)h
+zsPrFg2CqN%L*bAgMhtb6&G0CoXyhq<ABkXT$MXONTVLd1!1xP!uE9x3oYhQgUy1;?
+zP6SZX#OxcSzqZ9&uiZ)c&EZ*X-~O${9a0*waF}ToB*aBy+`Bc{^lpqQCshEiPK{yF
+z`*e=uRn>3wNQrPyrez-_fF0B6==CuRhdwr9;eUy!Idd61XLbp=%8;3^E=gzoNR>v8
+zmJhmp3Zk>0iW!zu9L9BDx8dclhso~S40F{A-1(9uKBP(ba!@I`AO}B6pU6QJNWJ7i
+z6BsT|`l|xmn4`#@)Y;Ip(nYl_v`}gzfErdZCIq8-oOIw>X}ii7y~WkPM=nfg{4CK`
+zg9gc<8uUu4=R>z7ULCxpJ?e0Zk%nu55Tps(V9iKtMc~6q=jeesNS5ovDru}f*z+Z|
+Ziy&TNY6R61nGqC9Vi!Z6lrx6y-2ZJrVb1^n
+
+diff --git a/OnlyChat-Windows/app_source/assets/only-chat.png b/OnlyChat-Windows/app_source/assets/only-chat.png
+index 3e823bafef34e748a98e3c15f5d562302e8d2cd3..8efee5c6a53c29a6a29363231ca907e515b9f370 100644
+GIT binary patch
+delta 1892
+zcmW-hc{tWt6vy8iS$?^MM7>nJL>SVfh^Ejq8XjAvLPgr9o)XQ2Xc;B()M)Z6ugb1O
+zBKbA*j-e2lNXuxErjqouH`<iaGT+lbpYuEGJ@?$-y;tw5-@2!+l@{Rl0~bc}J(}ri
+zT;O{$7chRJ*I1o#Nn^0yAP6JPFvfUMv=-T-b^M@+b$mROUVe@gm0lsZVCV-OE}Sh=
+zOItmrSl^#Z3-#^bl~N5>kmxmhLb07jflzFRn=&&lY-~Ip^yT!GxTufH;PQ}9ab>|d
+zs`_h3OMgn`VubNbZ7v+0cjaMD43{d5L#P$4k>*rnoLm9=%GZIl@^fIa=_<|zMcb{u
+zu<Z1g>!)$)z3BuBwHvh?d4G+1LrTS%G;p%{F|fzH2F$gH0=dEtbWzx<bHR&COBF*X
+zI?D1_@T28i6bQ7sLncS-jbNE|3`}M=p9TqB=zJMw@?x76mn`he*kCTKspO)keH#LF
+zzoBL&M~9o#y0()MX`?25uLcq697@{hNnfX_<Kkq*g@0O7niglZ^))7EboFc=`t-gY
+z7Xw_(u;3b({h)@cD>%)y9f|r=c2YmtZXH9p5U}0lX?xk#V>7%x9b{Zga=(v=WmD<Y
+z#D?#xp(ISJU<j1SlQb`@%d(laEXb3KlRTQ?`{=<K4lXc8HoeVvl!rMNHNAGip5YZp
+zE%wYPpoWvZE3gZ3g3lZ%DL&n#tnkA)r5An{2oMc|wn5n!^ewG=ZgvKgkU7`MGk(4k
+z7%_haOo!*MqoPJ3dnv3m6#J4q!#c<|Vo@21ro{tPyKYGllqHcAC%s+TLZWUtO-te{
+z-B4EYUOk^g{#s`m@3nQcl(uKR8<e*7k)$}rjsU%5{b5qZ4o9w79+w0D81Dea$A`ml
+zBi@}H!xE4v`X}55?Gs(VrHQw|=^GnCwM`x1%}wokTu}3j+2E8`@4P6>{uP(1H!q^4
+zjFT3lR&0_v!$JCnem=uwd86-W<tbhd->`Q7BQ71?T2ITYN{-g&!Y`?P5o4<!Yx$cP
+zH(xE};*;bX$Ud`u3~ldTia_Go4rfX*Pov*2Htp+{PweuCEh9Y_j@<M!aD?xENy`Uj
+zOoy^3gYK)Czt<alv==Q)b^HFLDsf8O0#PH25)WnN!Qr*P3$c<#_AC;sb9HIW4S9zs
+z+N>Y~++5&m!i5A!MRH7GzN^fp&ZAErwNhp?VoNR;?-m?HNMa!kN-8WzZg^1?Rl0Oo
+zjY_l^2ZJ_8x<Jj6=Wx6!ai{lVe7P;H6jE`S4$rpg>(R55VWcfoRZ*^9HSV>vr8<G(
+z0cc5UZi?*YRW;U>W?kz_BK%Y?1%5ug0GwAB0Mn5=T^hZi&32|`Ag_)%aX|T--8QdF
+z+V~mkeGq2YfD;m98t^ThYDlL+`7~uh>25kn#r8GhpO6}xC(#1$|F$5Tyk#6Xqvb59
+z-C70KwBpK$N#{?3&TUf>8q>xpbjt->u=K)KnCvcA4u<&m$`kBLJlkOdKJTamb8bY#
+zq1*WfEz)#z1a)!y);w_HZQ{<`=ivyxbDv61xqA<aY4<9cP0IZR6x{V-ANcdbhZs$b
+zhmK-bJub;3IfZX}jA=;MAAfz4bDz@5Tz^WtHGj5)QcM23rptvColXb${zkoo_-HPs
+z_0ELjQttyq{r-Y}0kQEV6tVPGDxL&cN%d^MZL55?a>?zrlDzG2Qo)eEUEqVhTCnhK
+zB53yR1bFe?TKwF_;r*?x%9iTxlHt2e=3>hIi%`C_KX(vb$01#~eFMu8Tsg1<=E)!X
+z(VOJ>#Ror!GC_@Phxnq#iXjfGvx$tWI@KAy8LC+t%$VVUj_0Z+n(UMY-uq0mfVQb#
+zLkl7fa+R$vJB~pqJN22BAs1AgJ^9VL1Ea^5{}N@IQ2T)^^$b`I{H+EI52!NRkYUuy
+z6~kB%YF7_q2hfLVwlOoHwU(JMdR0^hMzXmms_Hdk_OL7EqZuxmDs(h+qkc0LYy*Uz
+ZCBqF+)><-L3gtX2hBHz<vtlcS{{dl6eEt9c
+
+delta 1396
+zcmWNR`8Smb9LDeWeXpU{R>Y-CE*C8t4W+~2WNE)0yP}LG)1;abEpsi?6xmuR-}Ks|
+z=%9skztzn!jc$@{WTa5aXra_Jsgz1H<A>)D_<YXuJbjOZU4IGHGkm<3YID<$Xk-F+
+zBro{FTal17)pQvWtA{|TTti54T3&!n+TYMe?Iu8#ZV9fR{E6dkl(HF{C1q2*Y4a2t
+zAYN|+(0}^FfWrp9<YH(77%URwPSFx|?#$}jL&syOL9~V;vuWml?qVsf7jMJ6;wCIM
+z*`&!y+xkXB3NuHxFC;@#d%)$>v#59aJHU2H1_qg*Lp6(9yk-%Nc2XPsPCA?6Jn4W`
+z6Ogw&gjQC8lwkD`aLtTF?4A)zD`tLSG`QZ85Tn=0R^)4A3M{v!8n@4BBe$>3f!5jH
+zW60Ic0Lb5dF-v(4Yk@`=Oi(UzwA1JQY))+m%WWIIzAwA~@$Shlp6KF!M^mhD%tH?+
+zCroteB=2tz0N!`**5Q0o9A9*v?K-z;nTM?aRW47c+%*JHxUhz<F029_P9WZ^-XRne
+z!X$y82PV2VlBWj%$N9zz+}c)7cQ;2L&jZxw=?i4L_#{gm%c>asMHWC^vH=D!du5QD
+zw*`xle#tcCHxE!8kWEzqcUepcvO{IiA{r0c2DD|(Q9vdnj|xM&fp&zR1(Jk+X3!+E
+zl<Fgo0tK#b1~S{=1++EFnWZzEgIHpt9T;+osblc{c4xBR5y=>Hg6;DJ@_V+sKUr-Q
+zWvfd*BrP2jgr8&gVD&C<#ZQKSBKdK=B)7#U@^D%l=K`1%?~GUDA7EjEBi>2qLq+0s
+z-1T!edhPDi=2(x|IJ=B`htS+PZ)ol>p$um34Wn0k%|V}Ax%OWb2#U=fY7|S~8pdtS
+zdq$SY^?*<J#prT-(nlk#70)%ijYN%ICAcA_hul&nKoMyi(2wa3fF&7$G?p>JGXIb_
+z;J(ZvlxC@DFl&Uto@_TVMqLJH<t)S4oNiii><S>8n}wKLg!XyG)S1`MkfLxoL*qp{
+zK$<5`0al-kK)sTc7*=A4yGjaBuhbD`rIqxtG@7A}Wh~&9@>SSS-jAm${-*5HE<(Ch
+zIUDFxRR>G0iV5$f7eiRZ6$K#GY$MBG<3XKk&S-3i9H8>r89=w{oPZ`>Eds3gJs6pK
+zAM&r)nGm5rGX*sC#5EBY^7+Fy$)2|+;jU{kR9y>03zdwvsxle;(r}E9-nclijGMM3
+zzqtVDe3J!WXY(u^Z@z)576tBXZA6#0i#XEeN^}3v26SzojZy7M^rF35jS9PlSxoDh
+ziPb&T7||O;w|g%G?Z0o#;Hd|zaeN{H4_isn{{&EN;1N9=*u;|m(_jWGhjP&K*^oL{
+z>#ij|SWokwivhidgX#3}#2>`Ibi}hSW%S`?+C*>vxueCUYW3Q>j9u4_m&f3`*Gus9
+z>p?m^q61j`W)M@~rgNO2qQ>7Vd6O)OroH0<6{G3s{Qe*|y|2TR4+#ik7m&ub>T+e_
+zV=XOwbIm}7VU|%K+J6kCBOi+xmecIV`Qtxe!FU=;zl<@LOh6{&qlA#czY;<jpQ8rz
+zl`U$p4V2F6AOePyD_3d2Z(nJ0$4q_NTs<eBj3`h_bm2V9cj$rD6i(Uu_(Y@5XEW={
+zJ<%rdb)R?*eW>Ld^r4gIr$Q?qX#jr8%Lb6oD1D7U50u{<g9D??7egScd_5iJ0B<S*
+hH)W^<oP~V8CB*Slt)P-uSwR6GY7IHcch(Ta{SO*iWOe`m
+
+diff --git a/OnlyChat-Windows/app_source/package.json b/OnlyChat-Windows/app_source/package.json
+index aedc2a8..76500b6 100644
+--- a/OnlyChat-Windows/app_source/package.json
++++ b/OnlyChat-Windows/app_source/package.json
+@@ -14,7 +14,7 @@
+   "scripts": {
+     "app": "node bin/codex.js app",
+     "start": "node bin/codex.js",
+-    "test": "node tests/priorityChain.test.js && node tests/codexCliAdapter.test.js && node tests/parallelWork.test.js && node tests/metamorphicHub.test.js && node tests/connectors.test.js && node tests/embeddedBrowser.test.js && node tests/focusFencePolicy.test.js && node tests/desktopServerSecurity.test.js && node tests/isolatedRuntime.test.js && node tests/workspacePolicy.test.js && node tests/moduleRegistry.test.js && node tests/featureModuleHub.test.js && node tests/moduleReloadWatcher.test.js && node tests/moduleRoutes.test.js && node tests/rendererModuleHost.test.mjs && node tests/rendererFeatureModules.test.mjs && node tests/onlyChatQA.test.js && node tests/qaTargetRunner.test.js && node tests/qaChatRequestStore.test.js && node tests/qaChatRouting.test.js && node tests/softwareTutorRunner.test.js && node tests/softwareTutorLiveRunner.test.js && node tests/uiWiring.test.js && node tests/asideBrowser.test.js && node tests/reaHarvest.test.js && node tests/passkeyVault.test.js && node tests/browserWorkspace.test.js && node tests/crossPlatformSync.test.js && node tests/workHubStore.test.js && node tests/claudeCodeSessionAdapter.test.js && node tests/nativeSessionBridge.test.js && node tests/desktopSessionSearch.test.js && node tests/electronPackageValidation.test.js && node tests/appDataPaths.test.js",
++    "test": "node tests/priorityChain.test.js && node tests/codexCliAdapter.test.js && node tests/parallelWork.test.js && node tests/metamorphicHub.test.js && node tests/connectors.test.js && node tests/embeddedBrowser.test.js && node tests/focusFencePolicy.test.js && node tests/desktopServerSecurity.test.js && node tests/isolatedRuntime.test.js && node tests/workspacePolicy.test.js && node tests/moduleRegistry.test.js && node tests/featureModuleHub.test.js && node tests/moduleReloadWatcher.test.js && node tests/moduleRoutes.test.js && node tests/rendererModuleHost.test.mjs && node tests/rendererFeatureModules.test.mjs && node tests/onlyChatQA.test.js && node tests/qaTargetRunner.test.js && node tests/qaChatRequestStore.test.js && node tests/qaChatRouting.test.js && node tests/softwareTutorRunner.test.js && node tests/softwareTutorLiveRunner.test.js && node tests/uiWiring.test.js && node tests/asideBrowser.test.js && node tests/reaHarvest.test.js && node tests/passkeyVault.test.js && node tests/browserWorkspace.test.js && node tests/crossPlatformSync.test.js && node tests/workHubStore.test.js && node tests/claudeCodeSessionAdapter.test.js && node tests/nativeSessionBridge.test.js && node tests/desktopSessionSearch.test.js && node tests/electronPackageValidation.test.js && node tests/appDataPaths.test.js && node tests/assistantWorkProgress.test.js",
+     "status": "node bin/codex.js status",
+     "login": "node bin/codex.js login",
+     "server": "node bin/codex.js app-server"
+diff --git a/OnlyChat-Windows/app_source/src/browser/EmbeddedBrowser.js b/OnlyChat-Windows/app_source/src/browser/EmbeddedBrowser.js
+index 014beed..12d87ec 100644
+--- a/OnlyChat-Windows/app_source/src/browser/EmbeddedBrowser.js
++++ b/OnlyChat-Windows/app_source/src/browser/EmbeddedBrowser.js
+@@ -45,6 +45,28 @@ class EmbeddedBrowser {
+     return { ok: true, stdout: `내장 브라우저에서 열었습니다: ${url}`, stderr: '', url };
+   }
+ 
++  async history(action) {
++    if (!this.window || this.window.isDestroyed()) return { ok: false, stderr: '브라우저가 열려 있지 않습니다.' };
++    const contents = this.window.webContents, h = contents.navigationHistory;
++    if (!h) return { ok: false, stderr: '브라우저 기록 API를 사용할 수 없습니다.' };
++    if (action === 'reload') {
++      const url = contents.getURL();
++      if (!/^https?:\/\//i.test(url)) return { ok: false, stderr: '현재 페이지를 다시 불러올 수 없습니다.' };
++      const decision = await this.policy.check(url);
++      if (!decision.allowed) return { ok: false, stderr: 'Focus Fence 정책이 허용하지 않아 다시 불러오지 않았습니다.', blocked: true };
++      contents.reload(); return { ok: true, url, stdout: '현재 페이지를 다시 불러옵니다.' };
++    }
++    if (!['back','forward'].includes(action)) return { ok: false, stderr: '지원 동작: back, forward, reload' };
++    if (!(action === 'back' ? h.canGoBack() : h.canGoForward())) return { ok: false, stderr: '이동할 기록이 없습니다.' };
++    const entry = h.getEntryAtIndex(h.getActiveIndex() + (action === 'back' ? -1 : 1));
++    if (!entry?.url || !/^https?:\/\//i.test(entry.url)) return { ok: false, stderr: '이 기록 항목은 열 수 없습니다.' };
++    const decision = await this.policy.check(entry.url);
++    if (!decision.allowed) return { ok: false, stderr: decision.reason === 'blocked' ? 'Focus Fence가 기록 이동을 차단했습니다.' : 'Focus Fence 정책 확인에 실패했습니다.', blocked: true };
++    this.approvedUrl = entry.url; h[action === 'back' ? 'goBack' : 'goForward']();
++    this.activeUrl = entry.url; this.lastError = '';
++    return { ok: true, url: entry.url, stdout: action === 'back' ? '이전 페이지로 이동했습니다.' : '다음 페이지로 이동했습니다.' };
++  }
++
+   _ensureWindow() {
+     if (this.window && !this.window.isDestroyed()) return;
+     this.window = new this.BrowserWindow({
+diff --git a/OnlyChat-Windows/app_source/src/core/AgentEngine.js b/OnlyChat-Windows/app_source/src/core/AgentEngine.js
+index dc10a47..02a3e1a 100644
+--- a/OnlyChat-Windows/app_source/src/core/AgentEngine.js
++++ b/OnlyChat-Windows/app_source/src/core/AgentEngine.js
+@@ -277,6 +277,8 @@ class AgentEngine {
+           return await this.tools.browserRecipe(args.name || args.recipe, args.tabId);
+         case 'browser_status':
+           return await this.tools.browserStatus();
++        case 'browser_history':
++          return await this.tools.browserHistory(args.action);
+ 
+         // Passkey & Credential Vault Tool
+         case 'vault_get_credential':
+diff --git a/OnlyChat-Windows/app_source/src/tools/ToolRegistry.js b/OnlyChat-Windows/app_source/src/tools/ToolRegistry.js
+index 1d6dbb1..4d5e7e3 100644
+--- a/OnlyChat-Windows/app_source/src/tools/ToolRegistry.js
++++ b/OnlyChat-Windows/app_source/src/tools/ToolRegistry.js
+@@ -285,6 +285,11 @@ class ToolRegistry {
+     return this.browser.recipePlay(recipeName, tabId);
+   }
+ 
++  async browserHistory(action) {
++    if (!this.browser) throw new Error('Browser is disabled in isolated mode.');
++    return this.browser.history(action);
++  }
++
+   async browserStatus() {
+     if (!this.browser) return { enabled: false };
+     return this.browser.getStatus();
+diff --git a/OnlyChat-Windows/app_source/src/ui/desktop/app.css b/OnlyChat-Windows/app_source/src/ui/desktop/app.css
+index de51df5..47df922 100644
+--- a/OnlyChat-Windows/app_source/src/ui/desktop/app.css
++++ b/OnlyChat-Windows/app_source/src/ui/desktop/app.css
+@@ -741,6 +741,63 @@ body {
+   user-select: text;
+ }
+ 
++.assistant-turn-meta {
++  color: var(--accent-orange);
++  font-size: 14px;
++  font-weight: 700;
++  line-height: 1.4;
++  margin: 0;
++}
++
++.assistant-turn-meta[data-state="complete"] {
++  color: var(--text-dim);
++}
++
++.assistant-work-status {
++  margin: -5px 0 10px;
++  color: var(--text-dim);
++  font-size: 12px;
++  line-height: 1.4;
++}
++.assistant-work-details {
++  margin: 0 0 12px;
++  border: 1px solid var(--border-subtle);
++  border-radius: 10px;
++  background: var(--bg-card);
++  color: var(--text-main);
++  overflow: hidden;
++}
++.assistant-turn-progress { margin-bottom: 14px; }
++.assistant-work-summary {
++  display: flex;
++  align-items: center;
++  gap: 7px;
++  padding: 9px 12px;
++  color: var(--text-dim);
++  font-size: 12px;
++  font-weight: 700;
++  cursor: pointer;
++  list-style: none;
++}
++.assistant-turn-progress > .assistant-work-summary { justify-content: space-between; min-height: 38px; }
++.assistant-work-summary-label { margin-left: auto; color: var(--text-dim); font-size: 12px; font-weight: 700; }
++.assistant-work-summary::-webkit-details-marker { display: none; }
++.assistant-work-summary::before { content: '›'; color: var(--accent-orange); font-size: 17px; line-height: 1; }
++.assistant-work-details[open] > .assistant-work-summary::before { content: '⌄'; }
++.assistant-work-panel { border-top: 1px solid var(--border-subtle); padding: 10px 12px 12px; }
++.assistant-work-panel .assistant-work-status { margin: 0 0 8px; }
++.assistant-work-panel .assistant-work-steps { padding: 0; }
++.assistant-work-steps { display: grid; gap: 7px; padding: 0 10px 10px; }
++.assistant-work-step { min-width: 0; padding: 9px 10px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-app); }
++.assistant-work-step-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
++.assistant-work-step-heading strong { color: var(--text-main); font-weight: 800; }
++.assistant-work-step-state { flex: 0 0 auto; color: var(--text-dim); font-size: 11px; }
++.assistant-work-step-state[data-state="complete"] { color: #15803d; }
++.assistant-work-step-state[data-state="error"] { color: var(--accent-red); }
++.assistant-work-step code { display: block; margin-top: 5px; color: var(--text-dim); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
++.assistant-work-step-output:empty { display: none; }
++.assistant-work-step-output pre { max-height: 180px; overflow: auto; margin: 7px 0 0; padding: 7px 9px; border-radius: 6px; background: var(--bg-card); color: var(--text-main); font: 11px/1.45 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
++
+ /* Assistant Message: Warm Peach Tint Card (Ref 1 & 2) */
+ .message-row.assistant .bubble {
+   background: var(--bg-assistant-peach);
+diff --git a/OnlyChat-Windows/app_source/src/ui/desktop/app.js b/OnlyChat-Windows/app_source/src/ui/desktop/app.js
+index 5bdeb44..7f04fd9 100644
+--- a/OnlyChat-Windows/app_source/src/ui/desktop/app.js
++++ b/OnlyChat-Windows/app_source/src/ui/desktop/app.js
+@@ -1137,8 +1137,9 @@ async function handleSend() {
+   appendUserMessage(prompt);
+ 
+   // Create Assistant Message container (Warm Peach Card - Ref 1 & 2)
+-  const assistantCard = createAssistantContainer();
++  const assistantCard = createAssistantContainer({ timing: true });
+   timeline.appendChild(assistantCard.row);
++  const assistantTimer = startAssistantTimer(assistantCard);
+   timeline.scrollTop = timeline.scrollHeight;
+ 
+   currentAbortController = new AbortController();
+@@ -1205,13 +1206,17 @@ async function handleSend() {
+     await loadSessions();
+ 
+   } catch (err) {
+-    if (err.name === 'AbortError') {
+-      assistantCard.bubble.innerHTML += `<div style="color: var(--accent-orange); margin-top: 8px; font-size: 12px;">⏹ 사용자에 의해 작업이 즉시 중단되었습니다.</div>`;
+-    } else {
+-      assistantCard.bubble.innerHTML += `<div style="color: var(--accent-red); margin-top: 8px; font-size: 12px;">❌ 오류: ${err.message}</div>`;
+-    }
++    assistantCard.workOutcome = err.name === 'AbortError' ? 'aborted' : 'error';
++    const notice = document.createElement('div');
++    notice.className = `assistant-turn-notice ${err.name === 'AbortError' ? 'warning' : 'error'}`;
++    notice.textContent = err.name === 'AbortError'
++      ? '⏹ 사용자에 의해 작업이 중단되었습니다.'
++      : `❌ 요청 실패: ${err.message}`;
++    assistantCard.content.appendChild(notice);
+   } finally {
+     currentAbortController = null;
++    assistantTimer.finish();
++    finishAssistantWork(assistantCard, assistantCard.workOutcome || 'complete');
+     setGeneratingState(false);
+   }
+ }
+@@ -1251,13 +1256,14 @@ function appendUserMessage(text) {
+ }
+ 
+ // Assistant Peach Card (Ref 1)
+-function createAssistantContainer() {
++function createAssistantContainer(options = {}) {
+   const row = document.createElement('div');
+   row.className = 'message-row assistant';
+ 
+   const bubble = document.createElement('div');
+   bubble.className = 'bubble';
+   bubble.innerHTML = `
++    ${options.timing ? '<details class="assistant-work-details assistant-turn-progress" open><summary class="assistant-work-summary"><span class="assistant-turn-meta" role="timer" aria-label="응답 경과 시간" aria-live="off">작업 중 · 0초</span><span class="assistant-work-summary-label">요청 준비 중</span></summary><div class="assistant-work-panel"><div class="assistant-work-status" role="status" aria-live="polite">요청을 분석하고 있습니다…</div><div class="assistant-work-steps"></div></div></details>' : ''}
+     <div class="assistant-content"></div>
+     <div class="assistant-actions-bar">
+       <button class="show-more-btn" onclick="toggleAssistantMore(this)">Show more <span>⌄</span></button>
+@@ -1268,58 +1274,198 @@ function createAssistantContainer() {
+   `;
+ 
+   row.appendChild(bubble);
+-  return { row, bubble, content: bubble.querySelector('.assistant-content') };
++  return {
++    row,
++    bubble,
++    content: bubble.querySelector('.assistant-content'),
++    timerNode: bubble.querySelector('.assistant-turn-meta'),
++    workStatusNode: bubble.querySelector('.assistant-work-status'),
++    workDetails: bubble.querySelector('.assistant-work-details'),
++    workSummaryNode: bubble.querySelector('.assistant-work-summary'),
++    workSummaryLabelNode: bubble.querySelector('.assistant-work-summary-label'),
++    workStepsNode: bubble.querySelector('.assistant-work-steps'),
++    workStepCount: 0,
++    currentWorkStep: null,
++    workOutcome: 'complete',
++    messageNode: null,
++    messageText: ''
++  };
+ }
+ 
+-function handleStreamEvent(event, card) {
+-  switch (event.type) {
+-    case 'reasoning_delta': {
+-      let block = card.content.querySelector('.thinking-quote');
+-      if (!block) {
+-        block = document.createElement('div');
+-        block.className = 'thinking-quote';
+-        block.style.cssText = 'color: #52525b; font-size: 13px; line-height: 1.6; margin-bottom: 8px;';
+-        card.content.appendChild(block);
++function startAssistantTimer(card) {
++  const startedAt = performance.now();
++  let intervalId = null;
++  const elapsed = () => window.OnlyChatPresentation?.formatElapsed
++    ? window.OnlyChatPresentation.formatElapsed(performance.now() - startedAt)
++    : `${Math.max(0, Math.ceil((performance.now() - startedAt) / 1000))}초`;
++  const update = () => {
++    if (card.timerNode) card.timerNode.textContent = `작업 중 · ${elapsed()}`;
++  };
++  update();
++  if (card.timerNode) intervalId = window.setInterval(update, 1000);
++  let finished = false;
++  return {
++    finish() {
++      if (finished) return;
++      finished = true;
++      if (intervalId !== null) window.clearInterval(intervalId);
++      if (card.timerNode) {
++        card.timerNode.textContent = `작업 시간 · ${elapsed()}`;
++        card.timerNode.dataset.state = 'complete';
++        card.timerNode.setAttribute('aria-label', `응답 완료, 작업 시간 ${card.timerNode.textContent.replace('작업 시간 · ', '')}`);
++        card.timerNode.setAttribute('aria-live', 'polite');
+       }
+-      block.textContent += event.delta;
+-      timeline.scrollTop = timeline.scrollHeight;
+-      break;
+     }
++  };
++}
+ 
++function setAssistantWorkStatus(card, text) {
++  if (card?.workStatusNode && text) card.workStatusNode.textContent = text;
++}
++
++function ensureAssistantWorkDetails(card) {
++  if (card.workDetails) return card.workDetails;
++  const details = document.createElement('details');
++  details.className = 'assistant-work-details';
++  details.open = true;
++  const summary = document.createElement('summary');
++  summary.className = 'assistant-work-summary';
++  summary.textContent = '작업 과정 · 0단계 · 진행 중';
++  const steps = document.createElement('div');
++  steps.className = 'assistant-work-steps';
++  details.appendChild(summary);
++  details.appendChild(steps);
++  card.content.insertBefore(details, card.content.firstChild);
++  card.workDetails = details;
++  card.workSummaryNode = summary;
++  card.workSummaryLabelNode = null;
++  card.workStepsNode = steps;
++  return details;
++}
++
++function setAssistantWorkSummary(card, text) {
++  if (card?.workSummaryLabelNode) card.workSummaryLabelNode.textContent = text;
++  else if (card?.workSummaryNode) card.workSummaryNode.textContent = text;
++}
++
++function toolDisplayName(name) {
++  const labels = {
++    exec_command: '명령 실행', file_change: '파일 변경', read_file: '파일 읽기',
++    list_files: '파일 목록 확인', search_files: '코드 검색', codex_cli_workspace_write_scope: '추가 작업 경로 쓰기 승인', browser_open: '브라우저 열기',
++    browser_read: '브라우저 내용 읽기', browser_act: '브라우저 조작'
++  };
++  return labels[name] || String(name || '도구 실행');
++}
++
++function finishAssistantWork(card, outcome = 'complete') {
++  if (!card) return;
++  const labels = { complete: '완료', error: '오류', aborted: '중단' };
++  const label = labels[outcome] || labels.complete;
++  if (card.workSummaryNode) {
++    setAssistantWorkSummary(card, `작업 과정 · ${card.workStepCount}단계 · ${label}`);
++    card.workDetails.open = false;
++  }
++  setAssistantWorkStatus(card, outcome === 'complete' ? '응답 완료' : outcome === 'aborted' ? '작업이 중단되었습니다' : '작업 중 오류가 발생했습니다');
++}
++
++function handleStreamEvent(event, card) {
++  switch (event.type) {
++    case 'reasoning_delta':
++      // Do not expose private model reasoning in the user transcript.
++      setAssistantWorkStatus(card, '요청을 분석하고 있습니다…');
++      break;
+     case 'message_delta': {
++      setAssistantWorkStatus(card, '응답을 작성하고 있습니다…');
+       let msg = card.content.querySelector('.text-body');
+       if (!msg) {
+         msg = document.createElement('div');
+         msg.className = 'text-body';
+         card.content.appendChild(msg);
+       }
+-      msg.innerHTML += `<p style="margin-top: 4px;">${escapeHtml(event.delta)}</p>`;
++      msg.innerHTML += `<p style="margin-top: 4px;">${escapeHtml(event.delta || '')}</p>`;
+       timeline.scrollTop = timeline.scrollHeight;
+       break;
+     }
+-
+     case 'tool_start': {
+-      const toolPill = document.createElement('div');
+-      toolPill.className = 'ran-commands-pill';
+-      toolPill.innerHTML = `
+-        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+-        <span>Ran commands: ${escapeHtml(event.call.name)}</span>
+-      `;
+-      card.content.appendChild(toolPill);
++      const details = ensureAssistantWorkDetails(card);
++      const call = event.call || {};
++      const args = call.args || {};
++      const detail = call.name === 'exec_command' ? String(args.command || '')
++        : call.name === 'file_change' ? `${args.change || 'updated'} · ${args.path || ''}` : '';
++      const step = document.createElement('div');
++      step.className = 'assistant-work-step';
++      if (call.id) step.dataset.toolCallId = String(call.id);
++      const heading = document.createElement('div');
++      heading.className = 'assistant-work-step-heading';
++      const name = document.createElement('strong');
++      name.textContent = toolDisplayName(call.name);
++      const state = document.createElement('span');
++      state.className = 'assistant-work-step-state';
++      state.textContent = '실행 중';
++      heading.append(name, state);
++      step.appendChild(heading);
++      if (detail) {
++        const code = document.createElement('code');
++        code.textContent = detail.slice(0, 240);
++        step.appendChild(code);
++      }
++      const output = document.createElement('div');
++      output.className = 'assistant-work-step-output';
++      step.appendChild(output);
++      details.open = true;
++      card.workStepsNode.appendChild(step);
++      card.currentWorkStep = step;
++      card.workStepCount += 1;
++      setAssistantWorkSummary(card, `작업 과정 · ${card.workStepCount}단계 · 진행 중`);
++      setAssistantWorkStatus(card, `${toolDisplayName(call.name)} 중…`);
++      timeline.scrollTop = timeline.scrollHeight;
++      break;
++    }
++    case 'tool_output': {
++      const output = String(event.text || '').trim();
++      const step = card.currentWorkStep;
++      const outputNode = step?.querySelector('.assistant-work-step-output');
++      if (output && outputNode) {
++        const block = document.createElement('pre');
++        block.textContent = output.slice(-4000);
++        outputNode.appendChild(block);
++      }
++      setAssistantWorkStatus(card, '작업 결과를 확인하고 있습니다…');
+       timeline.scrollTop = timeline.scrollHeight;
+       break;
+     }
+-
+     case 'tool_end': {
+-      const diffBadge = document.createElement('span');
+-      diffBadge.style.cssText = 'font-size: 11px; background: #ffffff; border: 1px solid #e4e4e7; border-radius: 999px; padding: 2px 8px; margin-left: 6px; font-weight: 500;';
+-      diffBadge.innerHTML = `<span style="color: #10b981;">+14</span> <span style="color: #ef4444;">-6</span>`;
+-      card.content.appendChild(diffBadge);
++      const detail = event.result || {};
++      const result = detail.result || {};
++      const call = detail.call || {};
++      const commandResultUnknown = call.name === 'exec_command' && !Number.isInteger(result.exitCode);
++      const failed = Boolean(result.error) || result.ok === false || result.blocked === true || commandResultUnknown || (Number.isInteger(result.exitCode) && result.exitCode !== 0);
++      const step = call.id
++        ? Array.from(card.workStepsNode?.querySelectorAll('[data-tool-call-id]') || []).find(node => node.dataset.toolCallId === String(call.id))
++        : card.currentWorkStep;
++      const state = step?.querySelector('.assistant-work-step-state');
++      if (state) {
++        state.textContent = commandResultUnknown ? '결과 확인 불가' : failed ? `실패${result.exitCode === undefined || result.exitCode === null ? '' : ` · 종료 코드 ${result.exitCode}`}` : '완료';
++        state.dataset.state = failed ? 'error' : 'complete';
++      }
++      if (failed) card.workOutcome = 'error';
++      card.currentWorkStep = null;
++      setAssistantWorkStatus(card, failed ? '단계 실패 · 결과를 확인해 주세요' : '다음 작업 단계를 준비하고 있습니다…');
++      timeline.scrollTop = timeline.scrollHeight;
++      break;
++    }
++    case 'error': {
++      card.workOutcome = 'error';
++      setAssistantWorkStatus(card, '응답을 완료하지 못했습니다');
++      const failure = document.createElement('div');
++      failure.className = 'text-body';
++      failure.textContent = `❌ AI 응답을 받지 못했습니다.\n${event.message || '오류 원인을 확인할 수 없습니다.'}`;
++      card.content.appendChild(failure);
++      timeline.scrollTop = timeline.scrollHeight;
+       break;
+     }
+   }
+ }
+-
+ window.toggleAssistantMore = function(btn) {
+   const content = btn.closest('.bubble').querySelector('.assistant-content');
+   if (content.style.maxHeight) {
+@@ -1982,6 +2128,18 @@ async function navBrowser(url) {
+   }
+ }
+ 
++window.handleBrowserHistory = async function(action) {
++  const el = document.getElementById('browserAriaConsole');
++  try {
++    const res = await fetch('/api/browser/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
++    const data = await res.json();
++    if (!res.ok || !data.ok) throw new Error(data.stderr || data.error || ('HTTP ' + res.status));
++    el.textContent = data.stdout || '완료';
++    if (data.url) document.getElementById('browserUrlInput').value = data.url;
++    setTimeout(() => handleBrowserAria(), 400);
++  } catch (error) { el.textContent = '[브라우저 기록 오류] ' + error.message; }
++};
++
+ async function handleBrowserAria() {
+   const consoleEl = document.getElementById('browserAriaConsole');
+   consoleEl.textContent = `[REA / Aside ARIA 트리 캡처 중... (DOM 95% 압축)]`;
+diff --git a/OnlyChat-Windows/app_source/src/ui/desktop/index.html b/OnlyChat-Windows/app_source/src/ui/desktop/index.html
+index 18eef6d..db8dd6f 100644
+--- a/OnlyChat-Windows/app_source/src/ui/desktop/index.html
++++ b/OnlyChat-Windows/app_source/src/ui/desktop/index.html
+@@ -1124,6 +1124,9 @@
+     </div>
+     <div class="drawer-content" style="padding: 12px; gap: 10px;">
+       <div style="display: flex; gap: 6px;">
++        <button class="btn-secondary" type="button" onclick="handleBrowserHistory(&#39;back&#39;)" aria-label="뒤로">←</button>
++        <button class="btn-secondary" type="button" onclick="handleBrowserHistory(&#39;forward&#39;)" aria-label="앞으로">→</button>
++        <button class="btn-secondary" type="button" onclick="handleBrowserHistory(&#39;reload&#39;)" aria-label="새로고침">↻</button>
+         <input type="text" id="browserUrlInput" class="search-box-input" style="flex: 1;" placeholder="https://google.com" value="https://google.com">
+         <button class="btn-primary" id="btnBrowserNav" style="padding: 6px 12px;">이동</button>
+       </div>
+diff --git a/OnlyChat-Windows/app_source/src/ui/desktop/server.js b/OnlyChat-Windows/app_source/src/ui/desktop/server.js
+index 53e4b75..6708073 100644
+--- a/OnlyChat-Windows/app_source/src/ui/desktop/server.js
++++ b/OnlyChat-Windows/app_source/src/ui/desktop/server.js
+@@ -841,6 +841,12 @@ class DesktopServer {
+       return;
+     }
+ 
++    if (pathname === '/api/browser/history' && req.method === 'POST') {
++      const body = await this._readBody(req);
++      const result = await this.engine.tools.browserHistory(body.action);
++      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(result)); return;
++    }
++
+     if (pathname === '/api/browser/aria' && req.method === 'POST') {
+       const body = await this._readBody(req);
+       const result = await this.engine.tools.browserAria(body.tabId);
+diff --git a/OnlyChat-Windows/app_source/tests/assistantWorkProgress.test.js b/OnlyChat-Windows/app_source/tests/assistantWorkProgress.test.js
+new file mode 100644
+index 0000000..f00bda5
+--- /dev/null
++++ b/OnlyChat-Windows/app_source/tests/assistantWorkProgress.test.js
+@@ -0,0 +1,146 @@
++'use strict';
++
++const assert = require('node:assert/strict');
++const fs = require('node:fs');
++const vm = require('node:vm');
++
++const source = fs.readFileSync(require.resolve('../src/ui/desktop/app.js'), 'utf8');
++const start = source.indexOf('function setAssistantWorkStatus(card, text) {');
++const end = source.indexOf('\nwindow.toggleAssistantMore =', start);
++assert.ok(start >= 0 && end > start, 'assistant work-progress renderer remains extractable');
++
++class Element {
++  constructor(tagName) {
++    this.tagName = tagName;
++    this.children = [];
++    this.dataset = {};
++    this.attributes = {};
++    this.style = {};
++    this.className = '';
++    this.open = false;
++    this._text = '';
++  }
++  set textContent(value) { this._text = String(value); this.children = []; }
++  get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
++  appendChild(child) { this.children.push(child); return child; }
++  append(...children) { children.forEach(child => this.appendChild(child)); }
++  insertBefore(child, before) {
++    const index = this.children.indexOf(before);
++    if (index < 0) this.children.unshift(child); else this.children.splice(index, 0, child);
++    return child;
++  }
++  setAttribute(name, value) { this.attributes[name] = String(value); }
++  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
++  querySelectorAll(selector) {
++    const found = [];
++    const matches = node => selector.startsWith('.')
++      ? node.className.split(/\s+/).includes(selector.slice(1))
++      : selector === '[data-tool-call-id]' && Boolean(node.dataset.toolCallId);
++    const visit = node => { for (const child of node.children) { if (matches(child)) found.push(child); visit(child); } };
++    visit(this);
++    return found;
++  }
++}
++
++function runEvents(events) {
++  const content = new Element('div');
++  const card = {
++    content,
++    workStatusNode: new Element('div'),
++    workDetails: null,
++    workSummaryNode: null,
++    workStepsNode: null,
++    workStepCount: 0,
++    currentWorkStep: null,
++    workOutcome: 'complete'
++  };
++  const timeline = { scrollTop: 0, scrollHeight: 100 };
++  const context = vm.createContext({
++    card,
++    timeline,
++    document: { createElement: tagName => new Element(tagName) },
++    escapeHtml: text => String(text),
++    renderActiveModelSelection() {},
++    refreshPriorityStatus: async () => {}
++  });
++  vm.runInContext(`${source.slice(start, end)}\n${events.map(event => `handleStreamEvent(${JSON.stringify(event)}, card);`).join('\n')}`, context);
++  return { card, context };
++}
++
++const { card, context } = runEvents([
++  { type: 'reasoning_delta', delta: 'private internal reasoning must not appear' },
++  { type: 'tool_start', call: { id: 'call-1', name: 'exec_command', args: { command: 'pwd' } } },
++  { type: 'tool_output', text: '/workspace/example' },
++  { type: 'tool_end', result: { call: { id: 'call-1' }, result: { exitCode: 0 } } }
++]);
++assert.equal(card.workDetails.open, true, 'work details stay open while the turn is running');
++assert.match(card.workSummaryNode.textContent, /1단계 · 진행 중/);
++assert.match(card.workStepsNode.textContent, /명령 실행/);
++assert.match(card.workStepsNode.textContent, /\/workspace\/example/);
++assert.doesNotMatch(card.content.textContent, /private internal reasoning/);
++assert.match(source, /createAssistantContainer\(\{ timing: true \}\)/, 'new turns create the timed work card');
++assert.match(source, /const assistantTimer = startAssistantTimer\(assistantCard\)/, 'new turns start the elapsed timer');
++vm.runInContext("finishAssistantWork(card, 'complete')", context);
++assert.equal(card.workDetails.open, false, 'work details collapse after completion');
++assert.match(card.workSummaryNode.textContent, /작업 과정 · 1단계 · 완료/);
++assert.equal(card.workStatusNode.textContent, '응답 완료');
++
++const failedRun = runEvents([
++  { type: 'tool_start', call: { id: 'call-fail', name: 'exec_command', args: { command: 'false' } } },
++  { type: 'tool_end', result: { call: { id: 'call-fail' }, result: { exitCode: 2, stderr: 'denied' } } }
++]);
++assert.equal(failedRun.card.workOutcome, 'error');
++assert.equal(failedRun.card.workStepsNode.querySelector('.assistant-work-step-state').dataset.state, 'error');
++vm.runInContext("finishAssistantWork(card, 'error')", failedRun.context);
++assert.equal(failedRun.card.workDetails.open, false, 'failed details collapse too');
++assert.match(failedRun.card.workSummaryNode.textContent, /오류/);
++
++const missingExitCode = runEvents([
++  { type: 'tool_start', call: { id: 'call-missing-exit', name: 'exec_command', args: { command: 'npm test' } } },
++  { type: 'tool_end', result: { call: { id: 'call-missing-exit', name: 'exec_command' }, result: { exitCode: null } } }
++]);
++assert.match(missingExitCode.card.workStepsNode.querySelector('.assistant-work-step-state').textContent, /결과 확인 불가/);
++assert.equal(missingExitCode.card.workOutcome, 'error', 'a command without an exit code is not shown as successful');
++
++const blockedTool = runEvents([
++  { type: 'tool_start', call: { id: 'call-blocked', name: 'read_file', args: { path: 'fixture.txt' } } },
++  { type: 'tool_end', result: { call: { id: 'call-blocked', name: 'read_file' }, result: { ok: false, blocked: true } } }
++]);
++assert.match(blockedTool.card.workStepsNode.querySelector('.assistant-work-step-state').textContent, /실패/);
++assert.equal(blockedTool.card.workOutcome, 'error', 'blocked tools are not shown as successful');
++
++const css = fs.readFileSync(require.resolve('../src/ui/desktop/app.css'), 'utf8');
++assert.match(source, /assistant-turn-progress/);
++assert.match(source, /assistant-work-summary-label/);
++assert.match(source, /workDetails: bubble\.querySelector\('\.assistant-work-details'\)/);
++assert.match(css, /\.assistant-work-details/);
++assert.match(css, /\.assistant-turn-progress\s*>\s*\.assistant-work-summary/);
++assert.match(css, /\.assistant-work-step-state\[data-state="error"\]/);
++
++const timerStart = source.indexOf('function startAssistantTimer(card) {');
++const timerEnd = source.indexOf('\nfunction setAssistantWorkStatus(card, text) {', timerStart);
++assert.ok(timerStart >= 0 && timerEnd > timerStart, 'assistant elapsed-time display remains extractable');
++let now = 100;
++let tick;
++let cleared = false;
++const timerNode = new Element('span');
++const timerContext = vm.createContext({
++  card: { timerNode },
++  performance: { now: () => now },
++  window: {
++    OnlyChatPresentation: null,
++    setInterval(callback, delay) { assert.equal(delay, 1000); tick = callback; return 1; },
++    clearInterval(id) { assert.equal(id, 1); cleared = true; }
++  }
++});
++vm.runInContext(`${source.slice(timerStart, timerEnd)}\nglobalThis.startAssistantTimer = startAssistantTimer;`, timerContext);
++const timer = timerContext.startAssistantTimer(timerContext.card);
++assert.equal(timerNode.textContent, '작업 중 · 0초');
++now += 1800;
++tick();
++assert.equal(timerNode.textContent, '작업 중 · 2초');
++timer.finish();
++assert.equal(timerNode.textContent, '작업 시간 · 2초');
++assert.equal(timerNode.attributes['aria-label'], '응답 완료, 작업 시간 2초');
++assert.equal(cleared, true, 'completed turns stop the one-second timer');
++console.log('assistantWorkProgress passed: visible live tool steps, no reasoning leak, completed details collapse');

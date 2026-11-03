@@ -1,0 +1,41 @@
+  <div class="modal-backdrop" id="scheduleModal" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="scheduleModalTitle">
+    <section class="modal-card schedule-manager-card">
+      <header class="modal-header">
+        <div><h3 class="modal-title" id="scheduleModalTitle">반복 스케줄</h3><small>예약을 저장하면 Only Chat이 정해진 시각에 실행합니다.</small></div>
+        <button class="btn-icon" id="btnCloseSchedules" aria-label="닫기">✕</button>
+      </header>
+      <div class="schedule-manager-body">
+        <aside class="schedule-list-pane">
+          <div class="schedule-list-heading"><strong>등록된 스케줄</strong><button class="btn-secondary" id="btnNewSchedule" type="button">＋ 새 스케줄</button></div>
+          <div id="scheduleList" class="schedule-list" role="list" aria-label="등록된 스케줄"></div>
+          <p id="scheduleListEmpty" class="schedule-empty">아직 스케줄이 없습니다.</p>
+          <button class="btn-secondary schedule-refresh" id="btnRefreshSchedules" type="button">목록 새로고침</button>
+        </aside>
+        <form id="scheduleForm" class="schedule-editor" autocomplete="off">
+          <input type="hidden" id="scheduleId">
+          <label class="schedule-field">스케줄 제목<input id="scheduleTitle" maxlength="120" required placeholder="예: 월간 프로젝트 점검"></label>
+          <label class="schedule-field">요청 내용<textarea id="schedulePrompt" rows="5" maxlength="100000" required placeholder="매달 점검할 내용과 결과에 포함할 항목을 적어 주세요."></textarea></label>
+          <div class="schedule-recurrence-grid">
+            <label class="schedule-field">반복<select id="scheduleFrequency"><option value="monthly">매월</option><option value="weekly">매주</option><option value="daily">매일</option></select></label>
+            <label class="schedule-field" id="scheduleMonthDayWrap">날짜<input id="scheduleMonthDay" type="number" min="1" max="31" value="1"></label>
+            <label class="schedule-field" id="scheduleWeekdayWrap">요일<select id="scheduleWeekday"><option value="1">월요일</option><option value="2">화요일</option><option value="3">수요일</option><option value="4">목요일</option><option value="5">금요일</option><option value="6">토요일</option><option value="0">일요일</option></select></label>
+            <label class="schedule-field">시각<input id="scheduleLocalTime" type="time" value="09:00" required></label>
+          </div>
+          <label class="schedule-enabled"><input id="scheduleEnabled" type="checkbox" checked><span>이 스케줄 사용</span></label>
+          <div class="schedule-attachments-head"><strong>참고 파일</strong><span>텍스트/소스 파일 · 파일당 64 KiB · 최대 5개</span></div>
+          <input id="scheduleFiles" type="file" multiple accept=".txt,.md,.markdown,.csv,.json,.yaml,.yml,.xml,.html,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.rb,.go,.rs,.java,.kt,.swift,.c,.h,.cpp,.hpp,.sh,.sql" hidden>
+          <button class="btn-secondary" id="btnScheduleAddFiles" type="button">파일 추가</button>
+          <div id="scheduleAttachments" class="schedule-attachments" aria-live="polite"></div>
+          <div class="schedule-history" id="scheduleLastRun" role="status">마지막 실행 기록 없음</div>
+          <p class="schedule-policy-note">예약 실행은 조회 전용입니다. 수정이나 외부 전송이 필요한 내용은 실행하지 않고 결과에 제안으로 남깁니다.</p>
+          <div id="scheduleFormStatus" class="schedule-form-status" role="status" aria-live="polite"></div>
+          <footer class="schedule-form-actions">
+            <button class="btn-change-outline" id="btnDeleteSchedule" type="button" hidden>삭제</button>
+            <span class="schedule-action-spacer"></span>
+            <button class="btn-secondary" id="btnRunSchedule" type="button" hidden>지금 실행</button>
+            <button class="btn-save-orange" id="btnSaveSchedule" type="submit">저장</button>
+          </footer>
+        </form>
+      </div>
+    </section>
+  </div>
