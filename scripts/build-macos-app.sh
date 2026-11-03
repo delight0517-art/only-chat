@@ -75,6 +75,7 @@ swiftc -parse-as-library -swift-version 5 -framework AppKit -framework Applicati
   "$THREEF_SOURCE_ROOT/BrowserModel.swift" \
   "$THREEF_SOURCE_ROOT/BrowserSessionStore.swift" \
   "$THREEF_SOURCE_ROOT/BrowserSettingsView.swift" \
+  "$THREEF_SOURCE_ROOT/DefaultBrowserService.swift" \
   "$THREEF_SOURCE_ROOT/BrowserView.swift" \
   "$THREEF_SOURCE_ROOT/BrowserWebView.swift" \
   "$THREEF_SOURCE_ROOT/EmbeddedBrowserSession.swift" \
@@ -85,6 +86,7 @@ swiftc -parse-as-library -swift-version 5 -framework AppKit -framework Applicati
   "$THREEF_SOURCE_ROOT/ThreeFURLRouter.swift" \
   "$THREEF_SOURCE_ROOT/ThreeFBrowserControl.swift" \
   "$THREEF_SOURCE_ROOT/YouTubeUsageReporter.swift" \
+  "$THREEF_SOURCE_ROOT/YouTubeUsageSummary.swift" \
   -o "$APP/Contents/MacOS/OnlyChat"
 printf '%s\n' "$ROOT" > "$APP/Contents/Resources/project-root.txt"
 cat > "$APP/Contents/Info.plist" <<PLIST
