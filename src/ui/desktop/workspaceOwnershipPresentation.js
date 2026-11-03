@@ -63,6 +63,14 @@ function presentWorkbenchTasks(tasks, now = Date.now()) {
       || Date.parse(task.leaseExpiresAt) <= now)) [label, tone] = ['담당 확인 필요', 'attention'];
     const evidence = Array.isArray(task.checkpoint?.evidenceRefs)
       ? task.checkpoint.evidenceRefs.filter(ref => typeof ref === 'string' && ref) : [];
+    const executionProgress = Array.isArray(task.executionProgress)
+      ? task.executionProgress.filter(item => item && typeof item.title === 'string' && typeof item.status === 'string').map(item => ({
+        title: item.title.slice(0, 120), status: item.status,
+        attempt: Number.isSafeInteger(item.attempt) && item.attempt >= 0 ? item.attempt : 0,
+        result: typeof item.result === 'string' ? item.result.slice(0, 8_000) : '',
+        reason: typeof item.reason === 'string' ? item.reason.slice(0, 2_000) : '',
+        error: typeof item.error === 'string' ? item.error.slice(0, 2_000) : ''
+      })) : [];
     if (task.status === 'completed' && !evidence.length) [label, tone] = ['완료 근거 확인 필요', 'attention'];
     return {
       key: task.taskKey, title: typeof task.title === 'string' ? task.title : task.taskKey,
@@ -72,7 +80,7 @@ function presentWorkbenchTasks(tasks, now = Date.now()) {
       next: typeof task.checkpoint?.nextAction === 'string' ? task.checkpoint.nextAction : '',
       blocker: typeof task.checkpoint?.blocker === 'string' ? task.checkpoint.blocker : '',
       paths: Array.isArray(task.paths) ? task.paths.filter(item => typeof item === 'string') : [],
-      evidence
+      evidence, executionProgress
     };
   });
   const priority = { attention: 0, active: 1, quiet: 2, done: 3 };

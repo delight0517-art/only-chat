@@ -1978,18 +1978,28 @@ function watchDelegatedTasks(delegation, card) {
     refreshInFlight = true;
     attempts += 1;
     try {
-      const response = await fetch('/api/dispatcher');
-      if (!response.ok) throw new Error('작업 상태를 읽지 못했습니다.');
-      const snapshot = await response.json();
-      const known = [...(snapshot.queue || []), ...(snapshot.activeWorkers || []).map(worker => worker.task).filter(Boolean), ...(snapshot.completedTasks || []), ...(snapshot.terminalTasks || [])];
+      let known = [];
+      if (typeof delegation.registryTaskKey === 'string') {
+        const response = await fetch(`/api/task-registry/tasks/${encodeURIComponent(delegation.registryTaskKey)}`);
+        if (response.ok) {
+          const saved = await response.json();
+          known = Array.isArray(saved.task?.executionProgress) ? saved.task.executionProgress : [];
+        }
+      }
+      if (!known.length) {
+        const response = await fetch('/api/dispatcher');
+        if (!response.ok) throw new Error('작업 상태를 읽지 못했습니다.');
+        const snapshot = await response.json();
+        known = [...(snapshot.queue || []), ...(snapshot.activeWorkers || []).map(worker => worker.task).filter(Boolean), ...(snapshot.completedTasks || []), ...(snapshot.terminalTasks || [])];
+      }
       const rows = tasks.map(original => known.find(item => item?.id === original.id) || original);
-      const contentSignature = JSON.stringify(rows.map(task => [task.id, task.title, task.status, task.blockReason, task.error, task.executionEvidence, task.pendingApproval, task.status === 'completed' ? task.result : undefined]));
+      const contentSignature = JSON.stringify(rows.map(task => [task.id, task.title, task.status, task.blockReason, task.reason, task.error, task.executionEvidence, task.pendingApproval, task.result]));
       if (list.dataset.contentSignature !== contentSignature) {
         list.dataset.contentSignature = contentSignature;
         list.replaceChildren(...rows.map(task => {
         const row = document.createElement('div');
         const status = task.status || 'queued';
-        row.textContent = `${task.title || originalTitle(task.id)} · ${status}${task.blockReason ? ` · ${task.blockReason}` : ''}${task.error ? ` · ${task.error}` : ''}`;
+        row.textContent = `${task.title || originalTitle(task.id)} · ${status}${task.blockReason || task.reason ? ` · ${task.blockReason || task.reason}` : ''}${task.error ? ` · ${task.error}` : ''}`;
         const executionEvidence = formatExecutionEvidence(task.executionEvidence, task.requireToolExecution !== false);
         if (executionEvidence) {
           const evidenceNode = document.createElement('small');
@@ -2035,7 +2045,7 @@ function watchDelegatedTasks(delegation, card) {
           panel.append(title, args, controls, statusMessage);
           row.appendChild(panel);
         }
-        if (status === 'completed' && typeof task.result === 'string') {
+        if (typeof task.result === 'string' && task.result) {
           const result = document.createElement('pre');
           result.textContent = task.result.slice(0, 1600);
           row.appendChild(result);
@@ -4408,6 +4418,14 @@ function renderWorkbenchTasks() {
     if (row.paths.length) detail.append(workbenchText('p', '', `변경 범위 · ${row.paths.join(', ')}`));
     detail.append(workbenchText('p', '', `검토 근거 · ${row.evidence.length}개`));
     for (const ref of row.evidence) detail.append(workbenchText('p', 'workbench-evidence', ref));
+    for (const executor of row.executionProgress) {
+      const worker = workbenchText('section', 'workbench-executor-result', '');
+      worker.append(workbenchText('strong', '', `${executor.title} · ${executor.status} · 시도 ${executor.attempt}회`));
+      if (executor.reason) worker.append(workbenchText('p', '', `차단 사유 · ${executor.reason}`));
+      if (executor.error) worker.append(workbenchText('p', '', `오류 · ${executor.error}`));
+      if (executor.result) worker.append(workbenchText('pre', '', executor.result));
+      detail.append(worker);
+    }
     card.append(summary, detail);
     list.append(card);
   }

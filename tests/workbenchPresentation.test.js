@@ -51,6 +51,15 @@ test('completion without evidence needs attention and unknown status never count
   assert.equal(presentWorkbenchTasks([], now).apps, 0);
 });
 
+test('workbench preserves bounded executor outcomes for durable review', () => {
+  const progress = [{ id: 'task-1', title: 'Core slice', status: 'blocked', attempt: 1,
+    reason: '승인 대기', error: '', result: '<script>not markup</script>', updatedAt: '2026-11-03T03:00:00Z' }];
+  const row = presentWorkbenchTasks([task('manager', { executionProgress: progress })], now).rows[0];
+  assert.deepEqual(row.executionProgress, [{ title: 'Core slice', status: 'blocked', attempt: 1,
+    result: '<script>not markup</script>', reason: '승인 대기', error: '' }]);
+  assert.equal(JSON.stringify(row).includes('task-1'), false);
+});
+
 test('phase highlights only the recorded state and withholds stale or unsupported progress', () => {
   for (const [status, phase] of Object.entries({ planned: 0, claimed: 0, executing: 1, verifying: 2, reviewing: 2, integrating: 3, completed: 3 })) {
     const row = presentWorkbenchTasks([task(status, { status, checkpoint: { evidenceRefs: ['receipt.md'] } })], now).rows[0];
@@ -81,7 +90,9 @@ test('collapsed work cards expose next action and blocker safely and preserve di
   const unsafeText = '<img src=x onerror=alert(1)>';
   const context = vm.createContext({
     document: { getElementById: id => ids[id], createElement: tag => new Element(tag) },
-    workbenchSnapshot: presentWorkbenchTasks([task('card', { status: 'blocked', checkpoint: { nextAction: unsafeText, blocker: '수신 확인 대기', evidenceRefs: ['receipt.md'] } })], now),
+    workbenchSnapshot: presentWorkbenchTasks([task('card', { status: 'blocked', checkpoint: { nextAction: unsafeText, blocker: '수신 확인 대기', evidenceRefs: ['receipt.md'] }, executionProgress: [
+      { id: 'card-1', title: 'UI 수정', status: 'blocked', attempt: 2, reason: '승인 필요', error: '', result: unsafeText, updatedAt: '2026-11-03T03:00:00Z' }
+    ] })], now),
     workbenchFilter: 'open', workbenchReadAt: now
   });
   vm.runInContext(`${helper}\n${renderer}\nrenderWorkbenchTasks();`, context);
@@ -92,6 +103,11 @@ test('collapsed work cards expose next action and blocker safely and preserve di
   assert.match(text, /다음 · <img src=x onerror=alert\(1\)>/);
   assert.match(text, /막힘 · 수신 확인 대기/);
   assert.match(text, /검토 근거 1개/);
+  const workerDetail = card.children[1].children.find(node => node.className === 'workbench-executor-result');
+  assert.equal(workerDetail.children[0].textContent, 'UI 수정 · blocked · 시도 2회');
+  assert.equal(workerDetail.children[1].textContent, '차단 사유 · 승인 필요');
+  assert.equal(workerDetail.children[2].textContent, unsafeText);
+  assert.equal(workerDetail.children[2].tagName, 'pre');
   const flow = summary.children.find(node => node.className === 'workbench-flow');
   assert.equal(flow.attributes.role, 'list');
   assert.equal(flow.children.filter(node => node.attributes['aria-current']).length, 0);

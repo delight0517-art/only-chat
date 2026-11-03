@@ -82,6 +82,55 @@ test('persists validated executor plans and rejects overlapping plan scopes', as
   });
 });
 
+test('persists each executor outcome and advances the parent only after every worker is terminal', async () => {
+  await withFixture(async ({ repo, dataDir }) => {
+    const store = new TaskRegistryStore({ dataDir });
+    const execution = {
+      kind: 'executor-plan', summary: 'Split work', tasks: [
+        { title: 'Core slice', prompt: 'Implement core slice.', files: ['src/core'], allowedTools: ['read_file'] },
+        { title: 'UI slice', prompt: 'Implement UI slice.', files: ['src/ui'], allowedTools: ['read_file'] }
+      ]
+    };
+    await store.createTask(taskInput(repo, { taskKey: 'manager-results', paths: ['src/core', 'src/ui'], execution, idempotencyKey: 'create-manager-results' }));
+    await store.claimTask({ taskKey: 'manager-results', ownerChatId: 'chat-a', idempotencyKey: 'claim-manager-results' });
+
+    const firstStart = { taskKey: 'manager-results', ownerChatId: 'chat-a', executorId: 'manager-results-1', status: 'running', idempotencyKey: 'worker-1-start' };
+    assert.equal((await store.recordExecutorProgress(firstStart)).task.status, 'executing');
+    assert.deepEqual(await store.recordExecutorProgress(firstStart), await store.recordExecutorProgress(firstStart));
+    await store.recordExecutorProgress({ ...firstStart, status: 'completed', idempotencyKey: 'worker-1-done', sessionId: 'worker-session-1', result: 'Core implementation result.' });
+    assert.equal(store.getTask('manager-results').status, 'executing', 'one result cannot advance a multi-worker parent');
+
+    await store.recordExecutorProgress({ ...firstStart, executorId: 'manager-results-2', status: 'running', idempotencyKey: 'worker-2-start' });
+    const final = await store.recordExecutorProgress({ ...firstStart, executorId: 'manager-results-2', status: 'completed', idempotencyKey: 'worker-2-done', sessionId: 'worker-session-2', result: 'UI implementation result.' });
+    assert.equal(final.task.status, 'verifying');
+    assert.deepEqual(final.task.executionProgress.map(item => [item.status, item.sessionId, item.result]), [
+      ['completed', 'worker-session-1', 'Core implementation result.'],
+      ['completed', 'worker-session-2', 'UI implementation result.']
+    ]);
+    assert.deepEqual(final.task.checkpoint.evidenceRefs, [
+      'executor-result:manager-results-1:attempt-1', 'executor-result:manager-results-2:attempt-1'
+    ]);
+    const reopened = new TaskRegistryStore({ dataDir });
+    assert.deepEqual(reopened.getTask('manager-results').executionProgress, final.task.executionProgress);
+  });
+});
+
+test('keeps incomplete executor plans blocked with worker result and recovery action', async () => {
+  await withFixture(async ({ repo, store }) => {
+    const execution = { kind: 'executor-plan', summary: 'One slice', tasks: [
+      { title: 'Read source', prompt: 'Inspect and report.', files: ['src'], allowedTools: ['read_file'] }
+    ] };
+    await store.createTask(taskInput(repo, { taskKey: 'manager-blocked', paths: ['src'], execution, idempotencyKey: 'create-manager-blocked' }));
+    await store.claimTask({ taskKey: 'manager-blocked', ownerChatId: 'chat-a', idempotencyKey: 'claim-manager-blocked' });
+    await store.recordExecutorProgress({ taskKey: 'manager-blocked', ownerChatId: 'chat-a', executorId: 'manager-blocked-1', status: 'running', idempotencyKey: 'blocked-start' });
+    const blocked = await store.recordExecutorProgress({ taskKey: 'manager-blocked', ownerChatId: 'chat-a', executorId: 'manager-blocked-1', status: 'blocked', idempotencyKey: 'blocked-end', reason: 'Required tool approval was unavailable.' });
+    assert.equal(blocked.task.status, 'blocked');
+    assert.match(blocked.task.checkpoint.nextAction, /명시적으로 재개/);
+    assert.equal(blocked.task.executionProgress[0].reason, 'Required tool approval was unavailable.');
+    assert.equal(blocked.task.ownerChatId, null);
+  });
+});
+
 test('allows only one concurrent owner and rejects overlapping active path scopes', async () => {
   await withFixture(async ({ repo, store }) => {
     await store.createTask(taskInput(repo, { idempotencyKey: 'create-race' }));

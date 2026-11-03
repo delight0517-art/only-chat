@@ -79,6 +79,19 @@ async function main() {
     assert.equal(engine.currentSession.sessionId, managerSessionId);
     assert.match(duplicate.content, /중복 실행은 추가하지 않았습니다/);
     assert.equal(enqueueCalls, 1, 'identical manager plans must not be queued twice');
+    const worker = enqueued[0];
+    assert.equal(worker.managerOwnerChatId, managerSessionId);
+    engine.dispatcher.emit('worker_started', { task: worker });
+    await engine.managerProgressQueues.get(delegated.registryTaskKey);
+    engine.dispatcher.emit('worker_completed', { task: worker, result: {
+      status: 'completed', sessionId: 'worker-session-1', result: '작업 결과가 저장되었습니다.', executionEvidence: null
+    } });
+    await engine.managerProgressQueues.get(delegated.registryTaskKey);
+    const completedParent = taskRegistryStore.getTask(delegated.registryTaskKey);
+    assert.equal(completedParent.status, 'verifying');
+    assert.equal(completedParent.executionProgress[0].status, 'completed');
+    assert.equal(completedParent.executionProgress[0].result, '작업 결과가 저장되었습니다.');
+    assert.equal(completedParent.executionProgress[0].sessionId, 'worker-session-1');
     engine.providerAdapter = async () => ({ content: JSON.stringify({ type: 'executor_plan', summary: '대상 파일을 특정하지 못했습니다', feasibility: { status: 'blocked', reason: '변경 범위와 소유 파일을 확인할 수 없습니다.' }, tasks: [] }), toolCalls: [] });
     let blockedEnqueueCount = 0;
     engine.dispatcher.enqueueTasks = () => { blockedEnqueueCount += 1; return []; };

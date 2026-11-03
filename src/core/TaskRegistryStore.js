@@ -11,6 +11,8 @@ const MAX_TASKS = 10_000;
 const MAX_IDEMPOTENCY_RECORDS = 50_000;
 const MAX_MESSAGES = 5_000;
 const MAX_MESSAGE_LENGTH = 1_200;
+const MAX_EXECUTOR_RESULT_LENGTH = 8_000;
+const MAX_EXECUTOR_TOOL_NAMES = 32;
 const MIN_LEASE_MS = 30_000;
 const MAX_LEASE_MS = 15 * 60_000;
 const DEFAULT_LEASE_MS = 2 * 60_000;
@@ -115,6 +117,41 @@ function normalizeExecutionPlan(value) {
   return { kind: 'executor-plan', summary, tasks };
 }
 
+function normalizeExecutionEvidence(value) {
+  if (value == null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('executionEvidence is invalid');
+  const names = value.toolNames;
+  if (!Array.isArray(names) || names.length > MAX_EXECUTOR_TOOL_NAMES
+    || names.some(name => typeof name !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/i.test(name))) {
+    throw new TypeError('executionEvidence.toolNames is invalid');
+  }
+  const counts = ['attemptedCount', 'successfulCount', 'failedCount', 'allowedToolViolationCount',
+    'approvalBlockedCount', 'approvalUnavailableCount', 'approvalDeniedCount', 'approvalExpiredCount', 'approvalInvalidCount'];
+  for (const key of counts) {
+    if (counts.indexOf(key) < 4 && !Number.isSafeInteger(value[key])) throw new TypeError(`executionEvidence.${key} is invalid`);
+    if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || value[key] < 0)) throw new TypeError(`executionEvidence.${key} is invalid`);
+  }
+  const evidence = { ...Object.fromEntries(counts.filter(key => value[key] !== undefined).map(key => [key, value[key]])), toolNames: [...new Set(names)] };
+  for (const key of ['provider', 'model', 'tierId', 'tierName']) {
+    if (value[key] !== undefined && value[key] !== null) evidence[key] = printableString(value[key], `executionEvidence.${key}`, 128);
+  }
+  const disallowedToolNames = value.disallowedToolNames === undefined ? [] : value.disallowedToolNames;
+  if (!Array.isArray(disallowedToolNames) || disallowedToolNames.length > MAX_EXECUTOR_TOOL_NAMES
+    || disallowedToolNames.some(name => typeof name !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/i.test(name))) {
+    throw new TypeError('executionEvidence.disallowedToolNames is invalid');
+  }
+  evidence.disallowedToolNames = [...new Set(disallowedToolNames)];
+  return evidence;
+}
+
+function initialExecutionProgress(taskKey, execution, now) {
+  if (!execution) return undefined;
+  return execution.tasks.map((task, index) => ({
+    id: `${taskKey}-${index + 1}`, title: task.title, status: 'queued', attempt: 0,
+    sessionId: null, result: '', reason: '', error: '', executionEvidence: null, updatedAt: now
+  }));
+}
+
 function operationHash(operation, input) {
   return crypto.createHash('sha256').update(`${operation}\0${JSON.stringify(input)}`).digest('hex');
 }
@@ -189,6 +226,21 @@ class TaskRegistryStore {
         } catch (_) {
           throw new Error('invalid task registry execution plan');
         }
+      }
+      if (task.executionProgress !== undefined) {
+        if (!task.execution || !Array.isArray(task.executionProgress) || task.executionProgress.length !== task.execution.tasks.length
+          || task.executionProgress.some((item, index) => !item || item.id !== `${task.taskKey}-${index + 1}`
+            || item.title !== task.execution.tasks[index].title
+            || !['queued', 'running', 'completed', 'blocked', 'failed'].includes(item.status)
+            || !Number.isSafeInteger(item.attempt) || item.attempt < 0
+            || typeof item.result !== 'string' || item.result.length > MAX_EXECUTOR_RESULT_LENGTH
+            || typeof item.reason !== 'string' || item.reason.length > 2000
+            || typeof item.error !== 'string' || item.error.length > 2000
+            || (item.sessionId !== null && typeof item.sessionId !== 'string')
+            || !Number.isFinite(Date.parse(item.updatedAt)))) {
+          throw new Error('invalid task registry executor progress');
+        }
+        for (const item of task.executionProgress) normalizeExecutionEvidence(item.executionEvidence);
       }
       if (ACTIVE_STATUSES.has(task.status) && (typeof task.ownerChatId !== 'string'
         || !task.ownerChatId || typeof task.leaseExpiresAt !== 'string' || !Number.isFinite(Date.parse(task.leaseExpiresAt)))) {
@@ -337,6 +389,8 @@ class TaskRegistryStore {
         updatedAt: now
       };
       if (normalized.execution !== undefined) task.execution = normalized.execution;
+      const executionProgress = initialExecutionProgress(normalized.taskKey, normalized.execution, now);
+      if (executionProgress) task.executionProgress = executionProgress;
       state.tasks.push(task);
       const result = { created: true, task: clone(task) };
       this._remember(state, replay, result);
@@ -463,6 +517,98 @@ class TaskRegistryStore {
       this._remember(state, replay, result);
       this._saveState(state);
       return result;
+    });
+  }
+
+  async recordExecutorProgress(input = {}) {
+    const taskKey = printableString(input.taskKey, 'taskKey', 128);
+    const ownerChatId = printableString(input.ownerChatId, 'ownerChatId', 256);
+    const idempotencyKey = printableString(input.idempotencyKey, 'idempotencyKey', 160);
+    const executorId = printableString(input.executorId, 'executorId', 160);
+    const status = input.status;
+    const sessionId = input.sessionId == null ? null : printableString(input.sessionId, 'sessionId', 256);
+    const resultText = printableString(input.result || '', 'result', MAX_EXECUTOR_RESULT_LENGTH, false);
+    const reason = printableString(input.reason || '', 'reason', 2000, false);
+    const error = printableString(input.error || '', 'error', 2000, false);
+    const executionEvidence = normalizeExecutionEvidence(input.executionEvidence);
+    if (!TASK_KEY.test(taskKey)) throw new TypeError('taskKey must be a stable alphanumeric key');
+    if (!['running', 'completed', 'blocked', 'failed'].includes(status)) throw new TypeError('executor status is not supported');
+    const request = { taskKey, ownerChatId, executorId, status, sessionId, result: resultText, reason, error, executionEvidence };
+    return this._withWriteLock(`task-registry:executor-progress:${taskKey}`, async () => {
+      const state = this._loadState();
+      const replay = this._idempotencyReplay(state, 'executor-progress', idempotencyKey, request);
+      if (replay.result) return replay.result;
+      const task = state.tasks.find(item => item.taskKey === taskKey);
+      const nowMs = this.clock();
+      if (!task || !task.execution) {
+        const response = { updated: false, reason: task ? 'execution_plan_missing' : 'task_not_found', taskKey };
+        this._remember(state, replay, response);
+        this._saveState(state);
+        return response;
+      }
+      if (task.ownerChatId !== ownerChatId || !task.leaseExpiresAt || Date.parse(task.leaseExpiresAt) <= nowMs) {
+        const response = { updated: false, reason: 'claim_not_held', taskKey, status: task.status, revision: task.revision };
+        this._remember(state, replay, response);
+        this._saveState(state);
+        return response;
+      }
+      const index = Number(executorId.slice(`${taskKey}-`.length)) - 1;
+      const progress = task.executionProgress || initialExecutionProgress(taskKey, task.execution, task.createdAt);
+      const executor = progress?.[index];
+      if (!executor || executor.id !== executorId) throw new Error('executor ID is outside the saved plan');
+      const allowedProgress = {
+        queued: new Set(['running']),
+        running: new Set(['completed', 'blocked', 'failed']),
+        completed: new Set(), blocked: new Set(), failed: new Set()
+      };
+      if (!allowedProgress[executor.status]?.has(status)) throw new Error(`invalid executor transition: ${executor.status} -> ${status}`);
+      if (status === 'running') {
+        executor.attempt += 1;
+        executor.result = '';
+        executor.reason = '';
+        executor.error = '';
+        executor.executionEvidence = null;
+        executor.sessionId = sessionId || executor.sessionId;
+      } else {
+        executor.result = resultText;
+        executor.reason = reason;
+        executor.error = error;
+        executor.executionEvidence = executionEvidence;
+        executor.sessionId = sessionId || executor.sessionId;
+      }
+      executor.status = status;
+      executor.updatedAt = new Date(nowMs).toISOString();
+      task.executionProgress = progress;
+
+      if (status === 'running' && task.status === 'claimed') {
+        task.status = 'executing';
+        task.checkpoint = { nextAction: '하위 작업을 실행 중입니다. 모든 결과를 기록한 뒤 검토 단계로 이동합니다.', blocker: '', evidenceRefs: [] };
+      }
+      const allTerminal = progress.length > 0 && progress.every(item => ['completed', 'blocked', 'failed'].includes(item.status));
+      if (allTerminal && task.status === 'executing') {
+        const blocked = progress.filter(item => item.status === 'blocked');
+        const failed = progress.filter(item => item.status === 'failed');
+        if (blocked.length || failed.length) {
+          task.status = 'blocked';
+          task.ownerChatId = null;
+          task.leaseExpiresAt = null;
+          const detail = [...blocked.map(item => `${item.title}: ${item.reason || '차단됨'}`),
+            ...failed.map(item => `${item.title}: ${item.error || '실패함'}`)].join(' · ').slice(0, 1900);
+          task.checkpoint = { nextAction: '저장된 하위 작업 결과를 검토하고, 실패 원인을 해결한 뒤 명시적으로 재개합니다.', blocker: detail || '하위 작업이 완료되지 않았습니다.', evidenceRefs: [] };
+        } else {
+          task.status = 'verifying';
+          task.checkpoint = {
+            nextAction: '모든 하위 실행자 결과를 검토하고 통합 검증 증거를 기록합니다.', blocker: '',
+            evidenceRefs: progress.map(item => `executor-result:${item.id}:attempt-${item.attempt}`)
+          };
+        }
+      }
+      task.revision += 1;
+      task.updatedAt = new Date(nowMs).toISOString();
+      const response = { updated: true, task: clone(task) };
+      this._remember(state, replay, response);
+      this._saveState(state);
+      return response;
     });
   }
 

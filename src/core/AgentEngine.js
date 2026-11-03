@@ -123,6 +123,13 @@ class AgentEngine {
       maxGlobalConcurrency: 1,
       executeTask: task => this._executeDispatchedTask(task)
     });
+    this.managerProgressQueues = new Map();
+    for (const [eventName, status] of [
+      ['worker_started', 'running'], ['worker_completed', 'completed'],
+      ['worker_blocked', 'blocked'], ['worker_failed', 'failed']
+    ]) {
+      this.dispatcher.on(eventName, event => { void this._queueManagerWorkerProgress(event, status); });
+    }
     this.ownership = new OwnershipLock({ workspaceDir: this.workspaceDir });
     this.workspaceExecutionLease = new WorkspaceExecutionLease({
       lockRoot: path.join(this.dataDir, 'workspace-leases')
@@ -152,6 +159,45 @@ class AgentEngine {
     });
     this.conversationHistory = metadata.initialHistory ? [...metadata.initialHistory] : [];
     return this.currentSession;
+  }
+
+  _queueManagerWorkerProgress(event, status) {
+    const task = event?.task;
+    if (!task?.registryTaskKey || !task.managerOwnerChatId || !task.id) return Promise.resolve(null);
+    const registry = this.tools.taskRegistryStore;
+    if (!registry || typeof registry.recordExecutorProgress !== 'function') return Promise.resolve(null);
+    const prior = this.managerProgressQueues.get(task.registryTaskKey) || Promise.resolve();
+    const next = prior.catch(() => {}).then(async () => {
+      const result = event.result || {};
+      const request = {
+        taskKey: task.registryTaskKey,
+        ownerChatId: task.managerOwnerChatId,
+        executorId: task.id,
+        status,
+        sessionId: result.sessionId || task.sessionId || null,
+        result: typeof result.result === 'string' ? result.result : '',
+        reason: event.reason || result.reason || '',
+        error: event.error || result.error || '',
+        executionEvidence: result.executionEvidence || null
+      };
+      const digest = crypto.createHash('sha256').update(JSON.stringify(request)).digest('hex').slice(0, 40);
+      const persisted = await registry.recordExecutorProgress({
+        ...request,
+        idempotencyKey: `executor-${task.id}-${status}-${digest}`
+      });
+      if (!persisted.updated) this.dispatcher.emit('manager_persistence_error', {
+        taskKey: task.registryTaskKey, executorId: task.id, status, reason: persisted.reason
+      });
+      return persisted;
+    }).catch(error => {
+      this.dispatcher.emit('manager_persistence_error', {
+        taskKey: task.registryTaskKey, executorId: task.id, status,
+        reason: String(error?.message || error).slice(0, 1000)
+      });
+      return null;
+    });
+    this.managerProgressQueues.set(task.registryTaskKey, next);
+    return next;
   }
 
   loadResumedSession(sessionData) {
@@ -675,6 +721,7 @@ class AgentEngine {
                         const queued = this.dispatcher.enqueueTasks(plan.tasks.map((task, index) => ({
                           id: `${taskKey}-${index + 1}`,
                           registryTaskKey: taskKey,
+                          managerOwnerChatId: ownerChatId,
                           ...task,
                           requireToolExecution: true
                         })));
