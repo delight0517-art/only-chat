@@ -306,6 +306,8 @@
               <label>앱<input name="app" required maxlength="120" placeholder="Detox"></label>
               <label>목표 제목<input name="title" required maxlength="160"></label>
               <label>완료 목표<textarea name="goal" required maxlength="2000" rows="2"></textarea></label>
+              <label>양 OS 공통 동작·API 계약<textarea name="sharedContract" required maxlength="4000" rows="3" placeholder="예: 타이머 종료 시각은 ISO-8601 UTC로 저장하고, 클라우드 응답이 늦으면 최신 revision만 적용"></textarea></label>
+              <label>양 OS 완료 기준<textarea name="acceptanceCriteria" required maxlength="4000" rows="3" placeholder="Mac/Windows가 모두 통과해야 할 항목을 한 줄씩 입력"></textarea></label>
               <label>통합 기준 커밋<input name="integrationBase" required pattern="[a-fA-F0-9]{40}|[a-fA-F0-9]{64}" placeholder="40자리 Git 커밋"></label>
               <fieldset><legend>Mac 담당</legend><input name="macOwner" required placeholder="담당자/세션"><input name="macSource" required placeholder="정본 저장소 위치"><input name="macBase" required pattern="[a-fA-F0-9]{40}|[a-fA-F0-9]{64}" placeholder="기준 커밋"><textarea name="macPaths" required rows="2" placeholder="소유 파일 경로 (줄마다 하나)"></textarea></fieldset>
               <fieldset><legend>Windows 담당</legend><input name="windowsOwner" required placeholder="담당자/세션"><input name="windowsSource" required placeholder="정본 저장소 위치"><input name="windowsBase" required pattern="[a-fA-F0-9]{40}|[a-fA-F0-9]{64}" placeholder="기준 커밋"><textarea name="windowsPaths" required rows="2" placeholder="소유 파일 경로 (줄마다 하나)"></textarea></fieldset>

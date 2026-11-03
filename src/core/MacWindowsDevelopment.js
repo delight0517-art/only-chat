@@ -96,7 +96,8 @@ class MacWindowsDevelopment {
     const patchSha256 = crypto.createHash('sha256').update(patch).digest('hex');
     const readySide = { ...task[platform], state: 'ready-to-share', evidence: [...task[platform].evidence,
       { text: `Source patch prepared · SHA-256 ${patchSha256}`, at: new Date().toISOString() }] };
-    const contract = { title: task.title, app: task.app, goal: task.goal, integrationBase: task.integrationBase, policy: task.policy,
+    const contract = { contractVersion: task.contractVersion || 1, title: task.title, app: task.app, goal: task.goal, sharedContract: task.sharedContract || '',
+      acceptanceCriteria: task.acceptanceCriteria || [], integrationBase: task.integrationBase, policy: task.policy,
       mac: platform === 'mac' ? readySide : task.mac, windows: platform === 'windows' ? readySide : task.windows };
     return { schema: 'only-chat-joint-development/patch-v1', taskKey, platform, baseCommit: head, filePaths, patch, patchSha256, contract, exportedAt: new Date().toISOString() };
   }
@@ -115,7 +116,9 @@ class MacWindowsDevelopment {
     const sender = task[packet.platform];
     if (packet.baseCommit !== sender.baseCommit || packet.filePaths.some(file => !sender.paths.some(owned => file === owned || file.startsWith(`${owned}/`)))) throw new Error('patch base or file list is outside the sender contract');
     if (JSON.stringify(contractPacket.mac.paths) !== JSON.stringify(task.mac.paths) || JSON.stringify(contractPacket.windows.paths) !== JSON.stringify(task.windows.paths)
-      || contractPacket.integrationBase !== task.integrationBase) throw new Error('patch contract conflicts with the registered task');
+      || contractPacket.integrationBase !== task.integrationBase
+      || (contractPacket.sharedContract || '') !== (task.sharedContract || '')
+      || JSON.stringify(contractPacket.acceptanceCriteria || []) !== JSON.stringify(task.acceptanceCriteria || [])) throw new Error('patch contract conflicts with the registered task');
     task.incomingPatches ||= [];
     if (!task.incomingPatches.some(item => item.fileId === fileId)) {
       task.incomingPatches.push({ fileId, sender: packet.platform, baseCommit: packet.baseCommit, filePaths: normalizedPaths,
@@ -203,14 +206,23 @@ class MacWindowsDevelopment {
     const mac = normalizeSide(input.mac, 'mac');
     const windows = normalizeSide(input.windows, 'windows');
     if (overlaps(mac.paths, windows.paths)) throw new Error('Mac and Windows file ownership overlaps; split the paths before parallel work');
+    const contractVersion = input.contractVersion === undefined ? 1 : input.contractVersion;
+    if (![1, 2].includes(contractVersion)) throw new TypeError('unsupported joint development contract version');
     const task = {
-      taskKey, title: text(input.title, 'title', 160), app: text(input.app, 'app', 120),
-      goal: text(input.goal, 'goal', 2000), integrationBase: text(input.integrationBase, 'integrationBase', 64).toLowerCase(),
+      taskKey, contractVersion, title: text(input.title, 'title', 160), app: text(input.app, 'app', 120),
+      goal: text(input.goal, 'goal', 2000),
+      sharedContract: input.sharedContract ? text(input.sharedContract, 'sharedContract', 4000) : '',
+      acceptanceCriteria: Array.isArray(input.acceptanceCriteria)
+        ? [...new Set(input.acceptanceCriteria.map((item, index) => text(item, `acceptanceCriteria[${index}]`, 500)))]
+        : [],
+      integrationBase: text(input.integrationBase, 'integrationBase', 64).toLowerCase(),
       policy: 'canonical-main-no-branches', mac, windows,
       drive: { state: 'not-published', fileId: null, sha256: null, readback: 'not-checked', direction: 'sent', receiverRead: 'not-checked' },
       integration: { state: 'not-started', commit: null, evidence: [] }, revision: 1,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
     };
+    if (task.acceptanceCriteria.length > 12) throw new TypeError('acceptanceCriteria cannot contain more than 12 items');
+    if (contractVersion === 2 && (!task.sharedContract || !task.acceptanceCriteria.length)) throw new TypeError('contract v2 requires a shared behavior/API contract and acceptance criteria');
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(task.integrationBase)) throw new TypeError('integrationBase must be a Git commit hash');
     if (mac.baseCommit !== task.integrationBase || windows.baseCommit !== task.integrationBase) throw new Error('both devices must start from the same canonical integration commit before parallel work');
     return task;
@@ -244,7 +256,8 @@ class MacWindowsDevelopment {
     const taskKey = task.taskKey;
     const existing = state.tasks.find(item => item.taskKey === taskKey);
     if (existing) {
-      const signature = item => JSON.stringify({ title: item.title, app: item.app, goal: item.goal, integrationBase: item.integrationBase,
+      const signature = item => JSON.stringify({ contractVersion: item.contractVersion || 1, title: item.title, app: item.app, goal: item.goal,
+        sharedContract: item.sharedContract || '', acceptanceCriteria: item.acceptanceCriteria || [], integrationBase: item.integrationBase,
         mac: { owner: item.mac.owner, source: item.mac.source, baseCommit: item.mac.baseCommit, paths: item.mac.paths },
         windows: { owner: item.windows.owner, source: item.windows.source, baseCommit: item.windows.baseCommit, paths: item.windows.paths } });
       if (signature(existing) !== signature(task)) throw new Error('task key already exists with a different contract');

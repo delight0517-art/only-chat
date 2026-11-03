@@ -3748,7 +3748,9 @@ function initJointDevelopment() {
     const values = Object.fromEntries(new FormData(form).entries());
     const lines = value => value.split(/\r?\n/u).map(item => item.trim()).filter(Boolean);
     const body = {
-      taskKey: values.taskKey, app: values.app, title: values.title, goal: values.goal,
+      contractVersion: 2, taskKey: values.taskKey, app: values.app, title: values.title, goal: values.goal,
+      sharedContract: values.sharedContract,
+      acceptanceCriteria: lines(values.acceptanceCriteria),
       integrationBase: values.integrationBase,
       mac: { owner: values.macOwner, source: values.macSource, baseCommit: values.macBase, paths: lines(values.macPaths) },
       windows: { owner: values.windowsOwner, source: values.windowsSource, baseCommit: values.windowsBase, paths: lines(values.windowsPaths) }
@@ -3804,6 +3806,15 @@ async function refreshJointDevelopment() {
       const card = document.createElement('article'); card.className = 'joint-dev-task';
       const title = document.createElement('strong'); title.textContent = `${task.app} · ${task.title}`; card.append(title);
       const goal = document.createElement('p'); goal.textContent = task.goal; card.append(goal);
+      if (task.sharedContract) {
+        const contract = document.createElement('p'); contract.className = 'joint-dev-contract';
+        contract.textContent = `공통 동작/API 계약 · ${task.sharedContract}`; card.append(contract);
+      }
+      if (task.acceptanceCriteria?.length) {
+        const criteria = document.createElement('ul'); criteria.className = 'joint-dev-criteria';
+        for (const item of task.acceptanceCriteria) { const entry = document.createElement('li'); entry.textContent = item; criteria.append(entry); }
+        card.append(criteria);
+      }
       const base = document.createElement('small'); base.textContent = `공통 기준 ${task.integrationBase.slice(0, 12)} · ${task.policy}`; card.append(base);
       for (const platform of ['mac', 'windows']) {
         const side = task[platform]; const row = document.createElement('p'); row.className = 'joint-dev-side';

@@ -2717,6 +2717,9 @@ body {
 .joint-dev-task { display: grid; gap: 6px; padding: 10px; border-radius: 9px; background: var(--bg-card); border: 1px solid var(--border-subtle); overflow-wrap: anywhere; }
 .joint-dev-task > strong { color: var(--text-main); font-size: 11px; }
 .joint-dev-task p { margin: 0; line-height: 1.55; }
+.joint-dev-contract { padding-left: 8px; border-left: 2px solid var(--oc-connection); color: var(--text-main); }
+.joint-dev-criteria { margin: 0; padding-left: 18px; line-height: 1.55; }
+.joint-dev-criteria li + li { margin-top: 3px; }
 .joint-dev-task small, .joint-dev-side, .joint-dev-drive { font: 9px/1.5 var(--font-mono); }
 .joint-dev-report { border-top: 1px solid var(--border-subtle); padding-top: 5px; font-size: 9px; }
 .joint-dev-report summary { cursor: pointer; color: var(--oc-connection); padding: 4px 0; }
