@@ -152,6 +152,7 @@ class ToolRegistry {
     this.notion = options.notionConnector || new NotionConnector(options.connectorOptions || {});
     this.notionMcp = options.notionMcpConnector || new NotionMcpConnector(options.notionMcpOptions || {});
     this.spaceKeeper = options.spaceKeeperConnector || new SpaceKeeperConnector(options.spaceKeeperOptions || {});
+    this.taskRegistryStore = options.taskRegistryStore || null;
 
     // Desktop hosts may inject their own embedded browser; CLI keeps Aside.
     this.browser = options.browserEnabled === false ? null : (options.browser || new AsideBrowser());
@@ -475,6 +476,31 @@ class ToolRegistry {
 
   async spaceKeeperCapacityStatus() {
     return this.spaceKeeper.capacityStatus();
+  }
+
+  taskRegistryList(options = {}) {
+    if (!this.taskRegistryStore) throw new Error('Shared task registry is unavailable in this runtime.');
+    return this.taskRegistryStore.listTasks({ status: options.status, limit: options.limit });
+  }
+
+  taskRegistryRead(taskKey) {
+    if (!this.taskRegistryStore) throw new Error('Shared task registry is unavailable in this runtime.');
+    return this.taskRegistryStore.getTask(taskKey);
+  }
+
+  taskRegistryCreate(input, creatorChatId) {
+    if (!this.taskRegistryStore) throw new Error('Shared task registry is unavailable in this runtime.');
+    return this.taskRegistryStore.createTask({ ...input, creatorChatId });
+  }
+
+  taskRegistryClaim(input, ownerChatId) {
+    if (!this.taskRegistryStore) throw new Error('Shared task registry is unavailable in this runtime.');
+    return this.taskRegistryStore.claimTask({ ...input, ownerChatId });
+  }
+
+  taskRegistryCheckpoint(input, ownerChatId) {
+    if (!this.taskRegistryStore) throw new Error('Shared task registry is unavailable in this runtime.');
+    return this.taskRegistryStore.updateCheckpoint({ ...input, ownerChatId });
   }
 
   // =========================================================================

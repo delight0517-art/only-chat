@@ -15,6 +15,7 @@ const { SkillManager } = require('./SkillManager.js');
 const { ParallelDispatcher } = require('./ParallelDispatcher.js');
 const { OwnershipLock } = require('./OwnershipLock.js');
 const { WorkspaceExecutionLease } = require('./WorkspaceExecutionLease.js');
+const { TaskRegistryStore } = require('./TaskRegistryStore.js');
 const { HandoffAdapter } = require('./HandoffAdapter.js');
 const { parseReasoningEffort } = require('./ReasoningEffort.js');
 const { AccountRouterModuleSlot } = require('../features/provider/AccountRouterModuleSlot.js');
@@ -29,7 +30,8 @@ const MUTATION_TOOL_NAMES = new Set([
   'notion_rea_open', 'notion_rea_navigate', 'notion_rea_act',
   'browser_open', 'browser_navigate', 'browser_act', 'browser_recipe', 'browser_history',
   'vault_get_credential',
-  'browser_workspace_snapshot', 'browser_workspace_restore', 'browser_workspace_focus', 'browser_workspace_open'
+  'browser_workspace_snapshot', 'browser_workspace_restore', 'browser_workspace_focus', 'browser_workspace_open',
+  'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint'
 ]);
 
 function isMutationToolName(name) {
@@ -80,6 +82,7 @@ class AgentEngine {
       notionReaBrowser: options.notionReaBrowser,
       browserEnabled: !this.isolated,
       providerConnectionsEnabled: !this.isolated,
+      taskRegistryStore: this.isolated ? null : new TaskRegistryStore({ dataDir: this.dataDir }),
       connectorOptions: this.isolated ? { storageDir: path.join(this.dataDir, 'providers'), clientConfigFile: false, readEnvironment: false } : {},
       vaultOptions: this.isolated ? { vaultDir: path.join(this.dataDir, 'vault') } : {},
       browserWorkspaceOptions: this.isolated ? { enabled: false, workspaceDir: path.join(this.dataDir, 'browser-workspaces') } : {}
@@ -261,7 +264,7 @@ class AgentEngine {
     const notionMcpRead = this.tools.isNotionMcpReadOnlyCall(call);
     if (this.tools.approvalPolicy === 'read-only') return isMutationToolName(call?.name) && !notionMcpRead;
     if (this.tools.approvalPolicy === 'never') return false;
-    return !notionMcpRead && !['read_file', 'list_files', 'search_files', 'gmail_list', 'gmail_read', 'google_drive_list', 'google_drive_read', 'notion_search', 'notion_query', 'notion_api_read', 'notion_mcp_list_tools', 'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status', 'browser_aria', 'browser_read', 'browser_status', 'spacekeeper_session_report', 'spacekeeper_capacity_status'].includes(call?.name);
+    return !notionMcpRead && !['read_file', 'list_files', 'search_files', 'gmail_list', 'gmail_read', 'google_drive_list', 'google_drive_read', 'notion_search', 'notion_query', 'notion_api_read', 'notion_mcp_list_tools', 'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status', 'browser_aria', 'browser_read', 'browser_status', 'spacekeeper_session_report', 'spacekeeper_capacity_status', 'task_registry_list', 'task_registry_read'].includes(call?.name);
   }
 
   async _getAccountRouterAdapter() {
@@ -827,6 +830,16 @@ class AgentEngine {
           return await this.tools.spaceKeeperSessionReport(args.taskKey);
         case 'spacekeeper_capacity_status':
           return await this.tools.spaceKeeperCapacityStatus();
+        case 'task_registry_list':
+          return await this.tools.taskRegistryList(args);
+        case 'task_registry_read':
+          return await this.tools.taskRegistryRead(args.taskKey);
+        case 'task_registry_create':
+          return await this.tools.taskRegistryCreate({ ...args, idempotencyKey: args.idempotencyKey || call.id }, this.currentSession?.sessionId || 'unknown-session');
+        case 'task_registry_claim':
+          return await this.tools.taskRegistryClaim({ ...args, idempotencyKey: args.idempotencyKey || call.id }, this.currentSession?.sessionId || 'unknown-session');
+        case 'task_registry_checkpoint':
+          return await this.tools.taskRegistryCheckpoint({ ...args, idempotencyKey: args.idempotencyKey || call.id }, this.currentSession?.sessionId || 'unknown-session');
 
         // Built-in Aside / REA Browser Tools
         case 'browser_open':

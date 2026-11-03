@@ -61,7 +61,7 @@ assert.equal(payload.model, 'auto');
 assert.deepEqual(payload.messages, [{ role: 'user', content: 'hi' }]);
 assert.equal(payload.stream, false);
 assert.equal(payload.tool_choice, 'auto');
-assert.equal(payload.tools.length, 38, 'default policy exposes the current complete provider tool set');
+assert.equal(payload.tools.length, 43, 'default policy exposes the current complete provider tool set');
 assert.equal(request.init.headers.Authorization, undefined);
 assert.deepEqual(result, { content: 'hello', toolCalls: [], usage: { total_tokens: 2 }, protocol: 'openai-compatible' });
 assert.deepEqual(deltas, ['hello']);
@@ -73,6 +73,9 @@ assert.ok(readOnlyPayload.tools.some(tool => tool.function.name === 'notion_rea_
 assert.ok(!readOnlyPayload.tools.some(tool => tool.function.name === 'notion_rea_act'));
 assert.ok(!readOnlyPayload.tools.some(tool => ['exec_command', 'write_file', 'gmail_send', 'browser_open'].includes(tool.function.name)),
   'read-only policy must keep mutation tools out of the Router request');
+assert.ok(readOnlyPayload.tools.some(tool => tool.function.name === 'task_registry_list'));
+assert.ok(readOnlyPayload.tools.some(tool => tool.function.name === 'task_registry_read'));
+assert.ok(!readOnlyPayload.tools.some(tool => ['task_registry_create', 'task_registry_claim', 'task_registry_checkpoint'].includes(tool.function.name)));
 
 const toolAdapter = createAccountRouterAdapter({ fetch: async () => new Response(JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ id: 'c1', function: { name: 'read_file', arguments: '{"path":"x"}' } }] } }] }), { status: 200 }) });
 const toolResult = await toolAdapter.call({}, [{ role: 'user', content: 'read x' }]);

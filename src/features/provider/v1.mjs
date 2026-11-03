@@ -7,14 +7,15 @@ const TOOL_NAMES = Object.freeze([
   'notion_mcp_list_tools', 'notion_mcp_call_tool',
   'notion_rea_open', 'notion_rea_navigate', 'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_act', 'notion_rea_status',
   'spacekeeper_session_report', 'spacekeeper_capacity_status', 'browser_open', 'browser_navigate',
-  'browser_aria', 'browser_act', 'browser_read', 'browser_recipe', 'browser_status'
+  'browser_aria', 'browser_act', 'browser_read', 'browser_recipe', 'browser_status',
+  'task_registry_list', 'task_registry_read', 'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint'
 ]);
 const READ_ONLY_TOOL_NAMES = new Set([
   'read_file', 'google_drive_list', 'google_drive_read', 'gmail_list', 'gmail_read',
   'notion_search', 'notion_query', 'notion_api_read', 'spacekeeper_session_report', 'spacekeeper_capacity_status',
   'notion_mcp_list_tools', 'notion_mcp_call_tool',
   'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status',
-  'browser_aria', 'browser_read', 'browser_status'
+  'browser_aria', 'browser_read', 'browser_status', 'task_registry_list', 'task_registry_read'
 ]);
 
 function toolDefinitions(approvalPolicy = 'on-request') {
@@ -23,7 +24,17 @@ function toolDefinitions(approvalPolicy = 'on-request') {
     type: 'function',
     function: {
       name,
-      description: name === 'notion_api_read'
+      description: name === 'task_registry_list'
+        ? 'Read the shared local task registry so this chat can find work, owners, checkpoints and evidence before repeating investigation. Do not assume a listed task is complete.'
+        : name === 'task_registry_read'
+          ? 'Read one shared local task record by stable task key. Use this before repeating work on the same repository paths.'
+          : name === 'task_registry_create'
+            ? 'Create an idempotent task record for another Only Chat session. Include canonical repository path, observed base commit and exact relative paths; never include transcripts, credentials or user data.'
+            : name === 'task_registry_claim'
+              ? 'Atomically claim a task for the current Only Chat session. Respect conflicts and do not take over an unexpired claim held by another session.'
+              : name === 'task_registry_checkpoint'
+                ? 'Update the current session task status and concise checkpoint. Completion requires evidence; blocked status requires a concrete blocker.'
+                : name === 'notion_api_read'
         ? 'Direct REST API read for the legacy integration-token connection only. For a personal Notion login, use notion_mcp_list_tools then notion_mcp_call_tool instead; the OAuth token cannot be sent to REST.'
         : name === 'notion_api_write'
           ? 'Direct REST API write for the legacy integration-token connection only. For a personal Notion login, use the authorized tools from notion_mcp_list_tools with notion_mcp_call_tool; writes require Only Chat approval.'
@@ -36,7 +47,17 @@ function toolDefinitions(approvalPolicy = 'on-request') {
           : name.startsWith('notion_rea_')
             ? `Use Aside/REA for the user's free-plan Notion workspace. Open or navigate only HTTPS notion.so, notion.com, or notion.site URLs; use notion_rea_search to search workspace pages/content for the user's query, inspect returned result links, click the matching result with notion_rea_act, and read it with notion_rea_read. Use notion_rea_aria for current actionable refs. Edits use notion_rea_act under Only Chat approval, then verify with notion_rea_read. The user signs into Notion directly in Aside; never request, read, or enter passwords, passkeys, MFA codes, or recovery secrets. ${name}`
             : `Use Only Chat's ${name} capability when the user requests it.`,
-      parameters: name === 'notion_rea_open' || name === 'notion_rea_navigate'
+      parameters: name === 'task_registry_list'
+        ? { type: 'object', properties: { status: { type: 'string', enum: ['planned', 'claimed', 'executing', 'verifying', 'integrating', 'reviewing', 'blocked', 'completed', 'failed'] }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, additionalProperties: false }
+        : name === 'task_registry_read'
+          ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 } }, required: ['taskKey'], additionalProperties: false }
+          : name === 'task_registry_create'
+            ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 }, title: { type: 'string', minLength: 1, maxLength: 120 }, repositoryPath: { type: 'string' }, baseSha: { type: 'string', minLength: 40, maxLength: 64 }, paths: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'string' } }, nextAction: { type: 'string', maxLength: 2000 }, idempotencyKey: { type: 'string', maxLength: 160 } }, required: ['taskKey', 'title', 'repositoryPath', 'baseSha', 'paths'], additionalProperties: false }
+            : name === 'task_registry_claim'
+              ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 }, idempotencyKey: { type: 'string', maxLength: 160 }, leaseMs: { type: 'integer', minimum: 30000, maximum: 900000 } }, required: ['taskKey'], additionalProperties: false }
+              : name === 'task_registry_checkpoint'
+                ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 }, status: { type: 'string', enum: ['claimed', 'executing', 'verifying', 'integrating', 'reviewing', 'blocked', 'completed', 'failed'] }, nextAction: { type: 'string', maxLength: 2000 }, blocker: { type: 'string', maxLength: 2000 }, evidenceRefs: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 2048 } }, idempotencyKey: { type: 'string', maxLength: 160 } }, required: ['taskKey', 'status'], additionalProperties: false }
+        : name === 'notion_rea_open' || name === 'notion_rea_navigate'
         ? { type: 'object', properties: { url: { type: 'string', description: 'HTTPS Notion page URL. notion_rea_open defaults to the Notion home page.' } }, additionalProperties: false }
         : name === 'notion_rea_search'
           ? { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 500 } }, required: ['query'], additionalProperties: false }
