@@ -40,7 +40,7 @@ let pendingUiMorphReload = false;
 let uiMorphReloadTimer = null;
 const UI_ZOOM_KEY = 'onlyChatUiZoom';
 const MIN_UI_ZOOM = 0.8;
-const MAX_UI_ZOOM = 1.5;
+const MAX_UI_ZOOM = 1.8;
 const FANTASY_WARRIOR_MODE_KEY = 'onlyChatFantasyWarriorMode';
 let fantasyWarriorMode = localStorage.getItem(FANTASY_WARRIOR_MODE_KEY) === 'true';
 let uiZoom = Math.min(MAX_UI_ZOOM, Math.max(MIN_UI_ZOOM, Number(localStorage.getItem(UI_ZOOM_KEY)) || 1));
@@ -526,10 +526,10 @@ function setupEventListeners() {
       startNewSession();
     } else if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.code === 'NumpadAdd' || (e.code === 'Equal' && e.shiftKey))) {
       e.preventDefault();
-      adjustUiZoom(0.1);
+      adjustUiZoom(0.2);
     } else if ((e.ctrlKey || e.metaKey) && (e.key === '-' || e.code === 'NumpadSubtract')) {
       e.preventDefault();
-      adjustUiZoom(-0.1);
+      adjustUiZoom(-0.2);
     } else if ((e.ctrlKey || e.metaKey) && (e.key === ',' || e.code === 'Comma')) {
       e.preventDefault();
       toggleSettingsStage();
