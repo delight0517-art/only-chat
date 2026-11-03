@@ -404,7 +404,7 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let browser = BrowserView(
             embedded: true,
             authorizeNavigation: { [weak self] url, completion in
-                guard let self else { completion(false); return }
+                guard let self else { completion(.unavailable); return }
                 self.authorizeBrowserNavigation(url, completion: completion)
             },
             onWebView: { model, view in ThreeFEmbeddedBrowserSession.shared.attach(model: model, webView: view) },
@@ -432,17 +432,30 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return parts.url
     }
 
-    private func authorizeBrowserNavigation(_ url: URL, completion: @escaping (Bool) -> Void) {
+    private func authorizeBrowserNavigation(
+        _ url: URL,
+        completion: @escaping (BrowserNavigationAuthorizationDecision) -> Void
+    ) {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/browser/authorize")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["url": url.absoluteString])
         URLSession.shared.dataTask(with: request) { data, response, _ in
-            let allowed = (response as? HTTPURLResponse)?.statusCode == 200
-                && ((try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any])?["allowed"] as? Bool == true
+            let payload = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any]
+            let statusCode = (response as? HTTPURLResponse)?.statusCode
+            let decision: BrowserNavigationAuthorizationDecision
+            if statusCode == 200, payload?["allowed"] as? Bool == true {
+                decision = .allowed
+            } else if statusCode == 403, payload?["reason"] as? String == "blocked" {
+                decision = .blocked
+            } else if statusCode == 403, payload?["reason"] as? String == "youtube_quota_blocked" {
+                decision = .youtubeBlocked
+            } else {
+                decision = .unavailable
+            }
             DispatchQueue.main.async {
-                if !allowed { self.showBrowserNotice("Focus Fence 정책에서 허용하지 않았거나 정책 서비스에 연결할 수 없습니다.", url: url) }
-                completion(allowed)
+                if !decision.isAllowed { self.showBrowserNotice("Focus Fence 정책에서 허용하지 않았거나 정책 서비스에 연결할 수 없습니다.", url: url) }
+                completion(decision)
             }
         }.resume()
     }

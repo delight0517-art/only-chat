@@ -71,6 +71,7 @@ rm -rf "$ICONSET"
 swiftc -parse-as-library -swift-version 5 -framework AppKit -framework ApplicationServices -framework CoreGraphics -framework ImageIO -framework ScreenCaptureKit -framework WebKit -framework Speech -framework AVFoundation \
   "$ROOT/macOS/OnlyChatApp.swift" \
   "$THREEF_SOURCE_ROOT/AddressBarNavigationRequest.swift" \
+  "$THREEF_SOURCE_ROOT/BrowserContextMenu.swift" \
   "$THREEF_SOURCE_ROOT/BrowserKeyboardCommands.swift" \
   "$THREEF_SOURCE_ROOT/BrowserModel.swift" \
   "$THREEF_SOURCE_ROOT/BrowserSessionStore.swift" \
@@ -81,6 +82,7 @@ swiftc -parse-as-library -swift-version 5 -framework AppKit -framework Applicati
   "$THREEF_SOURCE_ROOT/EmbeddedBrowserSession.swift" \
   "$THREEF_SOURCE_ROOT/ExtensionCompatibility.swift" \
   "$THREEF_SOURCE_ROOT/FocusFenceConnectionService.swift" \
+  "$THREEF_SOURCE_ROOT/FocusFenceSearchResultFilter.swift" \
   "$THREEF_SOURCE_ROOT/HotModuleStore.swift" \
   "$THREEF_SOURCE_ROOT/YouTubePreviewPlaybackBlocker.swift" \
   "$THREEF_SOURCE_ROOT/ThreeFURLRouter.swift" \
