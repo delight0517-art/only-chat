@@ -34,7 +34,11 @@ let speechMediaStream = null;
 let speechChunks = [];
 let speechTranscribing = false;
 let speechTranscriptionRunning = false;
+let speechStarting = false;
 let pendingSpeechMemoBlob = null;
+let speechAudioContext = null;
+let speechAnalyser = null;
+let speechAnimationFrame = null;
 let speechDraftPrefix = null;
 let speechDraftSuffix = '';
 let fullAccessEnabled = false;
@@ -325,12 +329,7 @@ function setupEventListeners() {
     }
   });
 
-  composerInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      if (!isGenerating) handleSend();
-    }
-  });
+  composerInput.addEventListener('keydown', handleComposerKeydown);
 
   document.getElementById('btnNewChat').addEventListener('click', startNewSession);
 
@@ -497,34 +496,7 @@ function setupEventListeners() {
 
   // Reference 3: Microphone Button
   btnMicrophone.addEventListener('click', toggleSpeechInput);
-  document.getElementById('btnVoiceMemoClose')?.addEventListener('click', () => {
-    if (isRecording || speechTranscribing) return;
-    document.getElementById('voiceMemoDialog')?.close();
-  });
-  document.getElementById('btnVoiceMemoRetry')?.addEventListener('click', () => { void transcribeSpeechMemo(); });
-  document.getElementById('btnVoiceMemoUse')?.addEventListener('click', () => {
-    const transcript = document.getElementById('voiceMemoTranscript')?.value || '';
-    if (!transcript.trim()) return;
-    applySpeechTranscript(`음성 메모를 요약하고 핵심 내용, 할 일, 쟁점을 분석해 주세요.\n\n${transcript.trim()}`);
-    document.getElementById('voiceMemoDialog')?.close();
-  });
-  document.getElementById('voiceMemoDialog')?.addEventListener('cancel', event => {
-    if (isRecording || speechTranscribing) {
-      event.preventDefault();
-      if (isRecording) stopSpeechMemo();
-    }
-  });
-  document.getElementById('voiceMemoDialog')?.addEventListener('close', () => {
-    const audio = document.getElementById('voiceMemoAudio');
-    if (audio?.src.startsWith('blob:')) URL.revokeObjectURL(audio.src);
-    if (audio) { audio.removeAttribute('src'); audio.hidden = true; }
-    pendingSpeechMemoBlob = null;
-    const retry = document.getElementById('btnVoiceMemoRetry');
-    if (retry) retry.hidden = true;
-  });
-  document.getElementById('voiceMemoTranscript')?.addEventListener('input', event => {
-    document.getElementById('btnVoiceMemoUse').disabled = !isUsableSpeechTranscript(event.currentTarget.value);
-  });
+  document.getElementById('btnVoiceRetry')?.addEventListener('click', () => { void transcribeSpeechMemo(pendingSpeechMemoBlob, true); });
 
   // Keyboard Shortcuts: Ctrl+, and Cmd+, to open Full-Stage Settings View (Ref User UI)
   window.addEventListener('keydown', e => {
@@ -1371,9 +1343,16 @@ function toggleSpeechInput() {
 }
 
 async function startSpeechMemo() {
-  const status = document.getElementById('voiceMemoStatus');
-  const dialog = document.getElementById('voiceMemoDialog');
+  if (speechStarting) return;
+  speechStarting = true;
+  updateVoiceCaptureUI();
+  const status = document.getElementById('voiceCaptureStatus');
+  status.textContent = '마이크를 연결하고 있습니다…';
+  status.hidden = false;
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    speechStarting = false;
+    status.textContent = '이 앱 런타임에서 오디오 녹음을 사용할 수 없습니다.';
+    updateVoiceCaptureUI();
     showMorphToast('이 앱 런타임에서 오디오 녹음을 사용할 수 없습니다.');
     return;
   }
@@ -1384,47 +1363,58 @@ async function startSpeechMemo() {
     speechRecorder = new MediaRecorder(speechMediaStream, mimeType ? { mimeType } : undefined);
     speechChunks = [];
     pendingSpeechMemoBlob = null;
-    const transcript = document.getElementById('voiceMemoTranscript');
-    transcript.value = '';
-    document.getElementById('btnVoiceMemoUse').disabled = true;
-    document.getElementById('btnVoiceMemoRetry').hidden = true;
-    document.getElementById('voiceMemoAudio').hidden = true;
-    if (!dialog.open) dialog.showModal();
+    document.getElementById('btnVoiceRetry').hidden = true;
     speechRecorder.addEventListener('dataavailable', event => { if (event.data?.size) speechChunks.push(event.data); });
     speechRecorder.addEventListener('stop', () => {
       const blob = new Blob(speechChunks, { type: speechRecorder?.mimeType || mimeType || 'audio/webm' });
       speechRecorder = null;
       speechChunks = [];
+      stopSpeechWaveform();
       speechMediaStream?.getTracks().forEach(track => track.stop());
       speechMediaStream = null;
       setSpeechRecording(false);
       if (blob.size) {
         pendingSpeechMemoBlob = blob;
-        const audio = document.getElementById('voiceMemoAudio');
-        if (audio.src.startsWith('blob:')) URL.revokeObjectURL(audio.src);
-        audio.src = URL.createObjectURL(blob);
-        audio.hidden = false;
-        void transcribeSpeechMemo(blob);
+        void transcribeSpeechMemo(blob, true);
       }
-      else status.textContent = '녹음에 오디오가 없습니다.';
+      else {
+        speechTranscribing = false;
+        composerInput.readOnly = false;
+        speechDraftPrefix = null;
+        speechDraftSuffix = '';
+        const status = document.getElementById('voiceCaptureStatus');
+        status.textContent = '녹음된 음성이 없습니다. 다시 말해 주세요.';
+        status.hidden = false;
+        updateVoiceCaptureUI();
+      }
     }, { once: true });
     speechRecorder.start();
     setSpeechRecording(true);
-    status.textContent = '녹음 중 · 다시 마이크를 누르면 중지 후 로컬 AI 전사를 시작합니다.';
+    document.getElementById('voiceCaptureStatus').textContent = '듣고 있습니다 · Enter를 누르면 전사 후 전송합니다';
+    document.getElementById('voiceCaptureStatus').hidden = false;
+    startSpeechWaveform(speechMediaStream);
   } catch (error) {
     speechMediaStream?.getTracks().forEach(track => track.stop());
     speechMediaStream = null;
     speechRecorder = null;
     setSpeechRecording(false);
+    const status = document.getElementById('voiceCaptureStatus');
     status.textContent = `녹음을 시작하지 못했습니다: ${error.message}`;
+    status.hidden = false;
     showMorphToast(`녹음 시작 실패: ${error.message}`);
+  } finally {
+    speechStarting = false;
+    updateVoiceCaptureUI();
   }
 }
 
 function stopSpeechMemo() {
   if (speechRecorder?.state === 'recording') {
     speechTranscribing = true;
-    document.getElementById('voiceMemoStatus').textContent = '녹음을 마무리하고 있습니다…';
+    const status = document.getElementById('voiceCaptureStatus');
+    status.textContent = '녹음을 마무리하고 전사합니다…';
+    status.hidden = false;
+    updateVoiceCaptureUI();
     speechRecorder.stop();
   }
 }
@@ -1434,18 +1424,16 @@ function isUsableSpeechTranscript(value) {
   return Boolean(text) && !/<\|[^|]{1,40}\|>/.test(text);
 }
 
-async function transcribeSpeechMemo(blob = pendingSpeechMemoBlob) {
+async function transcribeSpeechMemo(blob = pendingSpeechMemoBlob, autoSend = true) {
   if (speechTranscriptionRunning || !blob) return;
   speechTranscriptionRunning = true;
-  const status = document.getElementById('voiceMemoStatus');
-  const audio = document.getElementById('voiceMemoAudio');
-  const transcript = document.getElementById('voiceMemoTranscript');
-  const useButton = document.getElementById('btnVoiceMemoUse');
-  const retryButton = document.getElementById('btnVoiceMemoRetry');
+  const status = document.getElementById('voiceCaptureStatus');
+  const retryButton = document.getElementById('btnVoiceRetry');
   speechTranscribing = true;
-  useButton.disabled = true;
   retryButton.hidden = true;
-  status.textContent = `로컬 Whisper AI가 전사 중입니다 · ${(blob.size / (1024 * 1024)).toFixed(1)} MB. 첫 사용은 모델 준비 때문에 몇 분 걸릴 수 있으며 녹음은 이 Mac에 남아 있습니다.`;
+  status.textContent = `전사 중 · ${(blob.size / (1024 * 1024)).toFixed(1)} MB · 첫 사용은 음성 모델 준비 때문에 몇 분 걸릴 수 있습니다`;
+  status.hidden = false;
+  updateVoiceCaptureUI();
   try {
     if (blob.size > 20 * 1024 * 1024) throw new Error('녹음은 20 MB 이하로 나누어 주세요.');
     const dataUrl = await new Promise((resolve, reject) => {
@@ -1460,14 +1448,27 @@ async function transcribeSpeechMemo(blob = pendingSpeechMemoBlob) {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || `전사 실패 (${response.status})`);
-    transcript.value = String(result.transcript || '').trim();
-    if (!isUsableSpeechTranscript(transcript.value)) {
-      status.textContent = '전사 결과가 비어 있거나 손상된 형식입니다. 녹음은 보존했습니다. 다시 전사하거나 내용을 직접 고쳐 주세요.';
+    const transcript = String(result.transcript || '').trim();
+    if (!isUsableSpeechTranscript(transcript)) {
+      status.textContent = '전사 결과를 읽을 수 없습니다. 녹음은 보존했습니다. 다시 녹음하거나 재전사를 눌러 주세요.';
       retryButton.hidden = blob.size > 20 * 1024 * 1024;
       return;
     }
-    useButton.disabled = false;
-    status.textContent = `${result.language || '언어 자동 감지'} · 전사 완료. 내용을 고친 뒤 분석 초안에 추가하세요. 녹음 파일은 임시 처리 후 삭제됩니다.`;
+    applySpeechTranscript(transcript);
+    if (autoSend) {
+      if (isGenerating) {
+        pendingSpeechMemoBlob = null;
+        status.textContent = '전사 완료 · 현재 응답이 끝나면 Enter를 눌러 전송하세요';
+      } else {
+        status.textContent = '전사 완료 · 채팅으로 전송합니다';
+        await handleSend();
+        pendingSpeechMemoBlob = null;
+        status.textContent = '';
+        status.hidden = true;
+      }
+    } else {
+      status.textContent = `${result.language || '언어 자동 감지'} · 전사 완료`;
+    }
   } catch (error) {
     status.textContent = `전사하지 못했습니다: ${error.message}`;
     retryButton.hidden = blob.size > 20 * 1024 * 1024;
@@ -1475,6 +1476,7 @@ async function transcribeSpeechMemo(blob = pendingSpeechMemoBlob) {
     speechTranscriptionRunning = false;
     speechTranscribing = false;
     composerInput.readOnly = false;
+    updateVoiceCaptureUI();
   }
 }
 
@@ -1490,10 +1492,61 @@ function setSpeechRecording(recording) {
     composerInput.readOnly = speechTranscribing;
   }
   isRecording = recording;
-  btnMicrophone.classList.toggle('recording', recording);
-  btnMicrophone.setAttribute('aria-pressed', String(recording));
-  btnMicrophone.title = recording ? '녹음 중 · 클릭 시 중지하고 로컬 AI로 전사' : '로컬 AI 음성 메모 녹음 시작';
+  updateVoiceCaptureUI();
   if (!recording) composerInput.placeholder = 'Work with Only Chat...';
+}
+
+function updateVoiceCaptureUI() {
+  const active = isRecording || speechTranscribing || speechStarting;
+  const icon = document.getElementById('voiceMicIcon');
+  const indicator = document.getElementById('voiceCaptureIndicator');
+  icon.hidden = active;
+  indicator.hidden = !active;
+  btnMicrophone.classList.toggle('recording', isRecording);
+  btnMicrophone.classList.toggle('transcribing', (speechTranscribing || speechStarting) && !isRecording);
+  btnMicrophone.setAttribute('aria-pressed', String(isRecording));
+  btnMicrophone.setAttribute('aria-label', isRecording ? '녹음을 마치고 전사 후 전송' : '음성 입력 시작');
+  btnMicrophone.title = isRecording ? '듣고 있습니다 · Enter를 누르면 전사 후 전송' : speechStarting ? '마이크를 연결하고 있습니다' : speechTranscribing ? '전사 중입니다' : '음성 입력 시작';
+}
+
+function startSpeechWaveform(stream) {
+  const AudioContextType = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextType) {
+    btnMicrophone.classList.add('waveform-fallback');
+    return;
+  }
+  try {
+    speechAudioContext = new AudioContextType();
+    speechAnalyser = speechAudioContext.createAnalyser();
+    speechAnalyser.fftSize = 256;
+    speechAudioContext.createMediaStreamSource(stream).connect(speechAnalyser);
+    void speechAudioContext.resume().catch(() => {});
+    const bars = [...document.querySelectorAll('#voiceWaveform i')];
+    const samples = new Uint8Array(speechAnalyser.fftSize);
+    const draw = () => {
+      if (!speechAnalyser) return;
+      speechAnalyser.getByteTimeDomainData(samples);
+      bars.forEach((bar, index) => {
+        const sample = samples[Math.floor(index * samples.length / Math.max(1, bars.length))] || 128;
+        const scale = Math.min(1.45, 0.22 + Math.abs(sample - 128) / 35);
+        bar.style.setProperty('--wave-scale', String(scale));
+      });
+      speechAnimationFrame = requestAnimationFrame(draw);
+    };
+    draw();
+  } catch (_) {
+    speechAnalyser = null;
+    btnMicrophone.classList.add('waveform-fallback');
+  }
+}
+
+function stopSpeechWaveform() {
+  btnMicrophone.classList.remove('waveform-fallback');
+  if (speechAnimationFrame !== null) cancelAnimationFrame(speechAnimationFrame);
+  speechAnimationFrame = null;
+  speechAnalyser = null;
+  if (speechAudioContext && speechAudioContext.state !== 'closed') void speechAudioContext.close().catch(() => {});
+  speechAudioContext = null;
 }
 
 function applySpeechTranscript(value) {
@@ -1794,6 +1847,14 @@ function abortActiveTurn() {
   }
   setGeneratingState(false);
   applyPendingUiMorphReloadWhenSafe();
+}
+
+function handleComposerKeydown(event) {
+  if (event.key !== 'Enter' || event.shiftKey) return;
+  event.preventDefault();
+  if (isRecording) { stopSpeechMemo(); return; }
+  if (speechTranscribing) return;
+  if (!isGenerating) handleSend();
 }
 
 function setGeneratingState(generating) {

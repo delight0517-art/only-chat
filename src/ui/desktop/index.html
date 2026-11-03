@@ -278,9 +278,12 @@
               </div>
 
               <!-- Microphone Button -->
-              <button class="composer-tool-btn" id="btnMicrophone" title="로컬 AI 음성 메모 녹음 시작">
-                <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg>
+              <button class="composer-tool-btn voice-capture-btn" id="btnMicrophone" type="button" title="로컬 AI 음성 입력 시작" aria-label="음성 입력 시작" aria-pressed="false">
+                <span class="voice-mic-icon" id="voiceMicIcon" aria-hidden="true"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg></span>
+                <span class="voice-capture-indicator" id="voiceCaptureIndicator" hidden aria-hidden="true"><span class="voice-waveform" id="voiceWaveform"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="voice-stop-square"></span></span>
               </button>
+              <span class="voice-capture-status" id="voiceCaptureStatus" role="status" aria-live="polite" hidden></span>
+              <button class="voice-retry-btn" id="btnVoiceRetry" type="button" hidden>다시 전사</button>
 
               <!-- Signature Orange Circular Button (Ref 3) -->
               <button class="btn-orange-circle" id="btnSend" title="채팅 전송 / 작업 중단">
@@ -1335,19 +1338,6 @@
       </div>
     </section>
   </div>
-  <dialog class="voice-memo-dialog" id="voiceMemoDialog" aria-labelledby="voiceMemoTitle" aria-describedby="voiceMemoDescription">
-    <h2 id="voiceMemoTitle">음성 메모</h2>
-    <p id="voiceMemoDescription">오디오는 이 Mac의 Whisper AI가 전사합니다. 음성 파일은 이 채팅에 자동 전송되지 않으며, 전사문을 검토해 분석 초안에 추가할 수 있습니다. 첫 사용 시 음성 모델을 내려받을 수 있습니다.</p>
-    <audio id="voiceMemoAudio" controls hidden></audio>
-    <div id="voiceMemoStatus" role="status" aria-live="polite">녹음 준비 중</div>
-    <label for="voiceMemoTranscript">한국어·영어 자동 전사</label>
-    <textarea id="voiceMemoTranscript" rows="8" spellcheck="true" placeholder="전사문이 여기에 표시됩니다."></textarea>
-    <div class="voice-memo-actions">
-      <button id="btnVoiceMemoClose" type="button">닫기</button>
-      <button id="btnVoiceMemoRetry" type="button" hidden>다시 전사</button>
-      <button id="btnVoiceMemoUse" type="button" disabled>분석 초안에 추가</button>
-    </div>
-  </dialog>
   <dialog class="codex-reauth-dialog" id="codexReauthDialog" aria-labelledby="codexReauthTitle" aria-describedby="codexReauthDescription">
     <header class="codex-reauth-heading">
       <div><h2 id="codexReauthTitle">Codex 계정 다시 로그인</h2><p id="codexReauthDescription">대상 계정을 선택해 기기 코드로 재인증합니다. 로그인은 선택한 계정의 Codex 프로필에서 진행되며, Only Chat은 비밀번호나 토큰을 저장하지 않습니다.</p></div>
