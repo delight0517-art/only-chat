@@ -193,6 +193,7 @@
 
 ### Only Chat 전체 기능 패리티 목표 — 단계별 진행 중
 - [ ] **TODO-OC-PARITY-01. Only Chat을 일상 작업용 AI 코딩 앱으로 완성**: 사용자 요청은 Antigravity/ChatGPT의 실제 작업 기능을 빠짐없이 사용할 수 있는 대체 앱입니다. 현재 일부 UI와 도구가 있다는 사실은 전체 패리티 증거가 아닙니다. 기능별 구현·실행 검증 표를 유지하고, 각 기능은 Mac·Windows 런타임과 외부 계정 연결 상태를 분리해 기록합니다.
+  - 사용자 제공 요구사항 참조: [모바일 AI 앱 개발 요건 대화](https://chatgpt.com/share/6ae9562e-478c-83e8-8e0f-a2363e2d08a2). 공유 페이지 본문은 현재 읽을 수 없어 세부 기준을 추출하지 않았습니다. 링크의 요구사항을 확인해 기능별 구현·검증 표에 반영한 뒤 이 완료 TODO의 수락 기준으로 사용합니다.
 - [ ] 브라우저 작업은 Chrome 기반으로 요청된 **3F Browser**를 Only Chat 안에 내장 패널로 열거나, 필요한 경우 3F 앱 자체에서 열도록 연결합니다. Chrome 확장 호환성은 Chromium 기반만으로 보장되지 않으므로 실제 확장 설치·권한·동작별 검증이 필요합니다. Aside의 구조를 참고하되 사용자 브라우저 프로필/쿠키를 무단 공유하지 않습니다.
 - [ ] 같은 제품 앱 창이 중복 실행되지 않도록 단일 인스턴스/기존 창 재사용 흐름을 구현하고, 메시지 유입 경계를 조사해 현재 작업과 무관한 채팅이 활성 작업을 끊거나 섞지 않는지 검증합니다.
   - 단일 실행 보강 (2026-11-01 KST): native 시작 시 같은 bundle ID의 실행 중인 `NSRunningApplication`을 확인해 기존 창을 활성화하고 새 프로세스는 종료하도록 했습니다. `scripts/build-macos-app.sh`가 현재 3F dirty `BrowserView.swift`의 필수 `BrowserSessionStore.swift`·`BrowserKeyboardCommands.swift` 입력도 컴파일하도록 연결했습니다. 로컬 1.0.1 후보 빌드·엄격 서명·`workflow-control verify-mac`이 통과했고, 후보 실행 파일은 기존 설치 PID 707/server PID 1102가 실행 중일 때 0으로 빠르게 종료됐으며 앱 프로세스/서버 수와 8899 포트는 유지됐습니다. 임시 후보는 정리했습니다. 설치 앱에는 아직 반영하지 않았고 기존 대화 초안 보존을 위해 재시작하지 않았습니다. UI 전환, 동시 다중 실행 경쟁, Windows는 미검증입니다. 세부 증거: `work/onlychat-single-instance-20261101.md`.
