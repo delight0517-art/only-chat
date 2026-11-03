@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
     <meta name="color-scheme" content="light dark">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Only Chat · Just Chat. We Code.</title>
+  <title>Only Chat · 연결되는 작업실</title>
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -24,7 +24,7 @@
     </div>
 
     <div class="titlebar-center">
-      <span class="active-thread-title" id="titlebarThreadTitle">Only Chat · 채팅만으로 코딩 완결</span>
+      <span class="active-thread-title" id="titlebarThreadTitle">Only Chat · 연결되는 작업실</span>
     </div>
 
     <div class="titlebar-right">
@@ -104,6 +104,7 @@
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <div class="app-brand-dropdown" id="sidebarBrandTrigger">
+          <svg class="only-mark" width="25" height="25" viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="11" cy="16" r="8" stroke="currentColor" stroke-width="2.5"/><path d="M28 10a8 8 0 1 0 0 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
           <span class="app-brand-name">Only Chat</span>
           <span class="chevron-down">⌄</span>
         </div>
@@ -125,7 +126,7 @@
       <div class="sidebar-new-chat-box">
         <button class="btn-new-chat-codex" id="btnNewChat" title="새 채팅 (⌘N / Ctrl+N)" aria-keyshortcuts="Meta+N Control+N">
           <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-          <span>New chat</span>
+          <span>새 목표 시작</span>
           <kbd class="shortcut-hint">⌘N / Ctrl+N</kbd>
         </button>
       </div>
@@ -183,43 +184,30 @@
 
     <!-- 3. Main Chat Workspace Stage -->
     <main class="chat-stage">
+      <header class="workbench-header">
+        <div class="workbench-heading"><span class="workbench-eyebrow">THE CONNECTED WORKSPACE</span><strong>여러 앱, 하나의 흐름.</strong></div>
+        <button class="workbench-toggle" id="btnToggleWorkbench" type="button" aria-expanded="true" aria-controls="workbenchPanel"><span class="workbench-status-dot" aria-hidden="true"></span>작업 지도 <span aria-hidden="true">◫</span></button>
+      </header>
+      <div class="workbench-layout">
+      <div class="conversation-surface">
       <!-- Messages Timeline -->
       <div class="timeline" id="timeline">
         <div class="empty-state" id="emptyState">
           <div class="empty-state-logo">
-            <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <svg width="37" height="37" viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="11" cy="16" r="8" stroke="currentColor" stroke-width="2.5"/><path d="M28 10a8 8 0 1 0 0 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
           </div>
-          <h1 class="brand-hero-title">Only Chat</h1>
-          <div class="brand-hero-slogan">"Just Chat. We Code."</div>
+          <div class="brand-hero-slogan">ONLY CHAT / 함께 진화하는 앱</div>
+          <h1 class="brand-hero-title">대화 하나에서,<br><em>앱들이 함께</em> 진화합니다.</h1>
           <p class="brand-hero-desc">
-            자연어로 작업을 요청하세요. 실행 가능한 도구와 수정 범위는 연결 상태와 선택한 워크스페이스 권한에 따라 달라집니다.
+            만들고 싶은 변화를 이야기하세요.<br>목표와 앱별 작업, 확인할 결과를 한곳에서 이어갑니다.
           </p>
-
+          <div class="evolution-path">
+            <svg viewBox="0 0 360 72" fill="none" aria-hidden="true"><path d="M44 36h72c24 0 24-22 48-22h32m-80 22h80m-80 0c24 0 24 22 48 22h32m28-44h16c24 0 24 22 48 22h28m-92 0h92m-92 22h16c24 0 24-22 48-22" stroke="currentColor" stroke-width="1.5"/><rect x="12" y="22" width="32" height="28" rx="9" class="evolution-path-origin"/><rect x="196" y="4" width="28" height="20" rx="5"/><rect x="196" y="26" width="28" height="20" rx="5"/><rect x="196" y="48" width="28" height="20" rx="5"/><circle cx="328" cy="36" r="12" class="evolution-path-result"/></svg>
+            <ol role="list"><li>하나의 목표</li><li>앱·기능별 작업</li><li>검토하고 통합</li></ol>
+          </div>
           <div class="quick-prompts">
-            <div class="quick-prompt-card" onclick="setPrompt('내가 생각한 아이디어를 동작하는 풀스택 앱으로 바로 제작해줘. 요구사항 정리부터 해줄래?')">
-              <h4>요구사항 정리와 구현</h4>
-              <p>작업 범위를 정리하고 필요한 코드 변경을 계획합니다</p>
-            </div>
-            <div class="quick-prompt-card" onclick="setPrompt('방금 만든 코드의 문제점이나 개선할 버그를 찾아서 핫리로드로 실시간 고쳐줘')">
-              <h4>코드 점검과 수정</h4>
-              <p>선택한 워크스페이스에서 문제를 찾고 필요한 수정을 제안합니다</p>
-            </div>
-            <div class="quick-prompt-card" onclick="setPrompt('내장 Aside 브라우저를 띄워서 최신 기술 문서를 조사하고 정리해줘')">
-              <h4>브라우저 조사</h4>
-              <p>연결된 브라우저 도구와 허용된 범위에서 페이지를 확인합니다</p>
-            </div>
-            <div class="quick-prompt-card" onclick="setPrompt('현재 워크스페이스 구조를 분석하고 리팩토링할 부분들을 제안해줘')">
-              <h4>코드베이스 탐색 및 제안</h4>
-              <p>워크스페이스 파일을 읽고 구조와 수정 후보를 설명합니다</p>
-            </div>
-            <div class="quick-prompt-card" onclick="setPrompt('/spacekeeper task-key')">
-              <h4>저장공간 세션 보고서</h4>
-              <p>task-key를 입력하면 Space Keeper의 용량·보존·검토 결과를 읽습니다</p>
-            </div>
-            <div class="quick-prompt-card" onclick="setPrompt('/capacity')">
-              <h4>현재 용량과 안전 여유</h4>
-              <p>Space Keeper에서 실제 여유 공간과 저장공간 가드 상태를 새로 읽습니다</p>
-            </div>
+            <button type="button" class="quick-prompt-card" onclick="setPrompt('여러 앱에 연결된 기능을 개선하고 싶어. 먼저 앱별 영향 범위와 현재 담당 작업을 확인하고, 겹치지 않는 작업으로 나눠줘.')"><span class="prompt-index">01 / CONNECT</span><strong>앱들을 함께 발전시키기 <span aria-hidden="true">↗</span></strong><span>연결된 기능과 작업 범위부터 정리합니다</span></button>
+            <button type="button" class="quick-prompt-card" onclick="setPrompt('현재 워크스페이스의 원본 경로, 진행 중인 작업과 미커밋 변경을 먼저 확인해줘. 기존 변경을 보존하면서 검토와 통합이 필요한 항목을 정리해줘.')"><span class="prompt-index">02 / INTEGRATE</span><strong>남은 변경 이어서 정리하기 <span aria-hidden="true">↗</span></strong><span>담당과 근거를 확인하고 다음 단계를 찾습니다</span></button>
           </div>
         </div>
       </div>
@@ -227,7 +215,8 @@
       <!-- 4. Floating Composer (Matching Ref 1, 2, 3) -->
       <footer class="composer-floating-wrapper">
         <div class="composer-card">
-          <textarea class="composer-input" id="composerInput" placeholder="Work with Only Chat... · 세션 용량: /session-storage [일수] · Space Keeper: /spacekeeper task-key" rows="1"></textarea>
+          <label class="composer-caption" for="composerInput">어떤 변화를 만들까요?</label>
+          <textarea class="composer-input" id="composerInput" placeholder="예: 두 앱의 알림 기능을 함께 개선해줘…" rows="1"></textarea>
           <input id="attachmentPicker" type="file" multiple hidden>
           <input id="folderPicker" type="file" webkitdirectory multiple hidden>
           <div class="attachment-menu" id="attachmentMenu" hidden>
@@ -304,6 +293,18 @@
           </div>
         </div>
       </footer>
+      </div>
+      <aside class="workbench-panel" id="workbenchPanel" aria-labelledby="workbenchPanelTitle">
+        <header class="workbench-panel-header"><div><span class="workbench-eyebrow">WORK MAP</span><h2 id="workbenchPanelTitle">변화가 이어지는 곳</h2></div><button class="workbench-icon-button" id="btnRefreshWorkbench" type="button" aria-label="작업 지도 새로고침">↻</button></header>
+        <p class="workbench-intro">등록된 작업의 담당과 다음 단계를 확인하세요.</p>
+        <div class="workbench-metrics"><div><strong id="workbenchAppCount">—</strong><span>등록 앱</span></div><div><strong id="workbenchActiveCount">—</strong><span>진행 기록</span></div><div><strong id="workbenchAttentionCount">—</strong><span>확인 필요</span></div></div>
+        <div class="workbench-filter" role="group" aria-label="작업 지도 필터"><button type="button" data-workbench-filter="open" aria-pressed="true">진행·대기</button><button type="button" data-workbench-filter="all" aria-pressed="false">완료 포함</button></div>
+        <p id="workbenchReadStatus" class="workbench-read-status" role="status">작업 기록을 확인하고 있습니다.</p>
+        <div id="workbenchTasks" class="workbench-tasks"></div>
+        <section class="workbench-source"><h3>현재 작업공간</h3><p id="workbenchSourceState">원본과 변경 상태 확인 중</p><p id="workbenchSourceDetail"></p><button type="button" class="workbench-text-button" id="btnWorkbenchSource">원본·변경 자세히 <span aria-hidden="true">↗</span></button></section>
+        <section class="workbench-modules"><div class="workbench-section-title"><h3>교체 가능한 기능</h3><button type="button" class="workbench-text-button" id="btnWorkbenchModules">모듈 허브 ↗</button></div><div id="workbenchModules" class="workbench-module-list">모듈 상태 확인 중</div><p class="workbench-footnote">작업 기록과 실제 앱 반영 여부는 각각 확인합니다.</p></section>
+      </aside>
+      </div>
     </main>
 
     <!-- 4. Full-Stage Settings View (Matching User Reference 1:1) -->
@@ -1193,11 +1194,11 @@
   <aside class="drawer" id="drawerMorph">
     <div class="drawer-header">
       <h3 style="font-size: 14px; font-weight: 700;">🧬 신체 변형 허브 (Hot-Reload)</h3>
-      <button class="btn-icon" id="btnCloseMorph">✕</button>
+      <button class="btn-icon" id="btnCloseMorph" aria-label="모듈 허브 닫기">✕</button>
     </div>
     <div class="drawer-content">
       <div style="font-size: 12px; color: var(--text-dim); line-height: 1.5;">
-        중앙 허브에 UI, 디자인, 폰트, 기능들이 독립된 신체 장기(Organs)처럼 조립되어, 새 세션 없이 실시간으로 부분 변형 및 핫리로드됩니다.
+        디자인·서체·화면·기능을 모듈별로 관리합니다. 스타일은 즉시 반영하고, 화면 변경은 작성 내용과 진행 중인 작업을 보존할 수 있을 때 적용합니다. 앱 실행 코드의 변경은 재시작이 필요할 수 있습니다.
       </div>
       <div style="display: flex; flex-direction: column; gap: 10px;" id="morphSlotsList"></div>
 

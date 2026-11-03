@@ -81,7 +81,7 @@ const drawerMorph = document.getElementById('drawerMorph');
 const drawerBrowser = document.getElementById('drawerBrowser');
 const btnTogglePriority = document.getElementById('btnTogglePriority');
 const btnToggleSettings = document.getElementById('btnToggleSettings');
-const btnToggleMorph = document.getElementById('btnToggleMorph');
+const btnToggleMorph = document.getElementById('railGridBtn');
 const btnToggleBrowser = document.getElementById('btnToggleBrowser');
 const btnClosePriority = document.getElementById('btnClosePriority');
 const btnCloseSettings = document.getElementById('btnCloseSettings');
@@ -203,6 +203,7 @@ async function saveApprovalPolicy(policy) {
 window.addEventListener('DOMContentLoaded', async () => {
   selectReasoningEffort(selectedReasoningEffort);
   setupEventListeners();
+  initWorkbench();
   initMetamorphicLiveStream();
   initPriorityLiveStream();
   initWindowsInboxLiveStream();
@@ -215,7 +216,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   startNewSession();
   void Promise.allSettled([
     refreshPriorityStatus(),
-    refreshMorphStatus(),
+    refreshWorkbench(),
     refreshAdminManagerStatus(),
     refreshConnectorsStatus(),
     refreshVaultList(),
@@ -2052,7 +2053,7 @@ function startNewSession() {
     timeline.appendChild(emptyState);
     emptyState.style.display = 'flex';
   }
-  titlebarThreadTitle.textContent = 'Only Chat · 채팅만으로 코딩 완결';
+  titlebarThreadTitle.textContent = 'Only Chat · 연결되는 작업실';
   composerInput.value = '';
   const composerStatus = document.getElementById('composerStatus');
   if (composerStatus) {
@@ -3153,10 +3154,12 @@ function showMorphToast(text) {
 
 async function refreshMorphStatus() {
   try {
-    const res = await fetch('/api/morph/status');
-    const status = await res.json();
+    const status = await readWorkbenchSnapshot('/api/morph/status');
     renderMorphSlots(status.slots);
-  } catch (_) {}
+    renderWorkbenchModules(status.slots);
+  } catch (_) {
+    renderWorkbenchModules(null);
+  }
 }
 
 function renderMorphSlots(slots) {
@@ -3690,6 +3693,159 @@ function openSettingsStage(targetTab = 'general') {
   refreshStageVault();
 }
 
+// The work map reads shared records; opening it never claims or starts a task.
+let workbenchSnapshot = null;
+let workbenchReadAt = null;
+let workbenchFilter = 'open';
+let workbenchRefreshing = false;
+
+function workbenchText(tag, className, text) {
+  const node = document.createElement(tag);
+  node.className = className;
+  node.textContent = text;
+  return node;
+}
+
+function initWorkbench() {
+  const panel = document.getElementById('workbenchPanel');
+  const toggle = document.getElementById('btnToggleWorkbench');
+  if (!panel || !toggle) return;
+  const setOpen = open => {
+    panel.hidden = !open;
+    toggle.setAttribute('aria-expanded', String(open));
+  };
+  setOpen(window.matchMedia('(min-width: 1100px)').matches);
+  toggle.addEventListener('click', () => setOpen(panel.hidden));
+  panel.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    setOpen(false);
+    toggle.focus();
+  });
+  document.getElementById('btnRefreshWorkbench')?.addEventListener('click', () => { void refreshWorkbench(); });
+  document.getElementById('btnWorkbenchSource')?.addEventListener('click', () => openSettingsStage('general'));
+  document.getElementById('btnWorkbenchModules')?.addEventListener('click', () => document.getElementById('railGridBtn')?.click());
+  document.querySelectorAll('[data-workbench-filter]').forEach(button => button.addEventListener('click', () => {
+    workbenchFilter = button.dataset.workbenchFilter;
+    document.querySelectorAll('[data-workbench-filter]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+    renderWorkbenchTasks();
+  }));
+  window.addEventListener('focus', () => {
+    if (!document.hidden && !panel.hidden && !panel.contains(document.activeElement)) void refreshWorkbench();
+  });
+}
+
+async function readWorkbenchSnapshot(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+    if (!response.ok) throw new Error('snapshot_unavailable');
+    return await response.json();
+  } finally { clearTimeout(timeout); }
+}
+
+async function refreshWorkbench() {
+  if (workbenchRefreshing || !document.getElementById('workbenchTasks')) return;
+  workbenchRefreshing = true;
+  const button = document.getElementById('btnRefreshWorkbench');
+  button.disabled = true;
+  document.getElementById('workbenchPanel').setAttribute('aria-busy', 'true');
+  try {
+    await Promise.allSettled([
+      (async () => {
+        try {
+          const data = await readWorkbenchSnapshot('/api/task-registry/tasks?limit=200');
+          workbenchSnapshot = window.workspaceOwnershipPresentation.presentWorkbenchTasks(data.tasks);
+          workbenchReadAt = Date.now();
+          renderWorkbenchTasks();
+        } catch (_) {
+          workbenchSnapshot = null;
+          renderWorkbenchTasks();
+        }
+      })(),
+      (async () => {
+        const state = document.getElementById('workbenchSourceState');
+        const detail = document.getElementById('workbenchSourceDetail');
+        try {
+          const data = await readWorkbenchSnapshot('/api/ownership');
+          const presented = presentWorkspaceOwnershipModel(data);
+          state.textContent = presented.gitText;
+          detail.textContent = [priorityStatus?.sessionWorkspaceDir || priorityStatus?.workspaceDir, presented.leaseText].filter(Boolean).join(' · ');
+        } catch (_) {
+          state.textContent = '작업공간 상태를 확인할 수 없습니다.';
+          detail.textContent = '새로고침하거나 원본·변경 화면에서 확인하세요.';
+        }
+      })(),
+      refreshMorphStatus()
+    ]);
+  } finally {
+    workbenchRefreshing = false;
+    button.disabled = false;
+    document.getElementById('workbenchPanel').setAttribute('aria-busy', 'false');
+  }
+}
+
+function renderWorkbenchTasks() {
+  const list = document.getElementById('workbenchTasks');
+  if (!list) return;
+  const snapshot = workbenchSnapshot;
+  for (const [id, value] of [['workbenchAppCount', snapshot?.apps], ['workbenchActiveCount', snapshot?.active], ['workbenchAttentionCount', snapshot?.attention]]) {
+    document.getElementById(id).textContent = value == null ? '—' : String(value);
+  }
+  const rows = snapshot?.rows.filter(row => workbenchFilter === 'all' || row.status !== 'completed' || row.tone === 'attention') || [];
+  const expanded = new Set([...list.querySelectorAll('details[open]')].map(item => item.dataset.taskKey));
+  list.replaceChildren();
+  const status = document.getElementById('workbenchReadStatus');
+  status.textContent = snapshot
+    ? `최근 등록 최대 200건 중 ${rows.length}건 · ${new Date(workbenchReadAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })} 확인`
+    : '작업 기록 연결을 확인해 주세요. 새로고침으로 다시 확인할 수 있습니다.';
+  if (!rows.length) {
+    const empty = workbenchText('div', 'workbench-empty', '');
+    empty.append(workbenchText('strong', '', snapshot ? '다음 변화가 시작될 자리' : '연결을 기다리는 작업 지도'));
+    empty.append(workbenchText('p', '', snapshot ? '이 필터에 해당하는 등록 작업이 없습니다. 목표와 앱별 범위를 먼저 정리해 보세요.' : '작업 상태를 읽을 수 없어 수치를 표시하지 않았습니다. 대화와 작업공간은 계속 사용할 수 있습니다.'));
+    list.append(empty);
+    return;
+  }
+  for (const row of rows.slice(0, 8)) {
+    const card = document.createElement('details');
+    card.className = 'workbench-task';
+    card.dataset.taskKey = row.key;
+    card.dataset.tone = row.tone;
+    card.open = expanded.has(row.key);
+    const summary = document.createElement('summary');
+    const meta = workbenchText('span', 'workbench-task-meta', '');
+    meta.append(workbenchText('span', 'workbench-app-name', row.app), workbenchText('span', 'workbench-task-state', row.label));
+    summary.append(meta, workbenchText('strong', 'workbench-task-title', row.title));
+    const detail = workbenchText('div', 'workbench-task-detail', '');
+    detail.append(workbenchText('p', '', `다음 단계 · ${row.next || '기록 없음'}`));
+    if (row.blocker) detail.append(workbenchText('p', 'workbench-blocker', `막힌 이유 · ${row.blocker}`));
+    detail.append(workbenchText('p', '', `담당 채팅 · ${row.owner || '미배정'}`));
+    detail.append(workbenchText('p', '', `원본 · ${row.repository || '기록 없음'}`));
+    if (row.paths.length) detail.append(workbenchText('p', '', `변경 범위 · ${row.paths.join(', ')}`));
+    detail.append(workbenchText('p', '', `검토 근거 · ${row.evidence.length}개`));
+    for (const ref of row.evidence) detail.append(workbenchText('p', 'workbench-evidence', ref));
+    card.append(summary, detail);
+    list.append(card);
+  }
+  if (rows.length > 8) list.append(workbenchText('p', 'workbench-footnote', `우선 확인할 8건 표시 · 해당 필터 ${rows.length}건`));
+}
+
+function renderWorkbenchModules(slots) {
+  const list = document.getElementById('workbenchModules');
+  if (!list) return;
+  list.replaceChildren();
+  if (!slots || typeof slots !== 'object' || !Object.keys(slots).length) {
+    list.textContent = '모듈 상태 확인 필요';
+    return;
+  }
+  for (const [key, slot] of Object.entries(slots)) {
+    if (!slot || typeof slot !== 'object') continue;
+    const item = workbenchText('span', 'workbench-module', '');
+    item.append(workbenchText('span', '', ({ theme: '디자인', font: '서체', ui: '화면', features: '기능' })[key] || slot.name || key), workbenchText('small', '', `v${slot.version ?? '?'}`));
+    list.append(item);
+  }
+}
+
 async function refreshWorkspaceOwnership() {
   const liveStatus = document.getElementById('workspaceOwnershipLiveStatus');
   const leaseStatus = document.getElementById('workspaceLeaseStatus');
@@ -3722,7 +3878,7 @@ function closeSettingsStage() {
   if (titlebarThreadTitle) {
     const prev = titlebarThreadTitle.getAttribute('data-prev');
     if (prev) titlebarThreadTitle.innerText = prev;
-    else titlebarThreadTitle.innerText = 'Only Chat · Just Chat. We Code.';
+    else titlebarThreadTitle.innerText = 'Only Chat · 연결되는 작업실';
   }
 
   if (composerInput) composerInput.focus();
