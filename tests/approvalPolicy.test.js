@@ -96,6 +96,7 @@ async function main() {
       requestId: requestedScope.requestId,
       sessionId: 'integration-session',
       name: 'codex_cli_workspace_write_scope',
+      scopeRequiresExplicit: false,
       args: { directory: '/sdk/bin/cache', reason: 'Flutter test cache' }
     });
     const deniedEngine = makeEngine('on-request');
