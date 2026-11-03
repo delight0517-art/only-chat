@@ -601,9 +601,11 @@ class AgentEngine {
               try {
                 const manager = await import('../features/admin-manager/v1.mjs');
                 const plan = manager.parseExecutorPlan(planCandidate, {
-                  hasAvailableExecutor: () => !this.isolated && this.priorityChain.getStatus().tiers.some(tier =>
-                    tier.enabled !== false && tier.provider !== 'demo' && tier.provider !== 'unconfigured'
-                    && Boolean(tier.model && tier.model !== 'unconfigured') && this.priorityChain.isTierReady(tier))
+                  hasAvailableExecutor: () => typeof callbacks.managerExecutionAllowed === 'boolean'
+                    ? callbacks.managerExecutionAllowed
+                    : !this.isolated && this.priorityChain.getStatus().tiers.some(tier =>
+                      tier.enabled !== false && tier.provider !== 'demo' && tier.provider !== 'unconfigured'
+                      && Boolean(tier.model && tier.model !== 'unconfigured') && this.priorityChain.isTierReady(tier))
                 });
                 const tasks = this.dispatcher.enqueueTasks(plan.tasks.map((task, index) => ({
                   id: `manager_${this.currentSession.sessionId}_${Date.now()}_${index + 1}`,

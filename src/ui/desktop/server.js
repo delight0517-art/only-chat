@@ -1637,10 +1637,13 @@ class DesktopServer {
         const overrideTierId = !this.engine.priorityChain.chain.enabled && body.overrideTierId || null;
       const managerMode = body.managerMode === true;
       let managerSystemMessage = null;
+      let managerExecutionAllowed = false;
       if (managerMode) {
         try {
           const manager = await this._loadAdminManager();
-          managerSystemMessage = manager.buildAdminManagerSystemMessage(this._adminManagerSnapshot(manager.ADMIN_MANAGER_MODULE_VERSION));
+          const dispatcherAllowedProviderIds = await this.engine._getDispatcherAllowedProviderIds();
+          managerExecutionAllowed = !this.isolated && Array.isArray(dispatcherAllowedProviderIds) && dispatcherAllowedProviderIds.length > 0;
+          managerSystemMessage = manager.buildAdminManagerSystemMessage(this._adminManagerSnapshot(manager.ADMIN_MANAGER_MODULE_VERSION, dispatcherAllowedProviderIds));
         } catch (_) {
           res.writeHead(503, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: '관리자 capability 목록을 검증할 수 없습니다.' }));
@@ -1739,6 +1742,7 @@ class DesktopServer {
           modelSelection: normalizedModelSelection,
           managerMode,
           managerSystemMessage,
+          managerExecutionAllowed,
           requestToolApproval,
           onTierResolved: tier => sendSse({ type: 'tier_resolved', tier }),
           onReasoningDelta: delta => sendSse({ type: 'reasoning_delta', delta }),
