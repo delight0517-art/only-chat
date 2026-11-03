@@ -498,7 +498,9 @@ class TaskRegistryStore {
       throw new TypeError('evidenceRefs must contain at most 20 concise printable locators');
     }
     normalized.evidenceRefs = [...new Set(normalized.evidenceRefs.map(item => item.trim()))];
-    if (normalized.status === 'completed' && normalized.evidenceRefs.length === 0) throw new Error('completion requires at least one evidence reference');
+    if (['integrating', 'reviewing', 'completed'].includes(normalized.status) && normalized.evidenceRefs.length === 0) {
+      throw new Error(`${normalized.status === 'completed' ? 'completion' : normalized.status} requires at least one evidence reference`);
+    }
     if (normalized.status === 'blocked' && !normalized.blocker) throw new Error('blocked status requires a blocker description');
     const request = { ...normalized };
     delete request.idempotencyKey;
@@ -523,7 +525,11 @@ class TaskRegistryStore {
       const allowed = STATUS_TRANSITIONS.get(task.status);
       if (!allowed?.has(normalized.status)) throw new Error(`invalid task transition: ${task.status} -> ${normalized.status}`);
       task.status = normalized.status;
-      task.checkpoint = { nextAction: normalized.nextAction, blocker: normalized.blocker, evidenceRefs: normalized.evidenceRefs };
+      task.checkpoint = {
+        nextAction: normalized.nextAction,
+        blocker: normalized.blocker,
+        evidenceRefs: [...new Set([...(task.checkpoint?.evidenceRefs || []), ...normalized.evidenceRefs])].slice(-20)
+      };
       if (normalized.status === 'blocked' || normalized.status === 'completed' || normalized.status === 'failed') {
         task.ownerChatId = null;
         task.leaseExpiresAt = null;

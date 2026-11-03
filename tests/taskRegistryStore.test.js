@@ -213,22 +213,27 @@ test('permits disjoint scopes and lets an expired lease be reclaimed without imp
   });
 });
 
-test('requires transition order, held ownership, and evidence before completion', async () => {
+test('requires stage evidence before integration, review and completion, retaining the audit trail', async () => {
   await withFixture(async ({ repo, store }) => {
     await createAndClaim(store, repo);
     await assert.rejects(store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'bad-complete', status: 'completed', evidenceRefs: ['log:test'] }), /invalid task transition/);
     await assert.rejects(store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'bad-block', status: 'blocked' }), /blocker description/);
 
     const steps = [
-      ['executing', 'step-1'], ['verifying', 'step-2'], ['reviewing', 'step-3']
+      ['executing', 'step-1', []], ['verifying', 'step-2', ['source:sha256:abc']],
+      ['integrating', 'step-3', ['check:focused-tests:pass']], ['reviewing', 'step-4', ['integration:commit:def']]
     ];
-    for (const [status, idempotencyKey] of steps) {
-      const result = await store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey, status });
+    for (const [status, idempotencyKey, evidenceRefs] of steps) {
+      if (['integrating', 'reviewing'].includes(status)) {
+        await assert.rejects(store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: `${idempotencyKey}-without-evidence`, status }), new RegExp(`${status} requires`));
+      }
+      const result = await store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey, status, evidenceRefs });
       assert.equal(result.updated, true);
     }
     await assert.rejects(store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'complete-no-evidence', status: 'completed' }), /completion requires/);
-    const completed = await store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'complete-with-evidence', status: 'completed', evidenceRefs: ['tests/taskRegistryStore.test.js'] });
+    const completed = await store.updateCheckpoint({ taskKey: 'slice-1', ownerChatId: 'chat-a', idempotencyKey: 'complete-with-evidence', status: 'completed', evidenceRefs: ['review:accepted'] });
     assert.equal(completed.updated, true);
+    assert.deepEqual(completed.task.checkpoint.evidenceRefs, ['source:sha256:abc', 'check:focused-tests:pass', 'integration:commit:def', 'review:accepted']);
     assert.equal(completed.task.ownerChatId, null);
     assert.equal((await store.claimTask({ taskKey: 'slice-1', ownerChatId: 'chat-b', idempotencyKey: 'claim-completed' })).reason, 'task_completed');
   });
