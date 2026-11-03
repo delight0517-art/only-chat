@@ -52,7 +52,11 @@ assert(applyEnd > applyStart, 'transcript insertion helper remains extractable')
 
 function makeTranscriptionHarness(result) {
   let sentMessage = null;
-  const elements = { voiceCaptureStatus: { textContent: '', hidden: false }, btnVoiceRetry: { hidden: true } };
+  const elements = {
+    voiceCaptureStatus: { textContent: '', hidden: false },
+    btnVoiceRetry: { hidden: true },
+    btnVoiceFeedback: { hidden: false }
+  };
   const composerInput = {
     value: '', readOnly: true, selectionStart: 0, selectionEnd: 0,
     dispatchEvent() {}, setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
@@ -62,9 +66,12 @@ function makeTranscriptionHarness(result) {
     Event,
     composerInput,
     document: { getElementById: id => elements[id] },
+    window: { setInterval: () => 0, clearInterval() {} },
     FileReader: class { readAsDataURL() { this.result = 'data:audio/webm;base64,YWJj'; this.onload(); } },
     fetch: async () => ({ ok: true, json: async () => result }),
-    updateVoiceCaptureUI() {}
+    updateVoiceCaptureUI() {},
+    setVoiceFeedbackError() {},
+    flushPendingSpeechAutoSend() {}
   });
   context.handleSend = async () => { sentMessage = composerInput.value; };
   vm.runInContext(`let speechTranscriptionRunning = false; let speechTranscribing = false; let isGenerating = false; let pendingSpeechMemoBlob = memoAudio; let speechDraftPrefix = ''; let speechDraftSuffix = ''; ${source.slice(transcribeStart, transcribeEnd)} ${source.slice(applyStart, applyEnd)} globalThis.runMemoTranscription = transcribeSpeechMemo;`, context);
@@ -115,7 +122,7 @@ const run = async () => {
   assert.equal(malformed.composerInput.value, '', 'malformed transcript is not inserted');
   assert.equal(malformed.getSentMessage(), null, 'malformed transcript is never auto-sent');
   assert.equal(malformed.elements.btnVoiceRetry.hidden, false, 'keep retry available for the retained audio');
-  assert.match(malformed.elements.voiceCaptureStatus.textContent, /읽을 수 없습니다/);
+  assert.match(malformed.elements.voiceCaptureStatus.textContent, /음성을 글자로 인식하지 못했습니다/);
   assert.equal(vm.runInContext('pendingSpeechMemoBlob === memoAudio && !speechTranscribing && !speechTranscriptionRunning', malformed.context), true);
 
   const valid = makeTranscriptionHarness({ transcript: '회의 일정을 내일로 바꿔 주세요.', language: 'ko' });
