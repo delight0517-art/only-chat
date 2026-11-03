@@ -68,6 +68,21 @@ test('loopback API shares task records between chat owners with idempotent write
     const list = await request(app.port, '/api/task-registry/tasks?ownerChatId=chat-a');
     assert.equal(list.status, 200);
     assert.equal(list.body.tasks.length, 1);
+    const mailbox = await request(app.port, '/api/task-registry/tasks/cross-chat-check/messages', 'POST', {
+      senderChatId: 'chat-a', recipientChatId: 'chat-b', text: 'Please verify the checkpoint.', idempotencyKey: 'message-1'
+    });
+    assert.equal(mailbox.status, 200);
+    const inbox = await request(app.port, '/api/task-registry/tasks/cross-chat-check/messages?viewerChatId=chat-b');
+    assert.equal(inbox.status, 200);
+    assert.equal(inbox.body.messages.length, 1);
+    const ack = await request(app.port, '/api/task-registry/tasks/cross-chat-check/ack', 'POST', {
+      senderChatId: 'chat-b', messageId: mailbox.body.message.messageId, text: 'Received.', idempotencyKey: 'ack-1'
+    });
+    assert.equal(ack.status, 200);
+    const senderReadback = await request(app.port, '/api/task-registry/tasks/cross-chat-check/messages?viewerChatId=chat-a');
+    assert.equal(senderReadback.body.messages.length, 2);
+    const unrelatedReadback = await request(app.port, '/api/task-registry/tasks/cross-chat-check/messages?viewerChatId=chat-c');
+    assert.equal(unrelatedReadback.body.messages.length, 0);
     const missing = await request(app.port, '/api/task-registry/tasks/not-found');
     assert.equal(missing.status, 404);
     const overLimit = await request(app.port, '/api/task-registry/tasks?limit=201');

@@ -31,7 +31,7 @@ const MUTATION_TOOL_NAMES = new Set([
   'browser_open', 'browser_navigate', 'browser_act', 'browser_recipe', 'browser_history',
   'vault_get_credential',
   'browser_workspace_snapshot', 'browser_workspace_restore', 'browser_workspace_focus', 'browser_workspace_open',
-  'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint'
+  'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_send', 'task_registry_ack'
 ]);
 
 function isMutationToolName(name) {
@@ -264,7 +264,7 @@ class AgentEngine {
     const notionMcpRead = this.tools.isNotionMcpReadOnlyCall(call);
     if (this.tools.approvalPolicy === 'read-only') return isMutationToolName(call?.name) && !notionMcpRead;
     if (this.tools.approvalPolicy === 'never') return false;
-    return !notionMcpRead && !['read_file', 'list_files', 'search_files', 'gmail_list', 'gmail_read', 'google_drive_list', 'google_drive_read', 'notion_search', 'notion_query', 'notion_api_read', 'notion_mcp_list_tools', 'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status', 'browser_aria', 'browser_read', 'browser_status', 'spacekeeper_session_report', 'spacekeeper_capacity_status', 'task_registry_list', 'task_registry_read'].includes(call?.name);
+    return !notionMcpRead && !['read_file', 'list_files', 'search_files', 'gmail_list', 'gmail_read', 'google_drive_list', 'google_drive_read', 'notion_search', 'notion_query', 'notion_api_read', 'notion_mcp_list_tools', 'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status', 'browser_aria', 'browser_read', 'browser_status', 'spacekeeper_session_report', 'spacekeeper_capacity_status', 'task_registry_list', 'task_registry_read', 'task_registry_messages'].includes(call?.name);
   }
 
   async _getAccountRouterAdapter() {
@@ -840,6 +840,12 @@ class AgentEngine {
           return await this.tools.taskRegistryClaim({ ...args, idempotencyKey: args.idempotencyKey || call.id }, this.currentSession?.sessionId || 'unknown-session');
         case 'task_registry_checkpoint':
           return await this.tools.taskRegistryCheckpoint({ ...args, idempotencyKey: args.idempotencyKey || call.id }, this.currentSession?.sessionId || 'unknown-session');
+        case 'task_registry_messages':
+          return await this.tools.taskRegistryMessages(args, this.currentSession?.sessionId || 'unknown-session');
+        case 'task_registry_send':
+          return await this.tools.taskRegistrySend({ ...args, idempotencyKey: args.idempotencyKey || call.id }, this.currentSession?.sessionId || 'unknown-session');
+        case 'task_registry_ack':
+          return await this.tools.taskRegistryAck({ ...args, idempotencyKey: args.idempotencyKey || call.id }, this.currentSession?.sessionId || 'unknown-session');
 
         // Built-in Aside / REA Browser Tools
         case 'browser_open':

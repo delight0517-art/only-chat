@@ -142,3 +142,46 @@ test('rejects attempts to mutate another chat task and terminal failed tasks', a
     assert.equal((await store.claimTask({ taskKey: 'slice-1', ownerChatId: 'chat-b', idempotencyKey: 'claim-failed' })).reason, 'task_failed');
   });
 });
+
+test('task mailbox is durable, idempotent, recipient-scoped, and supports explicit ACK readback', async () => {
+  await withFixture(async ({ repo, dataDir, store }) => {
+    await createAndClaim(store, repo, 'mail-task', 'session-a');
+    const input = { taskKey: 'mail-task', senderChatId: 'session-a', recipientChatId: 'session-b',
+      text: 'I found the canonical source and exact owned files.', idempotencyKey: 'message-1' };
+    const sent = await store.sendMessage(input);
+    assert.equal(sent.sent, true);
+    assert.equal(sent.message.type, 'message');
+    const replay = await store.sendMessage(input);
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.message.messageId, sent.message.messageId);
+
+    assert.equal(store.listMessages({ taskKey: 'mail-task', viewerChatId: 'session-a' }).length, 1);
+    assert.equal(store.listMessages({ taskKey: 'mail-task', viewerChatId: 'session-b' })[0].text, input.text);
+    assert.equal(store.listMessages({ taskKey: 'mail-task', viewerChatId: 'session-c' }).length, 0);
+
+    await assert.rejects(store.sendMessage({ taskKey: 'mail-task', senderChatId: 'session-c', type: 'ack',
+      inReplyToMessageId: sent.message.messageId, text: 'Received', idempotencyKey: 'ack-forged' }), /only the message recipient/);
+    const ack = await store.sendMessage({ taskKey: 'mail-task', senderChatId: 'session-b', type: 'ack',
+      inReplyToMessageId: sent.message.messageId, text: 'Received and understood.', idempotencyKey: 'ack-1' });
+    assert.equal(ack.message.type, 'ack');
+    assert.equal(ack.message.recipientChatId, 'session-a');
+    assert.equal(store.listMessages({ taskKey: 'mail-task', viewerChatId: 'session-a' }).length, 2);
+    assert.equal(store.listMessages({ taskKey: 'mail-task', viewerChatId: 'session-b', afterMessageId: sent.message.messageId })[0].messageId, ack.message.messageId);
+
+    const reopened = new TaskRegistryStore({ dataDir });
+    assert.equal(reopened.listMessages({ taskKey: 'mail-task', viewerChatId: 'session-a' }).length, 2);
+  });
+});
+
+test('accepts a legacy task registry file without mailbox array and fails closed on invalid message cursors', async () => {
+  await withFixture(async ({ repo, store }) => {
+    await store.createTask(taskInput(repo));
+    const state = JSON.parse(fs.readFileSync(store.filePath, 'utf8'));
+    delete state.messages;
+    fs.writeFileSync(store.filePath, JSON.stringify(state), { mode: 0o600 });
+    assert.deepEqual(store.listMessages({ taskKey: 'slice-1', viewerChatId: 'chat-a' }), []);
+    await assert.rejects(store.sendMessage({ taskKey: 'slice-1', senderChatId: 'chat-a', type: 'ack',
+      inReplyToMessageId: 'no-such-message', text: 'Not valid', idempotencyKey: 'bad-ack' }), /ACK must reference a message/);
+    assert.throws(() => store.listMessages({ taskKey: 'slice-1', viewerChatId: 'chat-a', afterMessageId: 'missing' }), /message cursor/);
+  });
+});

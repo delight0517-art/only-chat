@@ -9,6 +9,8 @@ const SCHEMA_VERSION = 1;
 const MAX_STORE_BYTES = 16 * 1024 * 1024;
 const MAX_TASKS = 10_000;
 const MAX_IDEMPOTENCY_RECORDS = 50_000;
+const MAX_MESSAGES = 5_000;
+const MAX_MESSAGE_LENGTH = 1_200;
 const MIN_LEASE_MS = 30_000;
 const MAX_LEASE_MS = 15 * 60_000;
 const DEFAULT_LEASE_MS = 2 * 60_000;
@@ -110,7 +112,7 @@ class TaskRegistryStore {
   }
 
   _emptyState() {
-    return { schemaVersion: SCHEMA_VERSION, tasks: [], idempotency: [] };
+    return { schemaVersion: SCHEMA_VERSION, tasks: [], idempotency: [], messages: [] };
   }
 
   _loadState() {
@@ -139,6 +141,8 @@ class TaskRegistryStore {
       || document.idempotency.length > MAX_IDEMPOTENCY_RECORDS) {
       throw new Error('unsupported or invalid task registry schema');
     }
+    if (document.messages === undefined) document.messages = [];
+    if (!Array.isArray(document.messages) || document.messages.length > MAX_MESSAGES) throw new Error('invalid task registry messages');
     const taskKeys = new Set();
     for (const task of document.tasks) {
       if (!task || typeof task.taskKey !== 'string' || !TASK_KEY.test(task.taskKey)
@@ -158,15 +162,37 @@ class TaskRegistryStore {
         throw new Error('invalid task registry idempotency record');
       }
     }
+    const taskByKey = new Map(document.tasks.map(task => [task.taskKey, task]));
+    const messagesById = new Map();
+    for (const message of document.messages) {
+      if (!message || typeof message.messageId !== 'string' || !/^[a-f0-9-]{36}$/i.test(message.messageId)
+        || messagesById.has(message.messageId) || !taskByKey.has(message.taskKey)
+        || !['message', 'ack'].includes(message.type)
+        || typeof message.senderChatId !== 'string' || !message.senderChatId
+        || (message.recipientChatId !== null && typeof message.recipientChatId !== 'string')
+        || typeof message.text !== 'string' || !message.text.trim() || message.text.length > MAX_MESSAGE_LENGTH
+        || !Number.isFinite(Date.parse(message.createdAt))) {
+        throw new Error('invalid task registry message record');
+      }
+      if (message.type === 'ack') {
+        const original = messagesById.get(message.inReplyToMessageId);
+        if (!original || original.taskKey !== message.taskKey || original.type !== 'message') {
+          throw new Error('task registry ACK has no matching message');
+        }
+      }
+      messagesById.set(message.messageId, message);
+    }
     return document;
   }
 
   _saveState(state) {
     const tempPath = path.join(this.storeDir, `.index.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`);
+    const serialized = JSON.stringify(state);
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_STORE_BYTES) throw new Error('task registry storage limit reached; preserve the current store and review retention');
     let fd;
     try {
       fd = fs.openSync(tempPath, 'wx', 0o600);
-      fs.writeFileSync(fd, JSON.stringify(state), 'utf8');
+      fs.writeFileSync(fd, serialized, 'utf8');
       fs.fsyncSync(fd);
       fs.closeSync(fd);
       fd = undefined;
@@ -396,6 +422,77 @@ class TaskRegistryStore {
       this._saveState(state);
       return result;
     });
+  }
+
+  async sendMessage(input = {}) {
+    const type = input.type === undefined ? 'message' : input.type;
+    const normalized = {
+      taskKey: printableString(input.taskKey, 'taskKey', 128),
+      senderChatId: printableString(input.senderChatId, 'senderChatId', 256),
+      recipientChatId: input.recipientChatId ? printableString(input.recipientChatId, 'recipientChatId', 256) : null,
+      type,
+      text: printableString(input.text, 'text', MAX_MESSAGE_LENGTH),
+      inReplyToMessageId: input.inReplyToMessageId ? printableString(input.inReplyToMessageId, 'inReplyToMessageId', 64) : null,
+      idempotencyKey: printableString(input.idempotencyKey, 'idempotencyKey', 160)
+    };
+    if (!TASK_KEY.test(normalized.taskKey)) throw new TypeError('taskKey must be a stable alphanumeric key');
+    if (!['message', 'ack'].includes(normalized.type)) throw new TypeError('message type must be message or ack');
+    if (normalized.type === 'ack' && !normalized.inReplyToMessageId) throw new TypeError('ACK must reference a message');
+    const request = { ...normalized };
+    delete request.idempotencyKey;
+    return this._withWriteLock(`task-registry:message:${normalized.taskKey}`, async () => {
+      const state = this._loadState();
+      const replay = this._idempotencyReplay(state, 'message', normalized.idempotencyKey, request);
+      if (replay.result) {
+        if (!replay.result.messageId) return replay.result;
+        const prior = state.messages.find(message => message.messageId === replay.result.messageId);
+        if (!prior) throw new Error('idempotent task message record is missing');
+        return { sent: true, replayed: true, message: clone(prior) };
+      }
+      const task = state.tasks.find(item => item.taskKey === normalized.taskKey);
+      if (!task) {
+        const result = { sent: false, reason: 'task_not_found', taskKey: normalized.taskKey };
+        this._remember(state, replay, result);
+        this._saveState(state);
+        return result;
+      }
+      if (state.messages.length >= MAX_MESSAGES) throw new Error('task registry message capacity reached; preserve messages and review retention');
+      if (normalized.type === 'ack') {
+        const original = state.messages.find(message => message.messageId === normalized.inReplyToMessageId);
+        if (!original || original.taskKey !== normalized.taskKey || original.type !== 'message') throw new Error('ACK must reference a message in this task');
+        if (original.recipientChatId && original.recipientChatId !== normalized.senderChatId) throw new Error('only the message recipient may acknowledge it');
+        if (normalized.recipientChatId && normalized.recipientChatId !== original.senderChatId) throw new Error('ACK recipient must be the original sender');
+        normalized.recipientChatId = original.senderChatId;
+      }
+      const message = {
+        messageId: crypto.randomUUID(), taskKey: normalized.taskKey, senderChatId: normalized.senderChatId,
+        recipientChatId: normalized.recipientChatId, type: normalized.type, text: normalized.text,
+        inReplyToMessageId: normalized.inReplyToMessageId, createdAt: new Date(this.clock()).toISOString()
+      };
+      state.messages.push(message);
+      this._remember(state, replay, { sent: true, messageId: message.messageId });
+      this._saveState(state);
+      return { sent: true, replayed: false, message: clone(message) };
+    });
+  }
+
+  listMessages(input = {}) {
+    const taskKey = printableString(input.taskKey, 'taskKey', 128);
+    const viewerChatId = printableString(input.viewerChatId, 'viewerChatId', 256);
+    const limit = input.limit === undefined ? 50 : input.limit;
+    if (!TASK_KEY.test(taskKey)) throw new TypeError('taskKey must be a stable alphanumeric key');
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new RangeError('message limit must be 1–100');
+    const state = this._loadState();
+    if (!state.tasks.some(task => task.taskKey === taskKey)) throw new Error('task not found');
+    const visible = state.messages.filter(message => message.taskKey === taskKey
+      && (message.recipientChatId === null || message.recipientChatId === viewerChatId || message.senderChatId === viewerChatId));
+    let start = 0;
+    if (input.afterMessageId !== undefined && input.afterMessageId !== null) {
+      const cursor = visible.findIndex(message => message.messageId === input.afterMessageId);
+      if (cursor < 0) throw new Error('message cursor is not visible in this task');
+      start = cursor + 1;
+    }
+    return clone(visible.slice(start, start + limit));
   }
 
   getTask(taskKey) {

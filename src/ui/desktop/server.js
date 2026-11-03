@@ -388,7 +388,7 @@ class DesktopServer {
       }
     }
 
-    const taskRegistryMatch = /^\/api\/task-registry\/tasks\/([^/]+)(?:\/(claim|checkpoint))?$/.exec(pathname);
+    const taskRegistryMatch = /^\/api\/task-registry\/tasks\/([^/]+)(?:\/(claim|checkpoint|messages|ack))?$/.exec(pathname);
     if (taskRegistryMatch) {
       if (!this.taskRegistryStore) return this._respondJson(res, { error: 'task_registry_unavailable' }, 503);
       let taskKey;
@@ -398,6 +398,28 @@ class DesktopServer {
       if (!operation && req.method === 'GET') {
         const task = this.taskRegistryStore.getTask(taskKey);
         return task ? this._respondJson(res, { task }) : this._respondJson(res, { error: 'task_not_found' }, 404);
+      }
+      if (operation === 'messages' && req.method === 'GET') {
+        try {
+          return this._respondJson(res, { messages: this.taskRegistryStore.listMessages({ taskKey,
+            viewerChatId: url.searchParams.get('viewerChatId'), afterMessageId: url.searchParams.get('afterMessageId') || undefined,
+            limit: url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : undefined }) });
+        } catch (error) { return this._respondJson(res, { error: error.message || 'task_message_query_invalid' }, /not found/i.test(error.message || '') ? 404 : 400); }
+      }
+      if ((operation === 'messages' || operation === 'ack') && req.method === 'POST') {
+        const body = await this._readLimitedBody(req, 64 * 1024);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return this._respondJson(res, { error: 'task_registry_body_invalid' }, 400);
+        try {
+          const result = operation === 'messages'
+            ? await this.taskRegistryStore.sendMessage({ taskKey, senderChatId: body.senderChatId, recipientChatId: body.recipientChatId,
+              text: body.text, idempotencyKey: body.idempotencyKey })
+            : await this.taskRegistryStore.sendMessage({ taskKey, senderChatId: body.senderChatId, type: 'ack',
+              inReplyToMessageId: body.messageId, text: body.text, idempotencyKey: body.idempotencyKey });
+          return this._respondJson(res, result, result.sent ? 200 : 404);
+        } catch (error) {
+          const conflict = /ACK|recipient|acknowledge/i.test(error.message || '');
+          return this._respondJson(res, { error: error.message || 'task_message_send_failed' }, conflict ? 409 : 400);
+        }
       }
       if ((operation === 'claim' || operation === 'checkpoint') && req.method === 'POST') {
         const body = await this._readLimitedBody(req, 64 * 1024);

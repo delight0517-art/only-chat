@@ -503,6 +503,28 @@ class ToolRegistry {
     return this.taskRegistryStore.updateCheckpoint({ ...input, ownerChatId });
   }
 
+  taskRegistryMessages(input, viewerChatId) {
+    if (!this.taskRegistryStore) throw new Error('Shared task registry is unavailable in this runtime.');
+    return this.taskRegistryStore.listMessages({ ...input, viewerChatId });
+  }
+
+  taskRegistrySend(input, senderChatId) {
+    if (!this.taskRegistryStore) throw new Error('Shared task registry is unavailable in this runtime.');
+    return this.taskRegistryStore.sendMessage({ ...input, senderChatId, type: 'message' });
+  }
+
+  taskRegistryAck(input, senderChatId) {
+    if (!this.taskRegistryStore) throw new Error('Shared task registry is unavailable in this runtime.');
+    return this.taskRegistryStore.sendMessage({
+      taskKey: input.taskKey,
+      senderChatId,
+      type: 'ack',
+      inReplyToMessageId: input.messageId,
+      text: input.text,
+      idempotencyKey: input.idempotencyKey
+    });
+  }
+
   // =========================================================================
   // Built-in Aside / REA Browser Tools
   // =========================================================================

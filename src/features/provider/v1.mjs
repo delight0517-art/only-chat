@@ -8,14 +8,15 @@ const TOOL_NAMES = Object.freeze([
   'notion_rea_open', 'notion_rea_navigate', 'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_act', 'notion_rea_status',
   'spacekeeper_session_report', 'spacekeeper_capacity_status', 'browser_open', 'browser_navigate',
   'browser_aria', 'browser_act', 'browser_read', 'browser_recipe', 'browser_status',
-  'task_registry_list', 'task_registry_read', 'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint'
+  'task_registry_list', 'task_registry_read', 'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint',
+  'task_registry_messages', 'task_registry_send', 'task_registry_ack'
 ]);
 const READ_ONLY_TOOL_NAMES = new Set([
   'read_file', 'google_drive_list', 'google_drive_read', 'gmail_list', 'gmail_read',
   'notion_search', 'notion_query', 'notion_api_read', 'spacekeeper_session_report', 'spacekeeper_capacity_status',
   'notion_mcp_list_tools', 'notion_mcp_call_tool',
   'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status',
-  'browser_aria', 'browser_read', 'browser_status', 'task_registry_list', 'task_registry_read'
+  'browser_aria', 'browser_read', 'browser_status', 'task_registry_list', 'task_registry_read', 'task_registry_messages'
 ]);
 
 function toolDefinitions(approvalPolicy = 'on-request') {
@@ -34,7 +35,13 @@ function toolDefinitions(approvalPolicy = 'on-request') {
               ? 'Atomically claim a task for the current Only Chat session. Respect conflicts and do not take over an unexpired claim held by another session.'
               : name === 'task_registry_checkpoint'
                 ? 'Update the current session task status and concise checkpoint. Completion requires evidence; blocked status requires a concrete blocker.'
-                : name === 'notion_api_read'
+                : name === 'task_registry_messages'
+                  ? 'Read messages and ACKs addressed to this current Only Chat session, its own messages, and messages shared with all task participants.'
+                  : name === 'task_registry_send'
+                    ? 'Send a concise task-scoped message to another Only Chat session. Never include credentials, transcripts, or unrelated user data.'
+                    : name === 'task_registry_ack'
+                      ? 'Explicitly acknowledge receipt of a task message by its message ID; do not claim receipt without a successful result.'
+        : name === 'notion_api_read'
         ? 'Direct REST API read for the legacy integration-token connection only. For a personal Notion login, use notion_mcp_list_tools then notion_mcp_call_tool instead; the OAuth token cannot be sent to REST.'
         : name === 'notion_api_write'
           ? 'Direct REST API write for the legacy integration-token connection only. For a personal Notion login, use the authorized tools from notion_mcp_list_tools with notion_mcp_call_tool; writes require Only Chat approval.'
@@ -57,6 +64,12 @@ function toolDefinitions(approvalPolicy = 'on-request') {
               ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 }, idempotencyKey: { type: 'string', maxLength: 160 }, leaseMs: { type: 'integer', minimum: 30000, maximum: 900000 } }, required: ['taskKey'], additionalProperties: false }
               : name === 'task_registry_checkpoint'
                 ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 }, status: { type: 'string', enum: ['claimed', 'executing', 'verifying', 'integrating', 'reviewing', 'blocked', 'completed', 'failed'] }, nextAction: { type: 'string', maxLength: 2000 }, blocker: { type: 'string', maxLength: 2000 }, evidenceRefs: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 2048 } }, idempotencyKey: { type: 'string', maxLength: 160 } }, required: ['taskKey', 'status'], additionalProperties: false }
+        : name === 'task_registry_messages'
+          ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 }, afterMessageId: { type: 'string', maxLength: 64 }, limit: { type: 'integer', minimum: 1, maximum: 100 } }, required: ['taskKey'], additionalProperties: false }
+          : name === 'task_registry_send'
+            ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 }, recipientChatId: { type: 'string', maxLength: 256 }, text: { type: 'string', minLength: 1, maxLength: 1200 }, idempotencyKey: { type: 'string', maxLength: 160 } }, required: ['taskKey', 'text'], additionalProperties: false }
+            : name === 'task_registry_ack'
+              ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 }, messageId: { type: 'string', minLength: 1, maxLength: 64 }, text: { type: 'string', minLength: 1, maxLength: 1200 }, idempotencyKey: { type: 'string', maxLength: 160 } }, required: ['taskKey', 'messageId', 'text'], additionalProperties: false }
         : name === 'notion_rea_open' || name === 'notion_rea_navigate'
         ? { type: 'object', properties: { url: { type: 'string', description: 'HTTPS Notion page URL. notion_rea_open defaults to the Notion home page.' } }, additionalProperties: false }
         : name === 'notion_rea_search'

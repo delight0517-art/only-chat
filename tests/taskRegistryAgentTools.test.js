@@ -62,6 +62,21 @@ test('Account Router tools share tasks across sessions and derive creator and cl
     assert.equal(checkpoint.updated, true);
     assert.equal(checkpoint.task.ownerChatId, 'session-chat-b');
     assert.equal(chatA.tools.taskRegistryRead('coordinated-change').checkpoint.nextAction, 'Implement the owned paths');
+
+    const message = await chatB._executeToolCall({ id: 'send-call-1', name: 'task_registry_send', args: {
+      taskKey: 'coordinated-change', recipientChatId: 'session-chat-a', text: 'The change is ready for verification.'
+    } });
+    assert.equal(message.message.senderChatId, 'session-chat-b');
+    assert.equal((await chatA._executeToolCall({ id: 'messages-a', name: 'task_registry_messages', args: { taskKey: 'coordinated-change' } })).length, 1);
+    assert.equal((await chatB._executeToolCall({ id: 'messages-b', name: 'task_registry_messages', args: { taskKey: 'coordinated-change' } })).length, 1);
+    assert.equal((await makeEngine(store, 'session-chat-c')._executeToolCall({ id: 'messages-c', name: 'task_registry_messages', args: { taskKey: 'coordinated-change' } })).length, 0);
+    const ack = await chatA._executeToolCall({ id: 'ack-call-1', name: 'task_registry_ack', args: {
+      taskKey: 'coordinated-change', messageId: message.message.messageId, text: 'Received.'
+    } });
+    assert.equal(ack.message.type, 'ack');
+    assert.equal(ack.message.senderChatId, 'session-chat-a');
+    assert.equal(ack.message.recipientChatId, 'session-chat-b');
+    assert.equal((await chatB._executeToolCall({ id: 'messages-b-after-ack', name: 'task_registry_messages', args: { taskKey: 'coordinated-change' } })).length, 2);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -92,15 +107,18 @@ test('task registry reads are allowed under read-only policy while mutations are
 test('Account Router publishes task registry schemas as read-only or mutating tools by policy', async () => {
   const { toolDefinitions } = await import('../src/features/provider/v1.mjs');
   const normal = toolDefinitions('on-request').map(tool => tool.function.name);
-  for (const name of ['task_registry_list', 'task_registry_read', 'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint']) {
+  for (const name of ['task_registry_list', 'task_registry_read', 'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_messages', 'task_registry_send', 'task_registry_ack']) {
     assert.ok(normal.includes(name));
   }
   const readOnly = toolDefinitions('read-only').map(tool => tool.function.name);
   assert.ok(readOnly.includes('task_registry_list'));
   assert.ok(readOnly.includes('task_registry_read'));
+  assert.ok(readOnly.includes('task_registry_messages'));
   assert.ok(!readOnly.includes('task_registry_create'));
   assert.ok(!readOnly.includes('task_registry_claim'));
   assert.ok(!readOnly.includes('task_registry_checkpoint'));
+  assert.ok(!readOnly.includes('task_registry_send'));
+  assert.ok(!readOnly.includes('task_registry_ack'));
   const claim = toolDefinitions().find(tool => tool.function.name === 'task_registry_claim');
   assert.ok(!Object.hasOwn(claim.function.parameters.properties, 'ownerChatId'));
   assert.ok(!claim.function.parameters.required.includes('idempotencyKey'));
