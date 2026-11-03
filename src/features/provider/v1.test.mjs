@@ -61,7 +61,10 @@ assert.equal(payload.model, 'auto');
 assert.deepEqual(payload.messages, [{ role: 'user', content: 'hi' }]);
 assert.equal(payload.stream, false);
 assert.equal(payload.tool_choice, 'auto');
-assert.equal(payload.tools.length, 46, 'default policy exposes the current complete provider tool set');
+assert.equal(payload.tools.length, 50, 'default policy exposes the current complete provider tool set');
+for (const name of ['joint_development_list', 'joint_development_read', 'joint_development_assess', 'joint_development_create']) {
+  assert.ok(payload.tools.some(tool => tool.function.name === name), `default policy exposes ${name}`);
+}
 assert.equal(request.init.headers.Authorization, undefined);
 assert.deepEqual(result, { content: 'hello', toolCalls: [], usage: { total_tokens: 2 }, protocol: 'openai-compatible' });
 assert.deepEqual(deltas, ['hello']);

@@ -30,7 +30,7 @@ vm.runInNewContext(`${source.slice(start, end)}; startNewSession();`, context);
 assert.equal(context.currentSessionId, 'session_1234567890123');
 assert.equal(context.currentCodexThreadId, null, 'new chat drops the previous Codex source binding');
 assert.equal(composerInput.value, '', 'new chat clears the prior composer draft');
-assert.equal(title.textContent, 'Only Chat · 채팅만으로 코딩 완결');
+assert.equal(title.textContent, 'Only Chat · 연결되는 작업실');
 assert.equal(emptyState.style.display, 'flex');
 assert.equal(status.textContent, '');
 assert.deepEqual(calls, ['refresh-workspace-status', 'focus', 'morph-safe-check'], 'new chat refreshes its status without issuing a reload itself');
