@@ -70,6 +70,7 @@ rm -rf "$ICONSET"
 
 swiftc -parse-as-library -swift-version 5 -framework AppKit -framework ApplicationServices -framework CoreGraphics -framework ImageIO -framework ScreenCaptureKit -framework WebKit -framework Speech -framework AVFoundation \
   "$ROOT/macOS/OnlyChatApp.swift" \
+  "$THREEF_SOURCE_ROOT/OptionalFeatureAvailability.swift" \
   "$THREEF_SOURCE_ROOT/AddressBarNavigationRequest.swift" \
   "$THREEF_SOURCE_ROOT/BrowserContextMenu.swift" \
   "$THREEF_SOURCE_ROOT/BrowserKeyboardCommands.swift" \
