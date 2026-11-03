@@ -2850,3 +2850,31 @@ body {
   .workbench-flow > [aria-current="step"] { color: Highlight; }
   .workbench-flow > [aria-current="step"]::before { background: Highlight; forced-color-adjust: none; }
 }
+
+/* Settings must follow the active palette; legacy fixed white/gray colors broke contrast. */
+.settings-stage { color: var(--text-main); background-color: var(--bg-app); }
+.settings-stage .settings-sub-sidebar { background-color: var(--bg-sidebar); border-color: var(--border-subtle); }
+.settings-stage .settings-sub-header { border-color: var(--border-subtle); }
+.settings-stage .settings-content-pane { color: var(--text-main); background-color: var(--bg-app); }
+.settings-stage :is(.settings-section-card, .provider-row-card) {
+  color: var(--text-main); background-color: var(--bg-card); border-color: var(--border-subtle);
+}
+.settings-stage :is(.settings-title, .settings-nav-item, .panel-main-title, .section-card-title,
+  .row-item-heading, .breadcrumb-leaf, .provider-title, .btn-change-outline, .btn-connect-pill,
+  .settings-select-dropdown, .settings-input-box, .settings-search-input) { color: var(--text-main); }
+.settings-stage :is(.settings-group-label, .panel-header-breadcrumb, .panel-subtitle,
+  .row-item-desc, .provider-subtext, .settings-search-icon) { color: var(--text-muted); }
+.settings-stage :is(.settings-search-input, .settings-select-dropdown, .settings-input-box) {
+  background-color: var(--bg-input); border-color: var(--border-subtle);
+}
+.settings-stage .settings-nav-item:hover,
+.settings-stage .settings-nav-item.active,
+.settings-stage .btn-change-outline:hover,
+.settings-stage .btn-connect-pill,
+.settings-stage .folder-path-tag { color: var(--text-main); background-color: var(--bg-card-hover); }
+.settings-stage .folder-path-tag,
+.settings-stage .settings-divider-line { border-color: var(--border-subtle); }
+.settings-stage :is(input:not([type="checkbox"]):not([type="radio"]), textarea, select) {
+  color: var(--text-main); background-color: var(--bg-input); border-color: var(--border-subtle);
+}
+.settings-stage :is(input, textarea)::placeholder { color: var(--text-dim); opacity: 1; }
