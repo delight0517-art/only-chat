@@ -17,7 +17,7 @@ async function main() {
     workspaceDir: path.join(profile, 'workspace'),
     providerAdapter: async (_tier, history) => {
       receivedHistory = history;
-      return { content: JSON.stringify({ type: 'executor_plan', summary: '설정 구현을 나눕니다', tasks: [{ title: '필요 범위 확인', prompt: '사용자 요청에서 구현 범위와 검증 조건을 정리합니다.', files: ['src/core/AgentEngine.js'], allowedTools: ['read_file'] }] }), toolCalls: [] };
+      return { content: JSON.stringify({ type: 'executor_plan', summary: '설정 구현을 나눕니다', feasibility: { status: 'ready', reason: '실행자와 읽기 권한이 준비되어 있습니다.' }, tasks: [{ title: '필요 범위 확인', prompt: '사용자 요청에서 구현 범위와 검증 조건을 정리합니다.', files: ['src/core/AgentEngine.js'], allowedTools: ['read_file'] }] }), toolCalls: [] };
     }
   });
   try {
@@ -41,6 +41,7 @@ async function main() {
     assert.deepEqual(engine.conversationHistory.map(item => item.role), ['user', 'assistant']);
     assert.equal(response.toolCalls.length, 0);
     assert.match(response.content, /실행자: 1개 작업/);
+    assert.match(response.content, /실행 가능:/);
     assert.equal(enqueued.length, 1);
     assert.equal(enqueued[0].requireToolExecution, true);
     assert.deepEqual(enqueued[0].allowedTools, ['read_file']);
@@ -50,6 +51,12 @@ async function main() {
     assert.equal(saved.some(item => item.content === '실제 capability 요약'), false);
     assert.equal(saved.some(item => item.type === 'tool_result'), false);
     assert.equal(saved.some(item => item.type === 'manager_delegation' && item.tasks[0].id === enqueued[0].id), true);
+    engine.providerAdapter = async () => ({ content: JSON.stringify({ type: 'executor_plan', summary: '대상 파일을 특정하지 못했습니다', feasibility: { status: 'blocked', reason: '변경 범위와 소유 파일을 확인할 수 없습니다.' }, tasks: [] }), toolCalls: [] });
+    let blockedEnqueueCount = 0;
+    engine.dispatcher.enqueueTasks = () => { blockedEnqueueCount += 1; return []; };
+    const blocked = await engine.executeTurn('실행 가능성을 확인해 주세요', { managerMode: true, managerSystemMessage: { role: 'system', content: '실제 capability 요약' } });
+    assert.match(blocked.content, /실행 불가/);
+    assert.equal(blockedEnqueueCount, 0);
     console.log('manager plan validation and executor queue handoff passed');
   } finally {
     engine.skills.stopWatching();

@@ -47,7 +47,7 @@ export function buildAdminManagerSystemMessage(snapshot) {
     '`stale` 모듈은 현재 실행 프로세스 시작 뒤 소스가 바뀌어 이 프로세스에는 최신 코드가 로드되지 않았다는 뜻입니다. 이를 런타임 오류로 부르거나 사용 가능한 기능으로 취급하지 마세요.',
     '변경을 완료했다고 말하지 마세요. 관리자가 실제 실행할 수 있는 동작은 검증된 `work.delegate` capability를 통해 격리 실행자 작업을 큐에 넣는 것뿐입니다. 그 외 `executable`도 이 대화에서 직접 제공되지 않으면 제안만 하세요. `settings-only`, `proposal-only`, `unavailable`은 실행 가능한 것으로 표현하지 마세요.',
     '계정, 자격증명, 파일, 앱 설치, 배포, 외부 전송은 별도 명시적 승인과 실제 실행 결과가 없으면 실행되었다고 주장하지 마세요. 사용자 대화와 개인 데이터는 기기 밖으로 보내지 마세요.',
-    '실제 하위 실행이 요청되면 도구 호출 대신 JSON 객체 하나만 반환하세요. 형식: {"type":"executor_plan","summary":"전체 요약","tasks":[{"title":"작업명","prompt":"사용자 요청에 근거한 구체 작업","files":[],"allowedTools":["read_file"]}]} . files는 선택 사항이고 allowedTools는 필수 비어 있지 않은 배열이며 작업에 꼭 필요한 도구만 적습니다. 적힌 도구 외 호출은 실행되지 않습니다. 작업은 최대 5개입니다. 단순 조언·설명 요청이면 JSON이 아닌 일반 응답을 하세요. 자격증명, 외부 발송·게시·배포·결제·삭제·계정 설정 작업은 하위 실행으로 자동 넘기지 말고 필요한 승인 단계를 안내하세요.',
+    '실제 하위 실행이 요청되면 도구 호출 대신 JSON 객체 하나만 반환하세요. 형식: {"type":"executor_plan","summary":"전체 요약","feasibility":{"status":"ready","reason":"실행 가능한 근거"},"tasks":[{"title":"작업명","prompt":"사용자 요청에 근거한 구체 작업","files":["src/example.js"],"allowedTools":["read_file"]}]} . 실행할 수 없으면 feasibility.status를 blocked로, reason에 막힌 이유를 적고 tasks는 빈 배열로 반환하세요. ready 계획에는 1~5개 작업이 필요하며 각 작업은 겹치지 않는 비어 있지 않은 파일 경로를 지정해야 합니다. allowedTools는 필수 비어 있지 않은 배열이며 작업에 꼭 필요한 도구만 적습니다. 적힌 도구 외 호출은 실행되지 않습니다. 단순 조언·설명 요청이면 JSON이 아닌 일반 응답을 하세요. 자격증명, 외부 발송·게시·배포·결제·삭제·계정 설정 작업은 하위 실행으로 자동 넘기지 말고 필요한 승인 단계를 안내하세요.',
     `관리자 모듈 API v${ADMIN_MANAGER_API_VERSION} (module ${ADMIN_MANAGER_MODULE_VERSION})`,
     '등록 모듈:'
   ];
@@ -79,11 +79,17 @@ export function parseExecutorPlan(raw, options = {}) {
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || value.type !== 'executor_plan'
-    || Object.keys(value).some(key => !['type', 'summary', 'tasks'].includes(key))
-    || !Array.isArray(value.tasks) || value.tasks.length < 1 || value.tasks.length > EXECUTOR_TASK_LIMIT) {
+    || Object.keys(value).some(key => !['type', 'summary', 'feasibility', 'tasks'].includes(key))
+    || !value.feasibility || typeof value.feasibility !== 'object' || Array.isArray(value.feasibility)
+    || Object.keys(value.feasibility).some(key => !['status', 'reason'].includes(key))
+    || !['ready', 'blocked'].includes(value.feasibility.status)
+    || !Array.isArray(value.tasks)
+    || (value.feasibility.status === 'ready' && (value.tasks.length < 1 || value.tasks.length > EXECUTOR_TASK_LIMIT))
+    || (value.feasibility.status === 'blocked' && value.tasks.length !== 0)) {
     throw new TypeError('관리자 계획의 형식이나 작업 수가 올바르지 않습니다.');
   }
   const summary = cleanTaskText(value.summary, 'summary', 1000);
+  const feasibility = { status: value.feasibility.status, reason: cleanTaskText(value.feasibility.reason, 'feasibility.reason', 1000) };
   const tasks = value.tasks.map((task, index) => {
     if (!task || typeof task !== 'object' || Array.isArray(task)
       || Object.keys(task).some(key => !['title', 'prompt', 'files', 'allowedTools'].includes(key))) {
@@ -91,10 +97,10 @@ export function parseExecutorPlan(raw, options = {}) {
     }
     const title = cleanTaskText(task.title, `tasks[${index}].title`, 120);
     const prompt = cleanTaskText(task.prompt, `tasks[${index}].prompt`, 4000);
-    const files = task.files === undefined ? [] : task.files;
-    if (!Array.isArray(files) || files.length > 20 || files.some(file => typeof file !== 'string'
+    const files = task.files;
+    if (!Array.isArray(files) || files.length < 1 || files.length > 20 || files.some(file => typeof file !== 'string'
       || !file.trim() || path.isAbsolute(file) || file.split(/[\\/]/).includes('..'))) {
-      throw new TypeError(`작업 ${index + 1} 대상 경로가 올바르지 않습니다.`);
+      throw new TypeError(`작업 ${index + 1} 대상 경로가 비어 있거나 올바르지 않습니다.`);
     }
     const allowedTools = task.allowedTools;
     if (!Array.isArray(allowedTools) || allowedTools.length < 1 || allowedTools.length > 32
@@ -104,25 +110,40 @@ export function parseExecutorPlan(raw, options = {}) {
     return {
       title,
       prompt,
-      files: files.map(file => file.trim()),
+      files: [...new Set(files.map(file => file.trim().replace(/\\/g, '/')))],
       allowedTools: [...new Set(allowedTools)]
     };
   });
-  if (typeof options.hasAvailableExecutor === 'function' && !options.hasAvailableExecutor()) {
+  const ownedPaths = [];
+  for (const [index, task] of tasks.entries()) {
+    for (const file of task.files) {
+      if (ownedPaths.some(existing => existing === file || existing.startsWith(`${file}/`) || file.startsWith(`${existing}/`))) {
+        throw new TypeError(`작업 ${index + 1} 대상 경로가 다른 작업의 소유 범위와 겹칩니다.`);
+      }
+      ownedPaths.push(file);
+    }
+  }
+  if (feasibility.status === 'ready' && typeof options.hasAvailableExecutor === 'function' && !options.hasAvailableExecutor()) {
     throw new TypeError('사용 가능한 실행자 capability가 없어 작업을 맡길 수 없습니다.');
   }
-  return { summary, tasks };
+  return { summary, feasibility, tasks };
 }
 
-export function buildExecutorSystemMessage({ taskTitle, workspaceDir }) {
+export function buildExecutorSystemMessage({ taskTitle, workspaceDir, files = [] }) {
   const title = cleanTaskText(taskTitle, 'taskTitle', 120);
   const workspace = cleanTaskText(workspaceDir, 'workspaceDir', 1000);
+  if (!Array.isArray(files) || files.some(file => typeof file !== 'string' || !file.trim()
+    || path.isAbsolute(file) || file.split(/[\\/]/).includes('..'))) {
+    throw new TypeError('executor file scope is invalid');
+  }
+  const fileScope = [...new Set(files.map(file => file.trim().replace(/\\/g, '/')))];
   return {
     role: 'system',
     content: [
       'Only Chat 독립 실행자 모드입니다. 별도 세션에서 관리자가 전달한 한 작업만 수행하고 다른 하위 작업을 만들거나 범위를 넓히지 마세요.',
       `작업 제목: ${title}`,
       `격리 작업 폴더: ${workspace}`,
+      `허용 파일 경로: ${fileScope.length ? fileScope.join(', ') : '미지정 — 파일 변경 작업은 수행하지 말고 차단 사유를 보고하세요.'}`,
       '실행 범위는 관리자가 전달한 작업 prompt와 허용 파일 경로뿐입니다. 승인/인증이 필요한 도구 호출, 외부 전송, 게시, 배포, 결제, 삭제 작업은 시도하지 말고 blocked 결과를 설명하세요.',
       '실제 이 요청에서 사용할 수 있게 제공된 도구만 사용하세요. Codex CLI의 exec_command와 Only Chat의 read_file, list_files, search_files는 해당 도구가 실제 세션에 있을 때만 사용하세요. 필요한 도구가 제공되지 않으면 도구 실행을 꾸며내지 말고 blocked로 보고하세요.',
       '증거 단계를 서로 바꾸어 말하지 마세요. read_file은 소스 열람만 증명합니다. 테스트 파일을 읽은 것은 테스트 실행이 아니며, 합성/호스트 테스트 통과도 설치 앱 UI, 실제 provider, 기기 또는 Windows 실행 증거가 아닙니다. 실제로 확인한 증거 유형을 분리해 보고하고, 확인하지 않은 단계는 미검증으로 남기세요.',

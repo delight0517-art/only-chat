@@ -453,7 +453,7 @@ class AgentEngine {
           ? { requestToolApproval: request => this.dispatcherApprovalHandler(task, request) }
           : {}),
         allowedTools: task.allowedTools,
-        executorSystemMessage: manager.buildExecutorSystemMessage({ taskTitle: task.title, workspaceDir: this.workspaceDir })
+        executorSystemMessage: manager.buildExecutorSystemMessage({ taskTitle: task.title, workspaceDir: this.workspaceDir, files: task.targetFiles })
       });
       worker.sessions.appendItem(session.sessionId, { type: 'session_metadata', metadata: { executionEvidence: evidence } });
       if (typeof response?.content !== 'string' || !response.content.trim()) {
@@ -609,14 +609,18 @@ class AgentEngine {
                       tier.enabled !== false && tier.provider !== 'demo' && tier.provider !== 'unconfigured'
                       && Boolean(tier.model && tier.model !== 'unconfigured') && this.priorityChain.isTierReady(tier))
                 });
-                const tasks = this.dispatcher.enqueueTasks(plan.tasks.map((task, index) => ({
-                  id: `manager_${this.currentSession.sessionId}_${Date.now()}_${index + 1}`,
-                  ...task,
-                  requireToolExecution: true
-                })));
-                managerDelegation = { summary: plan.summary, tasks };
-                response = { content: `관리자: ${plan.summary}\n실행자: ${tasks.length}개 작업을 별도 세션으로 접수했습니다. 상태와 결과는 작업 대기열에서 확인할 수 있습니다.`, toolCalls: [] };
-                callbacks.onManagerDelegation?.({ summary: plan.summary, tasks: tasks.map(task => ({ id: task.id, title: task.title, status: task.status })) });
+                if (plan.feasibility.status === 'blocked') {
+                  response = { content: `관리자: 실행 불가 — ${plan.feasibility.reason}`, toolCalls: [] };
+                } else {
+                  const tasks = this.dispatcher.enqueueTasks(plan.tasks.map((task, index) => ({
+                    id: `manager_${this.currentSession.sessionId}_${Date.now()}_${index + 1}`,
+                    ...task,
+                    requireToolExecution: true
+                  })));
+                  managerDelegation = { summary: plan.summary, tasks };
+                  response = { content: `관리자: ${plan.summary}\n실행 가능: ${plan.feasibility.reason}\n실행자: ${tasks.length}개 작업을 별도 세션으로 접수했습니다. 상태와 결과는 작업 대기열에서 확인할 수 있습니다.`, toolCalls: [] };
+                  callbacks.onManagerDelegation?.({ summary: plan.summary, tasks: tasks.map(task => ({ id: task.id, title: task.title, status: task.status })) });
+                }
               } catch (error) {
                 managerToolCallBlocked = true;
                 response = { content: `${error.message || '관리자 작업 계획을 검증할 수 없습니다.'} 도구를 직접 실행하지 않았습니다.`, toolCalls: [] };
