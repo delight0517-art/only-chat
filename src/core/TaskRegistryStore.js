@@ -10,6 +10,7 @@ const MAX_STORE_BYTES = 16 * 1024 * 1024;
 const MAX_TASKS = 10_000;
 const MAX_IDEMPOTENCY_RECORDS = 50_000;
 const MAX_MESSAGES = 5_000;
+const MAX_VERIFICATION_CACHE = 5_000;
 const MAX_MESSAGE_LENGTH = 1_200;
 const MAX_EXECUTOR_RESULT_LENGTH = 8_000;
 const MAX_EXECUTOR_TOOL_NAMES = 32;
@@ -179,7 +180,7 @@ class TaskRegistryStore {
   }
 
   _emptyState() {
-    return { schemaVersion: SCHEMA_VERSION, tasks: [], idempotency: [], messages: [] };
+    return { schemaVersion: SCHEMA_VERSION, tasks: [], idempotency: [], messages: [], verificationCache: [] };
   }
 
   _loadState() {
@@ -210,6 +211,19 @@ class TaskRegistryStore {
     }
     if (document.messages === undefined) document.messages = [];
     if (!Array.isArray(document.messages) || document.messages.length > MAX_MESSAGES) throw new Error('invalid task registry messages');
+    if (document.verificationCache === undefined) document.verificationCache = [];
+    if (!Array.isArray(document.verificationCache) || document.verificationCache.length > MAX_VERIFICATION_CACHE
+      || document.verificationCache.some(item => !item || !/^[a-f0-9]{64}$/.test(item.checkId)
+        || typeof item.verificationKey !== 'string' || !/^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(item.verificationKey)
+        || typeof item.repositoryPath !== 'string' || !path.isAbsolute(item.repositoryPath)
+        || !/^[a-f0-9]{64}$/.test(item.inputSha256) || !/^[a-f0-9]{64}$/.test(item.commandSha256)
+        || !/^[a-f0-9]{64}$/.test(item.environmentSha256) || typeof item.evidenceRef !== 'string'
+        || !item.evidenceRef.trim() || item.evidenceRef.length > 2048 || /[\u0000-\u001f\u007f]/u.test(item.evidenceRef)
+        || item.status !== 'passed' || typeof item.stale !== 'boolean'
+        || !Number.isFinite(Date.parse(item.recordedAt))
+        || (item.stale && !Number.isFinite(Date.parse(item.staleAt))))) {
+      throw new Error('invalid task registry verification cache');
+    }
     const taskKeys = new Set();
     for (const task of document.tasks) {
       if (!task || typeof task.taskKey !== 'string' || !TASK_KEY.test(task.taskKey)
@@ -353,6 +367,65 @@ class TaskRegistryStore {
     if (state.idempotency.length >= MAX_IDEMPOTENCY_RECORDS) throw new Error('task registry idempotency capacity reached; preserve the store and review retention');
     state.idempotency.push({ key: replay.key, requestHash: replay.requestHash, result: clone(result), createdAt: new Date(this.clock()).toISOString() });
     return result;
+  }
+
+  _normalizeVerificationInput(input, includeEvidence = false) {
+    const verificationKey = printableString(input.verificationKey, 'verificationKey', 128);
+    if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(verificationKey)) throw new TypeError('verificationKey is invalid');
+    const normalized = {
+      verificationKey,
+      repositoryPath: normalizeRepositoryPath(input.repositoryPath),
+      inputSha256: printableString(input.inputSha256, 'inputSha256', 64).toLowerCase(),
+      commandSha256: printableString(input.commandSha256, 'commandSha256', 64).toLowerCase(),
+      environmentSha256: printableString(input.environmentSha256, 'environmentSha256', 64).toLowerCase()
+    };
+    for (const key of ['inputSha256', 'commandSha256', 'environmentSha256']) {
+      if (!/^[a-f0-9]{64}$/.test(normalized[key])) throw new TypeError(`${key} must be a SHA-256 hex digest`);
+    }
+    normalized.checkId = crypto.createHash('sha256').update([
+      normalized.repositoryPath, normalized.verificationKey, normalized.commandSha256, normalized.environmentSha256
+    ].join('\0')).digest('hex');
+    if (includeEvidence) normalized.evidenceRef = printableString(input.evidenceRef, 'evidenceRef', 2048);
+    return normalized;
+  }
+
+  lookupVerification(input = {}) {
+    const normalized = this._normalizeVerificationInput(input);
+    const matching = this._loadState().verificationCache.filter(item => item.checkId === normalized.checkId && !item.stale);
+    const current = matching.at(-1);
+    if (current && current.inputSha256 === normalized.inputSha256) return { hit: true, record: clone(current) };
+    return { hit: false, invalidatedEvidenceRefs: current ? [current.evidenceRef] : [] };
+  }
+
+  async recordVerification(input = {}) {
+    const normalized = this._normalizeVerificationInput(input, true);
+    const idempotencyKey = printableString(input.idempotencyKey, 'idempotencyKey', 160);
+    const request = { ...normalized };
+    delete request.evidenceRef;
+    return this._withWriteLock(`task-registry:verification:${normalized.checkId}`, async () => {
+      const state = this._loadState();
+      const replay = this._idempotencyReplay(state, 'verification-record', idempotencyKey, { ...request, evidenceRef: normalized.evidenceRef });
+      if (replay.result) return { ...replay.result, replayed: true };
+      const existing = state.verificationCache.find(item => item.checkId === normalized.checkId && !item.stale);
+      if (existing && existing.inputSha256 === normalized.inputSha256) {
+        const result = { recorded: false, reused: true, record: clone(existing) };
+        this._remember(state, replay, result);
+        this._saveState(state);
+        return result;
+      }
+      if (state.verificationCache.length >= MAX_VERIFICATION_CACHE) throw new Error('verification cache capacity reached; review retention before adding more evidence');
+      const now = new Date(this.clock()).toISOString();
+      if (existing) { existing.stale = true; existing.staleAt = now; }
+      const record = { checkId: normalized.checkId, verificationKey: normalized.verificationKey,
+        repositoryPath: normalized.repositoryPath, inputSha256: normalized.inputSha256,
+        commandSha256: normalized.commandSha256, environmentSha256: normalized.environmentSha256,
+        evidenceRef: normalized.evidenceRef, status: 'passed', stale: false, recordedAt: now };
+      state.verificationCache.push(record);
+      const result = { recorded: true, reused: false, record: clone(record), invalidatedEvidenceRef: existing?.evidenceRef || null };
+      this._remember(state, replay, result);
+      this._saveState(state);
+      return result;
+    });
   }
 
   async createTask(input = {}) {

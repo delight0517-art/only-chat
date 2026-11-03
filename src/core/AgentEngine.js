@@ -48,7 +48,7 @@ const MUTATION_TOOL_NAMES = new Set([
   'browser_open', 'browser_navigate', 'browser_act', 'browser_recipe', 'browser_history',
   'vault_get_credential',
   'browser_workspace_snapshot', 'browser_workspace_restore', 'browser_workspace_focus', 'browser_workspace_open',
-  'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_send', 'task_registry_ack', 'joint_development_create'
+  'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_send', 'task_registry_ack', 'task_registry_record_check', 'joint_development_create'
 ]);
 
 function isMutationToolName(name) {
@@ -1050,6 +1050,10 @@ class AgentEngine {
           return await this.tools.taskRegistrySend({ ...args, idempotencyKey: args.idempotencyKey || call.id }, this.currentSession?.sessionId || 'unknown-session');
         case 'task_registry_ack':
           return await this.tools.taskRegistryAck({ ...args, idempotencyKey: args.idempotencyKey || call.id }, this.currentSession?.sessionId || 'unknown-session');
+        case 'task_registry_check':
+          return await this.tools.taskRegistryCheck(args);
+        case 'task_registry_record_check':
+          return await this.tools.taskRegistryRecordCheck(args, args.idempotencyKey || call.id);
         case 'joint_development_list':
           return await this.tools.jointDevelopmentList(args);
         case 'joint_development_read':

@@ -526,6 +526,16 @@ class ToolRegistry {
     });
   }
 
+  taskRegistryCheck(input) {
+    if (!this.taskRegistryStore) throw new Error('Shared task registry is unavailable in this runtime.');
+    return this.taskRegistryStore.lookupVerification(input);
+  }
+
+  taskRegistryRecordCheck(input, idempotencyKey) {
+    if (!this.taskRegistryStore) throw new Error('Shared task registry is unavailable in this runtime.');
+    return this.taskRegistryStore.recordVerification({ ...input, idempotencyKey });
+  }
+
   jointDevelopmentList(input = {}) {
     if (!this.macWindowsDevelopment) throw new Error('Mac-Windows joint development is unavailable in this runtime.');
     return this.macWindowsDevelopment.list(input.limit);

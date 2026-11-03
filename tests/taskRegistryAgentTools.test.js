@@ -104,21 +104,46 @@ test('task registry reads are allowed under read-only policy while mutations are
   assert.equal(fs.existsSync(root), false);
 });
 
+test('verification results are shared across sessions only for an exact source, command and environment fingerprint', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-verification-cache-'));
+  try {
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(repo);
+    const store = new TaskRegistryStore({ dataDir: path.join(root, 'data') });
+    const source = { verificationKey: 'focus-test', repositoryPath: repo, inputSha256: 'a'.repeat(64),
+      commandSha256: 'b'.repeat(64), environmentSha256: 'c'.repeat(64) };
+    const checker = makeEngine(store, 'session-checker');
+    assert.equal((await checker._executeToolCall({ id: 'cache-read-1', name: 'task_registry_check', args: source })).hit, false);
+    const record = await checker._executeToolCall({ id: 'cache-write-1', name: 'task_registry_record_check', args: { ...source, evidenceRef: 'log:focus-tests' } });
+    assert.equal(record.recorded, true);
+    const anotherChat = makeEngine(store, 'session-another-chat', 'read-only');
+    assert.equal((await anotherChat._executeToolCall({ id: 'cache-read-2', name: 'task_registry_check', args: source })).record.evidenceRef, 'log:focus-tests');
+    const changed = { ...source, environmentSha256: 'd'.repeat(64) };
+    assert.equal((await anotherChat._executeToolCall({ id: 'cache-read-3', name: 'task_registry_check', args: changed })).hit, false);
+    await assert.rejects(anotherChat._executeToolCall({ id: 'cache-write-2', name: 'task_registry_record_check', args: { ...changed, evidenceRef: 'log:must-block' } }), /blocked under read-only policy/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+  assert.equal(fs.existsSync(root), false);
+});
+
 test('Account Router publishes task registry schemas as read-only or mutating tools by policy', async () => {
   const { toolDefinitions } = await import('../src/features/provider/v1.mjs');
   const normal = toolDefinitions('on-request').map(tool => tool.function.name);
-  for (const name of ['task_registry_list', 'task_registry_read', 'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_messages', 'task_registry_send', 'task_registry_ack']) {
+  for (const name of ['task_registry_list', 'task_registry_read', 'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_messages', 'task_registry_send', 'task_registry_ack', 'task_registry_check', 'task_registry_record_check']) {
     assert.ok(normal.includes(name));
   }
   const readOnly = toolDefinitions('read-only').map(tool => tool.function.name);
   assert.ok(readOnly.includes('task_registry_list'));
   assert.ok(readOnly.includes('task_registry_read'));
   assert.ok(readOnly.includes('task_registry_messages'));
+  assert.ok(readOnly.includes('task_registry_check'));
   assert.ok(!readOnly.includes('task_registry_create'));
   assert.ok(!readOnly.includes('task_registry_claim'));
   assert.ok(!readOnly.includes('task_registry_checkpoint'));
   assert.ok(!readOnly.includes('task_registry_send'));
   assert.ok(!readOnly.includes('task_registry_ack'));
+  assert.ok(!readOnly.includes('task_registry_record_check'));
   const claim = toolDefinitions().find(tool => tool.function.name === 'task_registry_claim');
   assert.ok(!Object.hasOwn(claim.function.parameters.properties, 'ownerChatId'));
   assert.ok(!claim.function.parameters.required.includes('idempotencyKey'));

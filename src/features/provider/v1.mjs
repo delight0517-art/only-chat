@@ -9,7 +9,7 @@ const TOOL_NAMES = Object.freeze([
   'spacekeeper_session_report', 'spacekeeper_capacity_status', 'browser_open', 'browser_navigate',
   'browser_aria', 'browser_act', 'browser_read', 'browser_recipe', 'browser_status',
   'task_registry_list', 'task_registry_read', 'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint',
-  'task_registry_messages', 'task_registry_send', 'task_registry_ack',
+  'task_registry_messages', 'task_registry_send', 'task_registry_ack', 'task_registry_check', 'task_registry_record_check',
   'joint_development_list', 'joint_development_read', 'joint_development_assess', 'joint_development_create'
 ]);
 const READ_ONLY_TOOL_NAMES = new Set([
@@ -17,7 +17,7 @@ const READ_ONLY_TOOL_NAMES = new Set([
   'notion_search', 'notion_query', 'notion_api_read', 'spacekeeper_session_report', 'spacekeeper_capacity_status',
   'notion_mcp_list_tools', 'notion_mcp_call_tool',
   'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status',
-  'browser_aria', 'browser_read', 'browser_status', 'task_registry_list', 'task_registry_read', 'task_registry_messages',
+  'browser_aria', 'browser_read', 'browser_status', 'task_registry_list', 'task_registry_read', 'task_registry_messages', 'task_registry_check',
   'joint_development_list', 'joint_development_read', 'joint_development_assess'
 ]);
 
@@ -54,6 +54,10 @@ function toolDefinitions(approvalPolicy = 'on-request') {
                     ? 'Send a concise task-scoped message to another Only Chat session. Never include credentials, transcripts, or unrelated user data.'
                     : name === 'task_registry_ack'
                       ? 'Explicitly acknowledge receipt of a task message by its message ID; do not claim receipt without a successful result.'
+                      : name === 'task_registry_check'
+                        ? 'Look up a completed verification by stable verification key, canonical repository, input SHA-256, command SHA-256 and environment SHA-256 before rerunning it. Reuse only an exact fresh hit; a miss with invalidated evidence means rerun this check only.'
+                        : name === 'task_registry_record_check'
+                          ? 'Record a successful verification with exact source-input, command and environment SHA-256 fingerprints and a concise evidence locator. Never cache failed, skipped or runtime checks as passing.'
         : name === 'joint_development_assess'
           ? 'Before creating a Mac-Windows joint-development task, validate the shared integration base, disjoint file ownership, local canonical main and base HEAD, local dirty-path conflicts, and any existing task overlap. Return unknown for the remote device; never infer that Windows is available or ready.'
           : name === 'joint_development_create'
@@ -95,8 +99,10 @@ function toolDefinitions(approvalPolicy = 'on-request') {
           ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 }, afterMessageId: { type: 'string', maxLength: 64 }, limit: { type: 'integer', minimum: 1, maximum: 100 } }, required: ['taskKey'], additionalProperties: false }
           : name === 'task_registry_send'
             ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 }, recipientChatId: { type: 'string', maxLength: 256 }, text: { type: 'string', minLength: 1, maxLength: 1200 }, idempotencyKey: { type: 'string', maxLength: 160 } }, required: ['taskKey', 'text'], additionalProperties: false }
-            : name === 'task_registry_ack'
+              : name === 'task_registry_ack'
               ? { type: 'object', properties: { taskKey: { type: 'string', minLength: 1, maxLength: 128 }, messageId: { type: 'string', minLength: 1, maxLength: 64 }, text: { type: 'string', minLength: 1, maxLength: 1200 }, idempotencyKey: { type: 'string', maxLength: 160 } }, required: ['taskKey', 'messageId', 'text'], additionalProperties: false }
+              : ['task_registry_check', 'task_registry_record_check'].includes(name)
+                ? { type: 'object', properties: { verificationKey: { type: 'string', minLength: 1, maxLength: 128 }, repositoryPath: { type: 'string', minLength: 1 }, inputSha256: { type: 'string', pattern: '^[a-fA-F0-9]{64}$' }, commandSha256: { type: 'string', pattern: '^[a-fA-F0-9]{64}$' }, environmentSha256: { type: 'string', pattern: '^[a-fA-F0-9]{64}$' }, evidenceRef: { type: 'string', minLength: 1, maxLength: 2048 }, idempotencyKey: { type: 'string', maxLength: 160 } }, required: ['verificationKey', 'repositoryPath', 'inputSha256', 'commandSha256', 'environmentSha256', ...(name === 'task_registry_record_check' ? ['evidenceRef'] : [])], additionalProperties: false }
         : name === 'notion_rea_open' || name === 'notion_rea_navigate'
         ? { type: 'object', properties: { url: { type: 'string', description: 'HTTPS Notion page URL. notion_rea_open defaults to the Notion home page.' } }, additionalProperties: false }
         : name === 'notion_rea_search'

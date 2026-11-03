@@ -303,6 +303,27 @@ test('task mailbox is durable, idempotent, recipient-scoped, and supports explic
   });
 });
 
+test('reuses exact completed verification inputs and invalidates only the changed check input', async () => {
+  await withFixture(async ({ repo, dataDir, store }) => {
+    const base = { verificationKey: 'onlychat-source-tests', repositoryPath: repo,
+      inputSha256: 'a'.repeat(64), commandSha256: 'b'.repeat(64), environmentSha256: 'c'.repeat(64) };
+    assert.deepEqual(store.lookupVerification(base), { hit: false, invalidatedEvidenceRefs: [] });
+    const saved = await store.recordVerification({ ...base, evidenceRef: 'receipt:source-tests:run-1', idempotencyKey: 'verify-1' });
+    assert.equal(saved.recorded, true);
+    const reopened = new TaskRegistryStore({ dataDir });
+    assert.equal(reopened.lookupVerification(base).hit, true);
+    assert.equal(reopened.lookupVerification(base).record.evidenceRef, 'receipt:source-tests:run-1');
+
+    const changed = { ...base, inputSha256: 'd'.repeat(64) };
+    assert.deepEqual(reopened.lookupVerification(changed), { hit: false, invalidatedEvidenceRefs: ['receipt:source-tests:run-1'] });
+    const replacement = await reopened.recordVerification({ ...changed, evidenceRef: 'receipt:source-tests:run-2', idempotencyKey: 'verify-2' });
+    assert.equal(replacement.invalidatedEvidenceRef, 'receipt:source-tests:run-1');
+    assert.equal(reopened.lookupVerification(base).hit, false);
+    assert.equal(reopened.lookupVerification(changed).record.evidenceRef, 'receipt:source-tests:run-2');
+    assert.throws(() => reopened.lookupVerification({ ...base, commandSha256: 'secret' }), /SHA-256/);
+  });
+});
+
 test('accepts a legacy task registry file without mailbox array and fails closed on invalid message cursors', async () => {
   await withFixture(async ({ repo, store }) => {
     await store.createTask(taskInput(repo));
