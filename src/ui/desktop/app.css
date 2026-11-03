@@ -1187,6 +1187,13 @@ body {
 .effort-level-button { border: 0; border-radius: 6px; padding: 5px 4px; background: transparent; color: #a1a1a6; font: inherit; font-size: 10px; cursor: pointer; }
 .effort-level-button:hover, .effort-level-button.selected { background: rgba(127,127,127,0.16); color: #f5f5f7; }
 .effort-level-button:focus-visible { outline: 2px solid #f06a35; outline-offset: 1px; }
+.model-switch-schedule { border-top: 1px solid rgba(180,180,185,.2); padding-top: 10px; color: #c8c8cc; font-size: 12px; }
+.model-switch-schedule summary { cursor: pointer; color: #f5f5f7; font-weight: 600; }
+.model-switch-schedule label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.model-switch-schedule select { min-width: 130px; max-width: 58%; border: 1px solid #555557; border-radius: 8px; padding: 6px 8px; background: #202022; color: #f5f5f7; }
+.model-switch-actions { display: flex; gap: 8px; margin: 12px 0 6px; }
+.model-switch-actions button { border: 1px solid #66666b; border-radius: 8px; padding: 6px 12px; background: #38383a; color: #f5f5f7; cursor: pointer; }
+#modelSwitchStatus { display: block; color: #a1a1a6; }
 @media (max-width: 520px) {
   .model-selector-popup { right: 0; }
   .effort-selector-popup { right: 0; }

@@ -28,6 +28,7 @@ const { NotionReaBrowser } = require('../../browser/NotionReaBrowser.js');
 const { AntigravityCliAdapter } = require('../../providers/AntigravityCliAdapter.js');
 const { CodexCliAdapter } = require('../../providers/CodexCliAdapter.js');
 const { parseReasoningEffort } = require('../../core/ReasoningEffort.js');
+const { ModelSwitchScheduleStore } = require('../../core/ModelSwitchScheduleStore.js');
 const { EvolutionInbox } = require('../../sync/EvolutionInbox.js');
 const { RecurringScheduleStore } = require('../../scheduler/RecurringScheduleStore.js');
 const { RecurringScheduleService } = require('../../scheduler/RecurringScheduleService.js');
@@ -156,6 +157,7 @@ class DesktopServer {
     this.engine = new AgentEngine(engineOptions);
     this.taskRegistryStore = this.isolated ? null : new TaskRegistryStore({ dataDir: this.dataDir });
     this.scheduleStore = options.scheduleStore || new RecurringScheduleStore({ dataDir: this.dataDir });
+    this.modelSwitchScheduleStore = options.modelSwitchScheduleStore || new ModelSwitchScheduleStore({ dataDir: this.dataDir, clock: options.modelSwitchClock });
     this.scheduleService = options.scheduleService || new RecurringScheduleService({
       store: this.scheduleStore,
       dispatcher: this.engine.dispatcher,
@@ -607,6 +609,29 @@ class DesktopServer {
           return this._respondJson(res, { error: error.message || 'task_registry_update_failed' }, conflict ? 409 : 400);
         }
       }
+    }
+
+    if (pathname === '/api/model-switch-schedule' && req.method === 'GET') {
+      const sessionId = url.searchParams.get('sessionId');
+      try { return this._respondJson(res, { schedule: this.modelSwitchScheduleStore.get(sessionId) }); }
+      catch (error) { return this._respondJson(res, { error: error.message }, 400); }
+    }
+    if (pathname === '/api/model-switch-schedule' && req.method === 'POST') {
+      const body = await this._readLimitedBody(req, 16 * 1024);
+      if (!body) return this._respondJson(res, { error: '예약 입력을 읽지 못했습니다.' }, 400);
+      const models = this.engine.priorityChain.chain.tiers
+        .filter(tier => tier.enabled !== false && typeof tier.model === 'string' && tier.model.trim() && tier.model.trim().toLowerCase() !== 'auto')
+        .map(tier => tier.model.trim().toLowerCase());
+      if (!models.includes(String(body.targetModel || '').trim().toLowerCase())) {
+        return this._respondJson(res, { error: '목표 모델이 현재 계정 라우터에 설정되어 있지 않습니다.' }, 409);
+      }
+      try { return this._respondJson(res, { ok: true, schedule: this.modelSwitchScheduleStore.schedule(body) }, 201); }
+      catch (error) { return this._respondJson(res, { error: error.message || '모델 전환을 예약하지 못했습니다.' }, 400); }
+    }
+    if (pathname === '/api/model-switch-schedule' && req.method === 'DELETE') {
+      const body = await this._readLimitedBody(req, 8 * 1024);
+      try { return this._respondJson(res, { ok: true, schedule: this.modelSwitchScheduleStore.cancel(body?.sessionId, 'user-cancelled') }); }
+      catch (error) { return this._respondJson(res, { error: error.message }, 400); }
     }
 
     if (pathname === '/api/schedules' && req.method === 'GET') {
@@ -1834,6 +1859,7 @@ class DesktopServer {
             this.engine.loadInternalSession(resumed);
           }
           this.newChatSessionAliases.set(requestedSessionId, sessionId);
+          this.modelSwitchScheduleStore.moveSession(requestedSessionId, sessionId);
           while (this.newChatSessionAliases.size > 128) {
             this.newChatSessionAliases.delete(this.newChatSessionAliases.keys().next().value);
           }
@@ -1860,6 +1886,28 @@ class DesktopServer {
         return;
       }
 
+      const turnSessionId = this.engine.currentSession?.sessionId;
+      const modelSwitchResolution = this.modelSwitchScheduleStore.resolveForRequest(turnSessionId, {
+        model: normalizedModelSelection,
+        effort: reasoningEffort,
+        targetAvailable: targetModel => {
+          const chain = this.engine.priorityChain;
+          const candidates = chain.chain.tiers.filter(tier => tier.enabled !== false
+            && String(tier.model || '').trim().toLowerCase() === targetModel);
+          if (!chain.chain.enabled) {
+            const manualTier = chain.chain.tiers.find(tier => tier.id === chain.chain.manualTierId);
+            if (!manualTier || String(manualTier.model || '').trim().toLowerCase() !== targetModel) return false;
+          }
+          try { return candidates.some(tier => chain.isTierReady(tier)); }
+          catch (_) { return false; }
+        }
+      });
+      if (modelSwitchResolution.blocked) {
+        return this._respondJson(res, { error: '예약한 모델이 현재 준비되지 않아 요청을 실행하지 않았습니다. 로그인 또는 모델 설정을 확인한 뒤 예약을 다시 설정해 주세요.', schedule: modelSwitchResolution.schedule }, 409);
+      }
+      const effectiveModelSelection = modelSwitchResolution.apply?.model || normalizedModelSelection;
+      const effectiveReasoningEffort = modelSwitchResolution.apply?.effort || reasoningEffort;
+
       this.activeTurns += 1;
 
       res.writeHead(200, {
@@ -1872,6 +1920,7 @@ class DesktopServer {
         res.write(`data: ${JSON.stringify(data)}\n\n`);
       };
       if (announcedSessionId) sendSse({ type: 'session_started', clientSessionId: requestedSessionId, sessionId: announcedSessionId });
+      if (modelSwitchResolution.apply) sendSse({ type: 'model_switch_schedule_applied', schedule: modelSwitchResolution.schedule });
 
       const requestToolApproval = request => new Promise(resolve => {
         const currentSessionId = this.engine.currentSession?.sessionId;
@@ -1895,16 +1944,15 @@ class DesktopServer {
         });
       });
 
-      const turnSessionId = this.engine.currentSession?.sessionId;
       try {
         if (overrideTierId) {
           this.engine.priorityChain.resolveActiveTier(overrideTierId);
         }
 
         await this.engine.executeTurn(prompt, {
-          reasoningEffort,
+          reasoningEffort: effectiveReasoningEffort,
           fullAccess: body.fullAccess === true,
-          modelSelection: normalizedModelSelection,
+          modelSelection: effectiveModelSelection,
           managerMode,
           managerSystemMessage,
           managerExecutionAllowed,

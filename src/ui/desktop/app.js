@@ -134,6 +134,7 @@ const reasoningEffortLevels = [
 ];
 const REASONING_EFFORT_KEY = 'onlyChatReasoningEffort';
 let selectedReasoningEffort = localStorage.getItem(REASONING_EFFORT_KEY) || 'low';
+let modelSwitchSchedule = null;
 const btnMicrophone = document.getElementById('btnMicrophone');
 const btnAccessToggle = document.getElementById('btnAccessToggle');
 
@@ -141,8 +142,45 @@ function normalizeUiReasoningEffort(value) {
   return reasoningEffortLevels.find(level => level.value === value)?.value || 'low';
 }
 
+function modelSwitchStatusText(schedule) {
+  if (!schedule) return '예약 없음';
+  if (schedule.state === 'scheduled') return `예약됨 · ${new Date(schedule.dueAt).toLocaleTimeString()}에 다음 요청부터 전환`;
+  if (schedule.state === 'applied') return '적용됨 · 이후 요청에도 목표 설정 사용';
+  if (schedule.state === 'blocked') return '목표 계정 또는 모델을 사용할 수 없음';
+  if (schedule.state === 'cancelled') return '예약 취소됨';
+  return '예약 상태 확인 필요';
+}
+
+function renderModelSwitchSchedule(schedule) {
+  modelSwitchSchedule = schedule || null;
+  const status = document.getElementById('modelSwitchStatus');
+  const cancel = document.getElementById('cancelModelSwitch');
+  if (status) status.textContent = modelSwitchStatusText(modelSwitchSchedule);
+  if (cancel) cancel.hidden = !modelSwitchSchedule || !['scheduled', 'applied'].includes(modelSwitchSchedule.state);
+}
+
+async function refreshModelSwitchSchedule() {
+  if (!currentSessionId) return;
+  try {
+    const result = await fetch(`/api/model-switch-schedule?sessionId=${encodeURIComponent(currentSessionId)}`).then(response => response.json());
+    renderModelSwitchSchedule(result.schedule);
+  } catch (_) { /* The feature remains optional when the local status route is unavailable. */ }
+}
+
+async function cancelModelSwitchSchedule(reason = 'manual-change') {
+  if (!currentSessionId || !modelSwitchSchedule || !['scheduled', 'applied'].includes(modelSwitchSchedule.state)) return;
+  try {
+    const result = await fetch('/api/model-switch-schedule', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: currentSessionId, reason })
+    }).then(response => response.json());
+    renderModelSwitchSchedule(result.schedule);
+  } catch (_) { /* The request boundary also detects manual model or effort changes. */ }
+}
+
 function selectReasoningEffort(value) {
+  const changed = selectedReasoningEffort !== normalizeUiReasoningEffort(value);
   selectedReasoningEffort = normalizeUiReasoningEffort(value);
+  if (changed) void cancelModelSwitchSchedule();
   const selectedIndex = reasoningEffortLevels.findIndex(level => level.value === selectedReasoningEffort);
   const selected = reasoningEffortLevels[selectedIndex];
   localStorage.setItem(REASONING_EFFORT_KEY, selected.value);
@@ -448,11 +486,29 @@ function setupEventListeners() {
     selectReasoningEffort('low');
   });
   effortSelectorPopup?.addEventListener('click', event => event.stopPropagation());
+  effortPillTrigger?.addEventListener('click', () => { void refreshModelSwitchSchedule(); });
+  document.getElementById('scheduleModelSwitch')?.addEventListener('click', async () => {
+    const targetModel = document.getElementById('modelSwitchTarget')?.value;
+    const status = document.getElementById('modelSwitchStatus');
+    if (!currentSessionId || !targetModel) { if (status) status.textContent = '먼저 계정 라우터에서 사용할 수 있는 목표 모델을 설정해 주세요.'; return; }
+    try {
+      const response = await fetch('/api/model-switch-schedule', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: currentSessionId, requestId: crypto.randomUUID(), currentModel: selectedModelId, currentEffort: selectedReasoningEffort,
+          targetModel, targetEffort: document.getElementById('modelSwitchEffort')?.value || 'low', durationMinutes: Number(document.getElementById('modelSwitchDelay')?.value || 5) })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `예약 실패 (${response.status})`);
+      renderModelSwitchSchedule(result.schedule);
+    } catch (error) { if (status) status.textContent = `예약 실패 · ${error.message}`; }
+  });
+  document.getElementById('cancelModelSwitch')?.addEventListener('click', () => { void cancelModelSwitchSchedule('user-cancelled'); });
 
   modelSelectorPopup.addEventListener('click', event => {
     const option = event.target.closest('.model-option');
     if (!option || !modelSelectorPopup.contains(option) || option.hidden || option.disabled) return;
     selectedModelId = option.dataset.model || 'auto';
+    void cancelModelSwitchSchedule();
     localStorage.setItem(MODEL_SELECTION_KEY, selectedModelId);
     modelSelectorPopup.classList.remove('open');
     modelPillTrigger.setAttribute('aria-expanded', 'false');
@@ -935,6 +991,16 @@ function syncAvailableModelOptions() {
     .filter(tier => tier.enabled !== false && typeof tier.model === 'string' && tier.model.trim() && tier.model.trim().toLowerCase() !== 'auto')
     .map(tier => tier.model.trim()))];
   const modelSignature = JSON.stringify(models.map(model => model.toLowerCase()));
+  const targetSelect = document.getElementById('modelSwitchTarget');
+  if (targetSelect && targetSelect.dataset.modelSignature !== modelSignature) {
+    const previousTarget = targetSelect.value;
+    targetSelect.replaceChildren(...models.map(model => {
+      const option = document.createElement('option'); option.value = model.toLowerCase(); option.textContent = displayPriorityModel(model); return option;
+    }));
+    if (models.some(model => model.toLowerCase() === previousTarget)) targetSelect.value = previousTarget;
+    else if (models.some(model => model.toLowerCase() === 'gpt-6-sol')) targetSelect.value = 'gpt-6-sol';
+    targetSelect.dataset.modelSignature = modelSignature;
+  }
   if (container.dataset.modelSignature !== modelSignature) {
     const focusedModel = container.contains(document.activeElement) ? document.activeElement?.dataset?.model : null;
     container.replaceChildren();
@@ -1809,6 +1875,7 @@ async function handleSend() {
     });
     if (!res.ok) {
       const error = await res.json().catch(() => ({}));
+      if (error.schedule) renderModelSwitchSchedule(error.schedule);
       throw new Error(error.error || `요청 실패 (${res.status})`);
     }
 
@@ -2262,9 +2329,21 @@ function handleStreamEvent(event, card) {
         && typeof event.sessionId === 'string' && /^ses_[a-f0-9]{16}$/.test(event.sessionId)) {
         currentSessionId = event.sessionId;
         currentCodexThreadId = null;
+        void refreshModelSwitchSchedule();
       }
       break;
     }
+    case 'model_switch_schedule_applied':
+      if (event.schedule?.targetModel) {
+        selectedModelId = event.schedule.targetModel;
+        selectedReasoningEffort = normalizeUiReasoningEffort(event.schedule.targetEffort);
+        localStorage.setItem(MODEL_SELECTION_KEY, selectedModelId);
+        localStorage.setItem(REASONING_EFFORT_KEY, selectedReasoningEffort);
+        renderActiveModelSelection();
+        selectReasoningEffort(selectedReasoningEffort);
+      }
+      renderModelSwitchSchedule(event.schedule);
+      break;
     case 'manager_delegated':
       watchDelegatedTasks(event.delegation, card);
       break;

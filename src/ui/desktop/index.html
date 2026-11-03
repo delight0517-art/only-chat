@@ -275,6 +275,14 @@
                   <button type="button" class="effort-level-button" data-effort-index="3" aria-pressed="false">Extra High</button>
                   <button type="button" class="effort-level-button" data-effort-index="4" aria-pressed="false">Max</button>
                 </div>
+                <details class="model-switch-schedule">
+                  <summary>모델 변경 예약</summary>
+                  <label>대기 시간 <select id="modelSwitchDelay"><option value="5">5분</option><option value="10">10분</option><option value="15">15분</option><option value="30">30분</option><option value="60">1시간</option></select></label>
+                  <label>목표 모델 <select id="modelSwitchTarget"></select></label>
+                  <label>추론 강도 <select id="modelSwitchEffort"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Very high</option><option value="max">Max</option></select></label>
+                  <div class="model-switch-actions"><button id="scheduleModelSwitch" type="button">예약</button><button id="cancelModelSwitch" type="button" hidden>취소</button></div>
+                  <span id="modelSwitchStatus" role="status" aria-live="polite">예약 없음</span>
+                </details>
               </div>
 
               <!-- Microphone Button -->
