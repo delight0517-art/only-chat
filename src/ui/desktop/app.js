@@ -33,6 +33,8 @@ let speechRecorder = null;
 let speechMediaStream = null;
 let speechChunks = [];
 let speechTranscribing = false;
+let speechTranscriptionRunning = false;
+let pendingSpeechMemoBlob = null;
 let speechDraftPrefix = null;
 let speechDraftSuffix = '';
 let fullAccessEnabled = false;
@@ -499,6 +501,7 @@ function setupEventListeners() {
     if (isRecording || speechTranscribing) return;
     document.getElementById('voiceMemoDialog')?.close();
   });
+  document.getElementById('btnVoiceMemoRetry')?.addEventListener('click', () => { void transcribeSpeechMemo(); });
   document.getElementById('btnVoiceMemoUse')?.addEventListener('click', () => {
     const transcript = document.getElementById('voiceMemoTranscript')?.value || '';
     if (!transcript.trim()) return;
@@ -515,9 +518,12 @@ function setupEventListeners() {
     const audio = document.getElementById('voiceMemoAudio');
     if (audio?.src.startsWith('blob:')) URL.revokeObjectURL(audio.src);
     if (audio) { audio.removeAttribute('src'); audio.hidden = true; }
+    pendingSpeechMemoBlob = null;
+    const retry = document.getElementById('btnVoiceMemoRetry');
+    if (retry) retry.hidden = true;
   });
   document.getElementById('voiceMemoTranscript')?.addEventListener('input', event => {
-    document.getElementById('btnVoiceMemoUse').disabled = !event.currentTarget.value.trim();
+    document.getElementById('btnVoiceMemoUse').disabled = !isUsableSpeechTranscript(event.currentTarget.value);
   });
 
   // Keyboard Shortcuts: Ctrl+, and Cmd+, to open Full-Stage Settings View (Ref User UI)
@@ -1353,6 +1359,10 @@ async function switchTier(tierId) {
 // ============================================================================
 
 function toggleSpeechInput() {
+  if (speechTranscribing) {
+    showMorphToast('음성 전사가 끝난 뒤 다시 녹음할 수 있습니다.');
+    return;
+  }
   if (isRecording) {
     stopSpeechMemo();
     return;
@@ -1373,9 +1383,11 @@ async function startSpeechMemo() {
       .find(type => MediaRecorder.isTypeSupported(type));
     speechRecorder = new MediaRecorder(speechMediaStream, mimeType ? { mimeType } : undefined);
     speechChunks = [];
+    pendingSpeechMemoBlob = null;
     const transcript = document.getElementById('voiceMemoTranscript');
     transcript.value = '';
     document.getElementById('btnVoiceMemoUse').disabled = true;
+    document.getElementById('btnVoiceMemoRetry').hidden = true;
     document.getElementById('voiceMemoAudio').hidden = true;
     if (!dialog.open) dialog.showModal();
     speechRecorder.addEventListener('dataavailable', event => { if (event.data?.size) speechChunks.push(event.data); });
@@ -1386,7 +1398,14 @@ async function startSpeechMemo() {
       speechMediaStream?.getTracks().forEach(track => track.stop());
       speechMediaStream = null;
       setSpeechRecording(false);
-      if (blob.size) void transcribeSpeechMemo(blob);
+      if (blob.size) {
+        pendingSpeechMemoBlob = blob;
+        const audio = document.getElementById('voiceMemoAudio');
+        if (audio.src.startsWith('blob:')) URL.revokeObjectURL(audio.src);
+        audio.src = URL.createObjectURL(blob);
+        audio.hidden = false;
+        void transcribeSpeechMemo(blob);
+      }
       else status.textContent = '녹음에 오디오가 없습니다.';
     }, { once: true });
     speechRecorder.start();
@@ -1410,13 +1429,23 @@ function stopSpeechMemo() {
   }
 }
 
-async function transcribeSpeechMemo(blob) {
+function isUsableSpeechTranscript(value) {
+  const text = String(value || '').trim();
+  return Boolean(text) && !/<\|[^|]{1,40}\|>/.test(text);
+}
+
+async function transcribeSpeechMemo(blob = pendingSpeechMemoBlob) {
+  if (speechTranscriptionRunning || !blob) return;
+  speechTranscriptionRunning = true;
   const status = document.getElementById('voiceMemoStatus');
   const audio = document.getElementById('voiceMemoAudio');
   const transcript = document.getElementById('voiceMemoTranscript');
   const useButton = document.getElementById('btnVoiceMemoUse');
+  const retryButton = document.getElementById('btnVoiceMemoRetry');
   speechTranscribing = true;
-  status.textContent = `로컬 Whisper AI가 전사 중입니다 · ${(blob.size / (1024 * 1024)).toFixed(1)} MB`;
+  useButton.disabled = true;
+  retryButton.hidden = true;
+  status.textContent = `로컬 Whisper AI가 전사 중입니다 · ${(blob.size / (1024 * 1024)).toFixed(1)} MB. 첫 사용은 모델 준비 때문에 몇 분 걸릴 수 있으며 녹음은 이 Mac에 남아 있습니다.`;
   try {
     if (blob.size > 20 * 1024 * 1024) throw new Error('녹음은 20 MB 이하로 나누어 주세요.');
     const dataUrl = await new Promise((resolve, reject) => {
@@ -1431,14 +1460,19 @@ async function transcribeSpeechMemo(blob) {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || `전사 실패 (${response.status})`);
-    transcript.value = String(result.transcript || '');
-    useButton.disabled = !transcript.value.trim();
-    audio.src = URL.createObjectURL(blob);
-    audio.hidden = false;
+    transcript.value = String(result.transcript || '').trim();
+    if (!isUsableSpeechTranscript(transcript.value)) {
+      status.textContent = '전사 결과가 비어 있거나 손상된 형식입니다. 녹음은 보존했습니다. 다시 전사하거나 내용을 직접 고쳐 주세요.';
+      retryButton.hidden = blob.size > 20 * 1024 * 1024;
+      return;
+    }
+    useButton.disabled = false;
     status.textContent = `${result.language || '언어 자동 감지'} · 전사 완료. 내용을 고친 뒤 분석 초안에 추가하세요. 녹음 파일은 임시 처리 후 삭제됩니다.`;
   } catch (error) {
     status.textContent = `전사하지 못했습니다: ${error.message}`;
+    retryButton.hidden = blob.size > 20 * 1024 * 1024;
   } finally {
+    speechTranscriptionRunning = false;
     speechTranscribing = false;
     composerInput.readOnly = false;
   }
