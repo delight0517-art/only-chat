@@ -293,6 +293,7 @@ function setupEventListeners() {
   railHistoryBtn?.addEventListener('click', () => focusSidebarSection(railHistoryBtn, sessionList?.closest('.sidebar-nav-group')));
   railSchedulesBtn?.addEventListener('click', () => { void openSchedules(); });
   document.getElementById('btnCloseSchedules')?.addEventListener('click', closeSchedules);
+  document.getElementById('btnCloseCodexReauth')?.addEventListener('click', () => document.getElementById('codexReauthDialog')?.close());
   document.getElementById('scheduleModal')?.addEventListener('click', event => {
     if (event.target.id === 'scheduleModal') closeSchedules();
   });
@@ -1183,11 +1184,126 @@ function renderDrawerTiers() {
       <div class="priority-account-model"><span>${isActive ? '다음 요청 모델' : '이 계정의 모델'}</span><strong>${escapeHtml(displayPriorityModel(tier.model))}</strong></div>
       <div class="priority-account-identity"><div class="priority-account-email"><span>로그인 이메일</span><strong>${escapeHtml(accountEmail)}</strong></div><div class="priority-account-id"><span>계정 ID</span><strong>${escapeHtml(accountId)}</strong></div></div>
       <div class="priority-account-ready ${readiness && !readiness.connected ? 'not-ready' : ''}">${escapeHtml(tierConnectionLabel(tier))}</div>
+      ${isCodex && readiness?.authenticationRequired ? `<div class="priority-account-auth-warning" role="status">${escapeHtml(readiness.message || 'Codex 로그인이 필요합니다.')}</div>` : ''}
       <div class="priority-account-quota">${escapeHtml(tierQuotaLabel(tier))}</div>
       ${tierQuotaCheckedLabel(tier) ? `<div class="priority-account-quota">${escapeHtml(tierQuotaCheckedLabel(tier))}</div>` : ''}
     `;
 
+    if (isCodex && readiness?.authenticationRequired) {
+      const reauthButton = document.createElement('button');
+      reauthButton.type = 'button';
+      reauthButton.className = 'codex-reauth-inline';
+      reauthButton.textContent = '이 계정 다시 로그인';
+      reauthButton.setAttribute('aria-label', `${accountEmail} Codex 계정 다시 로그인`);
+      reauthButton.addEventListener('click', () => openCodexReauth(tier.id));
+      card.appendChild(reauthButton);
+    }
+
     drawerTierList.appendChild(card);
+  }
+}
+
+function openCodexReauth(preselectedTierId = '') {
+  const dialog = document.getElementById('codexReauthDialog');
+  const list = document.getElementById('codexReauthAccounts');
+  if (!priorityStatus) {
+    void refreshPriorityStatus().then(() => openCodexReauth(preselectedTierId));
+    return;
+  }
+  const accounts = (priorityStatus?.tiers || []).filter(tier => String(tier.provider || '').toLowerCase() === 'codex');
+  if (!dialog || !list) return;
+  list.replaceChildren();
+  const ordered = [...accounts].sort((a, b) => (Number(a.tier) || 99) - (Number(b.tier) || 99));
+  for (const tier of ordered) {
+    const row = document.createElement('section');
+    row.className = 'codex-reauth-account';
+    const readiness = tier.providerReady || {};
+    const title = document.createElement('strong');
+    title.textContent = `${Number(tier.tier) || '?'}순위 · ${tier.email || '이메일 정보 없음'}`;
+    const detail = document.createElement('div');
+    detail.className = `codex-reauth-state ${readiness.connected ? 'connected' : 'required'}`;
+    detail.textContent = readiness.message || (readiness.connected ? '연결됨' : '다시 로그인해야 사용할 수 있습니다.');
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'codex-reauth-start';
+    action.textContent = readiness.connected ? '세션 갱신' : '다시 로그인';
+    action.disabled = !readiness.available || (preselectedTierId && preselectedTierId !== tier.id);
+    action.addEventListener('click', () => { void startCodexReauth(tier, row, action, detail); });
+    row.append(title, detail, action);
+    const progress = document.createElement('div');
+    progress.className = 'codex-reauth-progress';
+    progress.setAttribute('role', 'status');
+    progress.setAttribute('aria-live', 'polite');
+    row.appendChild(progress);
+    list.appendChild(row);
+  }
+  if (!ordered.length) {
+    const empty = document.createElement('p');
+    empty.textContent = '등록된 Codex 계정이 없습니다.';
+    list.appendChild(empty);
+  }
+  if (!dialog.open) dialog.showModal();
+}
+
+async function startCodexReauth(tier, row, button, stateLabel) {
+  const progress = row.querySelector('.codex-reauth-progress');
+  button.disabled = true;
+  progress.textContent = '기기 로그인 시작 중…';
+  try {
+    const response = await fetch('/api/codex/reauth', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tierId: tier.id })
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `재인증 시작 실패 (${response.status})`);
+    let state = result.status || { state: 'starting' };
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 10 * 60 * 1000 && ['starting', 'waiting'].includes(state.state)) {
+      renderCodexReauthProgress(progress, state);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const statusResponse = await fetch(`/api/codex/reauth/status?tierId=${encodeURIComponent(tier.id)}`, { cache: 'no-store' });
+      state = await statusResponse.json();
+      if (!statusResponse.ok) throw new Error(state.error || `로그인 상태 확인 실패 (${statusResponse.status})`);
+    }
+    renderCodexReauthProgress(progress, state);
+    stateLabel.textContent = state.message || state.state;
+    stateLabel.classList.toggle('connected', state.state === 'connected');
+    stateLabel.classList.toggle('required', state.state !== 'connected');
+    await refreshPriorityStatus();
+    if (state.state === 'connected') {
+      const updated = priorityStatus?.tiers?.find(item => item.id === tier.id);
+      stateLabel.textContent = updated?.providerReady?.message || state.message;
+      button.textContent = '연결됨';
+    } else button.disabled = false;
+  } catch (error) {
+    progress.textContent = error.message || 'Codex 재인증을 시작하지 못했습니다.';
+    button.disabled = false;
+  }
+}
+
+function renderCodexReauthProgress(container, status) {
+  container.replaceChildren();
+  const message = document.createElement('span');
+  message.textContent = status.message || 'Codex 인증을 기다리고 있습니다.';
+  container.appendChild(message);
+  if (status.userCode) {
+    const code = document.createElement('strong');
+    code.className = 'codex-reauth-code';
+    code.textContent = status.userCode;
+    container.appendChild(code);
+  }
+  if (status.verificationUrl) {
+    try {
+      const url = new URL(status.verificationUrl);
+      if (url.protocol === 'https:' && url.hostname === 'auth.openai.com') {
+        const link = document.createElement('a');
+        link.href = url.toString();
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = 'OpenAI 로그인 페이지 열기';
+        container.appendChild(link);
+      }
+    } catch (_) {}
   }
 }
 
@@ -1221,6 +1337,13 @@ async function switchTier(tierId) {
     renderDrawerTiers();
     showMorphToast(`수동 계정 선택 · ${activeTier?.email || activeTier?.name || tierId}`);
   } catch (err) {
+    const failedTier = priorityStatus?.tiers?.find(tier => tier.id === tierId);
+    if (String(failedTier?.provider || '').toLowerCase() === 'codex'
+      && /로그인|인증|unauthori[sz]ed|not logged in|authentication required/i.test(String(err.message || ''))) {
+      await refreshPriorityStatus();
+      openCodexReauth(tierId);
+      return;
+    }
     alert('티어 전환 실패: ' + err.message);
   }
 }
@@ -1963,7 +2086,7 @@ function handleStreamEvent(event, card) {
       };
       const nextSteps = {
         quota_rate_limit: '한도 상태를 확인한 뒤 다시 시도하거나 다른 연결 계정을 선택해 주세요.',
-        authentication: 'Only Chat에서 해당 계정의 연결 상태를 확인한 뒤 다시 시도해 주세요.',
+        authentication: '계정 인증이 풀렸습니다. 설정의 계정 목록에서 해당 Codex 계정을 선택하고 “다시 로그인”을 눌러 인증한 뒤 재시도해 주세요.',
         model_unavailable: '현재 연결된 계정에서 사용할 수 있는 모델을 선택해 주세요.',
         sandbox_permission_blocked: '작업공간 경로와 실행 권한을 확인하고, 필요한 권한만 승인해 주세요.',
         approval_required: '표시된 도구 승인 요청을 확인해 주세요.',
@@ -1978,6 +2101,18 @@ function handleStreamEvent(event, card) {
       const detail = category ? `실패 유형: ${category}${attempt ? ` · ${attempt}` : ''}\n${nextSteps[event.category]}` : '서버에서 안전한 오류 분류를 전달하지 않았습니다.';
       failure.textContent = `❌ AI 응답을 받지 못했습니다.\n${detail}\n응답이 없었으므로 작업이 완료된 것으로 간주하지 마세요.`;
       card.content.appendChild(failure);
+      if (event.category === 'authentication') {
+        const reauthButton = document.createElement('button');
+        reauthButton.type = 'button';
+        reauthButton.className = 'codex-reauth-inline';
+        reauthButton.textContent = 'Codex 계정 다시 로그인';
+        reauthButton.addEventListener('click', async () => {
+          await refreshPriorityStatus();
+          openCodexReauth();
+        });
+        card.content.appendChild(reauthButton);
+        void refreshPriorityStatus();
+      }
       timeline.scrollTop = timeline.scrollHeight;
       break;
     }
@@ -4474,6 +4609,10 @@ async function setAsRank(tierOrProviderId, rank) {
 
 function reauthProvider(providerId) {
   document.querySelectorAll('.kebab-popover').forEach(p => p.classList.remove('open'));
+  if (providerId === 'chatgpt' || providerId === 'codex') {
+    openCodexReauth();
+    return;
+  }
   alert('Codex CLI 계정은 Only Chat이 보관하거나 다시 인증하지 않습니다. 설치된 Codex CLI에서 계정 상태를 관리하세요.');
 }
 

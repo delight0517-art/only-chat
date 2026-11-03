@@ -1347,6 +1347,13 @@
       <button id="btnVoiceMemoUse" type="button" disabled>분석 초안에 추가</button>
     </div>
   </dialog>
+  <dialog class="codex-reauth-dialog" id="codexReauthDialog" aria-labelledby="codexReauthTitle" aria-describedby="codexReauthDescription">
+    <header class="codex-reauth-heading">
+      <div><h2 id="codexReauthTitle">Codex 계정 다시 로그인</h2><p id="codexReauthDescription">대상 계정을 선택해 기기 코드로 재인증합니다. 로그인은 선택한 계정의 Codex 프로필에서 진행되며, Only Chat은 비밀번호나 토큰을 저장하지 않습니다.</p></div>
+      <button class="btn-icon" id="btnCloseCodexReauth" type="button" aria-label="닫기">✕</button>
+    </header>
+    <div id="codexReauthAccounts" class="codex-reauth-accounts" aria-live="polite"></div>
+  </dialog>
 </body>
 </html>
 

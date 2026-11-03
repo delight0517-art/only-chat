@@ -2643,6 +2643,22 @@ body {
 .voice-memo-actions button { padding: 8px 14px; border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); background: var(--bg-card); cursor: pointer; }
 .voice-memo-actions button:last-child { border-color: var(--accent-orange); color: white; background: var(--accent-orange); }
 .voice-memo-actions button:disabled { opacity: .55; cursor: not-allowed; }
+.codex-reauth-dialog { width: min(520px, calc(100vw - 36px)); max-height: min(80vh, 720px); overflow: auto; padding: 22px; border: 1px solid var(--border-subtle); border-radius: 18px; color: var(--text-main); background: var(--bg-panel); box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+.codex-reauth-dialog::backdrop { background: rgba(8, 14, 12, .68); backdrop-filter: blur(4px); }
+.codex-reauth-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.codex-reauth-heading h2 { margin: 0 0 6px; font-size: 20px; color: var(--text-main); }
+.codex-reauth-heading p { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+.codex-reauth-accounts { display: grid; gap: 10px; }
+.codex-reauth-account { display: grid; gap: 9px; padding: 14px; border: 1px solid var(--border-subtle); border-radius: 12px; background: var(--bg-card); color: var(--text-main); }
+.codex-reauth-state { color: var(--text-muted); font-size: 13px; line-height: 1.45; }
+.codex-reauth-state.required, .priority-account-auth-warning { color: var(--warning-text, #b45309); }
+.codex-reauth-state.connected { color: var(--success-text, #15803d); }
+.codex-reauth-start, .codex-reauth-inline { justify-self: start; padding: 8px 12px; border: 1px solid var(--accent-orange); border-radius: 9px; color: #fff; background: var(--accent-orange); font: inherit; font-weight: 700; cursor: pointer; }
+.codex-reauth-start:disabled, .codex-reauth-inline:disabled { opacity: .55; cursor: wait; }
+.codex-reauth-progress { display: grid; gap: 8px; color: var(--text-muted); font-size: 13px; }
+.codex-reauth-progress a { width: fit-content; color: var(--link-color, #2563eb); font-weight: 700; }
+.codex-reauth-code { width: fit-content; padding: 8px 12px; border-radius: 8px; color: var(--text-main); background: var(--bg-input); font: 700 20px/1.3 var(--font-mono); letter-spacing: .1em; user-select: all; }
+.priority-account-auth-warning { font-size: 12px; line-height: 1.45; }
 .threef-control-setting { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:8px; padding:8px; border:1px solid var(--border-subtle); border-radius:8px; font-size:12px; }
 .threef-control-setting label { display:flex; align-items:center; gap:7px; cursor:pointer; }
 #threefControlEnabled { width:16px; height:16px; accent-color:var(--accent-orange); }

@@ -116,7 +116,16 @@ class DesktopServer {
       const codex = this.codexAdapter;
       engineOptions.providerAdapter = (tier, history, hooks, context) => {
         if (tier.provider === 'antigravity-cli') return antigravity.call(tier, history, hooks, context);
-        if (tier.provider === 'codex') return codex.call(tier, history, hooks, context);
+        if (tier.provider === 'codex') return codex.call(tier, history, hooks, context).then(result => {
+          codex.clearAuthenticationFailure(tier);
+          return result;
+        }, error => {
+          if (error?.category === 'authentication' || /unauthorized|not logged in|not authenticated|authentication required|login required|logged out|session expired|access token expired|\b401\b|invalid credential|로그인이 필요|인증이 만료|다시 로그인/i.test(String(error?.message || ''))) {
+            error.category = 'authentication';
+            codex.markAuthenticationFailure(tier, error.message);
+          }
+          throw error;
+        });
         throw new Error(`No local provider adapter is configured for '${tier.provider}'.`);
       };
     }
@@ -1628,6 +1637,45 @@ class DesktopServer {
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, account }));
+      return;
+    }
+
+    if (pathname === '/api/codex/reauth' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      if (typeof body.tierId !== 'string' || body.tierId.length > 128) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '재인증할 계정 ID가 올바르지 않습니다.' }));
+        return;
+      }
+      const tier = this.engine.priorityChain.chain.tiers.find(item => item.id === body.tierId && item.provider === 'codex');
+      if (!tier) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '해당 Codex 계정을 찾을 수 없습니다.' }));
+        return;
+      }
+      try {
+        const status = this.codexAdapter?.startReauthentication(tier);
+        if (!status) throw new Error('Codex 재인증을 사용할 수 없습니다.');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, status }));
+      } catch (error) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message || 'Codex 재인증을 시작하지 못했습니다.' }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/codex/reauth/status' && req.method === 'GET') {
+      const tierId = url.searchParams.get('tierId') || '';
+      const tier = this.engine.priorityChain.chain.tiers.find(item => item.id === tierId && item.provider === 'codex');
+      if (!tier) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '해당 Codex 계정을 찾을 수 없습니다.' }));
+        return;
+      }
+      const status = this.codexAdapter?.getLoginStatus(tier.id) || { state: 'unavailable' };
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(status));
       return;
     }
 

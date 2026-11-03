@@ -42,7 +42,7 @@ function failureMessage(text, tier, exitCode) {
   if (/\b429\b|rate.?limit|quota|resource.?exhausted/i.test(text)) {
     return `Codex 계정 ${tier.email}의 사용 한도에 도달했습니다.`;
   }
-  if (/unauthorized|not logged in|authentication required/i.test(text)) {
+  if (/unauthorized|not logged in|not authenticated|authentication required|login required|logged out|session expired|access token expired/i.test(text)) {
     return `Codex 계정 ${tier.email} 로그인이 필요합니다.`;
   }
   return `Codex ${tier.model || '요청'}이 실패했습니다 (종료 코드 ${exitCode}).`;
@@ -77,6 +77,8 @@ class CodexCliAdapter {
     this.macScreenBridge = null;
     this.spawn = options.spawn || spawn;
     this.timeoutMs = options.timeoutMs || 120_000;
+    this.loginAttempts = new Map();
+    this.authenticationFailures = new Map();
   }
 
   _accountProfile(tier) {
@@ -99,14 +101,131 @@ class CodexCliAdapter {
     const hasCli = fs.existsSync(this.command);
     const email = String(tier?.email || '').trim().toLowerCase();
     const profile = hasCli ? this._accountProfile(tier) : null;
+    const authenticationFailure = this.authenticationFailures.get(String(tier?.id || ''));
+    const connected = Boolean(profile) && !authenticationFailure;
     return {
       available: hasCli,
-      connected: Boolean(profile),
+      connected,
+      authenticationRequired: !connected,
       email,
       message: !hasCli ? 'Only Chat 전용 Codex CLI가 없습니다.'
+        : authenticationFailure ? 'Codex 인증이 만료되었거나 거부되었습니다. 이 계정에 다시 로그인해 주세요.'
         : profile ? 'Codex 로그인 계정과 등록 이메일이 일치합니다.'
           : `별도 Codex 로그인 필요 · ${email || '계정 이메일 미등록'}`
     };
+  }
+
+  markAuthenticationFailure(tier, message = '인증이 필요합니다.') {
+    const id = String(tier?.id || '');
+    if (!id) return;
+    this.authenticationFailures.set(id, String(message).slice(0, 500));
+  }
+
+  clearAuthenticationFailure(tier) {
+    this.authenticationFailures.delete(String(tier?.id || ''));
+  }
+
+  getLoginStatus(tierId) {
+    const attempt = this.loginAttempts.get(String(tierId || ''));
+    if (!attempt) return { state: 'idle' };
+    return {
+      state: attempt.state,
+      userCode: attempt.userCode || '',
+      verificationUrl: attempt.verificationUrl || '',
+      message: attempt.message || ''
+    };
+  }
+
+  startReauthentication(tier) {
+    const id = String(tier?.id || '');
+    if (!id || tier?.provider !== 'codex') throw new Error('재인증할 Codex 계정을 찾을 수 없습니다.');
+    const existing = this.loginAttempts.get(id);
+    if (existing?.active) return this.getLoginStatus(id);
+    if (!fs.existsSync(this.command)) throw new Error('Only Chat 전용 Codex CLI를 찾을 수 없습니다.');
+
+    const email = String(tier.email || '').trim().toLowerCase();
+    const matchingProfile = this._accountProfile(tier);
+    const profile = matchingProfile || path.join(this.profilesDir, id);
+    fs.mkdirSync(profile, { recursive: true, mode: 0o700 });
+    const attempt = { state: 'starting', active: true, userCode: '', verificationUrl: '', message: 'Codex 기기 로그인 시작 중입니다.' };
+    this.loginAttempts.set(id, attempt);
+
+    let child;
+    try {
+      const env = { ...process.env, CODEX_HOME: profile };
+      delete env.OPENAI_API_KEY;
+      delete env.CODEX_ACCESS_TOKEN;
+      delete env.OPENAI_FEDERATION_RULE_ID;
+      delete env.OPENAI_IDENTITY_TOKEN_FILE;
+      child = this.spawn(this.command, ['login', '--device-auth'], {
+        cwd: this.projectRoot,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+    } catch (_) {
+      attempt.active = false;
+      attempt.state = 'failed';
+      attempt.message = 'Codex 로그인 절차를 시작하지 못했습니다.';
+      return this.getLoginStatus(id);
+    }
+
+    attempt.outputTail = '';
+    const capture = chunk => {
+      attempt.outputTail = (attempt.outputTail + String(chunk || '')).slice(-4000);
+      const text = attempt.outputTail;
+      const code = text.match(/(?:enter|device|user)?\s*code\s*(?:is|:)?\s*([A-Z0-9]{4}-[A-Z0-9]{4})/i)?.[1]
+        || text.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/)?.[1];
+      const urlText = text.match(/https:\/\/auth\.openai\.com\/[A-Za-z0-9/_?=&.-]+/i)?.[0] || '';
+      if (code) attempt.userCode = code.toUpperCase();
+      if (urlText) {
+        try {
+          const parsed = new URL(urlText.replace(/[),.;]+$/, ''));
+          if (parsed.hostname === 'auth.openai.com') attempt.verificationUrl = parsed.toString();
+        } catch (_) {}
+      }
+      if (attempt.userCode || attempt.verificationUrl) {
+        attempt.state = 'waiting';
+        attempt.message = '로그인 페이지에서 기기 코드를 입력해 인증을 완료해 주세요.';
+      }
+    };
+    child.stdout?.on('data', capture);
+    child.stderr?.on('data', capture);
+    const timeout = setTimeout(() => {
+      if (attempt.state === 'waiting' || attempt.state === 'starting') {
+        attempt.state = 'expired';
+        attempt.message = '로그인 시간이 초과되었습니다. 다시 시작해 주세요.';
+        attempt.userCode = '';
+        attempt.verificationUrl = '';
+        child.kill?.('SIGTERM');
+      }
+    }, 10 * 60 * 1000);
+    timeout.unref?.();
+    child.once?.('error', () => {
+      clearTimeout(timeout);
+      attempt.active = false;
+      attempt.state = 'failed';
+      attempt.message = 'Codex 로그인 프로세스를 실행할 수 없습니다.';
+    });
+    child.once?.('close', code => {
+      clearTimeout(timeout);
+      attempt.active = false;
+      attempt.outputTail = '';
+      const actualEmail = profileEmail(profile);
+      if (code === 0 && actualEmail && (!email || actualEmail === email)) {
+        attempt.state = 'connected';
+        attempt.message = `Codex 계정 ${actualEmail} 인증이 완료되었습니다.`;
+        this.clearAuthenticationFailure(tier);
+      } else if (code === 0 && actualEmail && email && actualEmail !== email) {
+        attempt.state = 'wrong-account';
+        attempt.message = `다른 계정(${actualEmail})으로 로그인했습니다. ${email} 계정을 선택해 다시 인증해 주세요.`;
+      } else if (attempt.state !== 'expired') {
+        attempt.state = code === 0 ? 'failed' : 'cancelled';
+        attempt.message = code === 0 ? '로그인 계정을 확인하지 못했습니다.' : 'Codex 로그인이 완료되지 않았습니다.';
+      }
+      attempt.userCode = '';
+      attempt.verificationUrl = '';
+    });
+    return this.getLoginStatus(id);
   }
 
   async call(tier, history, hooks = {}, context = {}) {
