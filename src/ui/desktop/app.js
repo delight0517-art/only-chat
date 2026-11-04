@@ -3966,6 +3966,10 @@ async function handleBrowserAria() {
       body: JSON.stringify({})
     });
     const data = await res.json();
+    if (!res.ok || data.ok === false || data.blocked === true) {
+      consoleEl.textContent = `[3F Browser 오류 · 접근성 정보] ${data.ariaTree || data.error || `HTTP ${res.status}`}`;
+      return;
+    }
     consoleEl.textContent = `[3F Browser 페이지 접근성 정보]\n\n` + (data.ariaTree || data.error || '정보 없음');
   } catch (err) {
     consoleEl.textContent = `[오류]: ${err.message}`;

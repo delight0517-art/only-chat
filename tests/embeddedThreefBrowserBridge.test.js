@@ -23,6 +23,15 @@ async function main() {
   await bridge.history('back');
   assert.deepEqual(commands.filter(command => command.action !== 'status').map(command => command.action), ['navigate', 'aria', 'read', 'act', 'back']);
 
+  const blockedPage = new EmbeddedThreefBrowserBridge({
+    policy: { check: async () => ({ allowed: false, reason: 'blocked', rule: 'blocked.test' }) },
+    dispatch: async command => ({ available: true, url: command.url || 'https://blocked.test' })
+  });
+  const blockedAria = await blockedPage.getAriaTree();
+  assert.equal(blockedAria.ok, false);
+  assert.equal(blockedAria.blocked, true);
+  assert.match(blockedAria.ariaTree, /Focus Fence 차단: blocked\.test/);
+
   const offline = new EmbeddedThreefBrowserBridge({
     policy: { check: async () => ({ allowed: true }) },
     dispatch: async () => { throw new Error('panel disconnected'); }

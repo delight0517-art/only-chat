@@ -222,15 +222,15 @@ class ThreefBrowserBridge {
 
   async getAriaTree() {
     const page = await this._checkCurrentPage();
-    if (!page.ok) return { tabId: null, url: page.url || this.lastUrl, ariaTree: page.stderr, blocked: page.blocked === true };
+    if (!page.ok) return { ok: false, tabId: null, url: page.url || this.lastUrl, ariaTree: page.stderr, blocked: page.blocked === true };
     const result = await this._request('GET', '/v1/aria');
-    if (result.disabled) return { tabId: null, url: this.lastUrl, ariaTree: '3F Browser 제어가 꺼져 있습니다.' };
+    if (result.disabled) return { ok: false, tabId: null, url: this.lastUrl, ariaTree: '3F Browser 제어가 꺼져 있습니다.' };
     if (result.unavailable || result.status < 200 || result.status >= 300) {
-      return { tabId: null, url: this.lastUrl, ariaTree: result.data?.error || '3F Browser 제어 서비스에 연결할 수 없습니다.' };
+      return { ok: false, tabId: null, url: this.lastUrl, ariaTree: result.data?.error || '3F Browser 제어 서비스에 연결할 수 없습니다.' };
     }
     const verifiedPage = await this._verifyReturnedPage(result.data);
-    if (!verifiedPage.ok) return { tabId: null, url: verifiedPage.url || this.lastUrl, ariaTree: verifiedPage.stderr, blocked: verifiedPage.blocked === true };
-    return { tabId: '3f-browser', url: this.lastUrl, ariaTree: result.data.ariaTree || '' };
+    if (!verifiedPage.ok) return { ok: false, tabId: null, url: verifiedPage.url || this.lastUrl, ariaTree: verifiedPage.stderr, blocked: verifiedPage.blocked === true };
+    return { ok: true, tabId: '3f-browser', url: this.lastUrl, ariaTree: result.data.ariaTree || '' };
   }
   async readText() {
     const page = await this._checkCurrentPage();

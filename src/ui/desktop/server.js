@@ -1530,7 +1530,7 @@ class DesktopServer {
       const body = await this._readBody(req);
       try {
         const result = await this.engine.tools.browserAria(body.tabId);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.writeHead(result?.blocked ? 403 : result?.ok === false ? 502 : 200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (_) {
         res.writeHead(502, { 'Content-Type': 'application/json' });

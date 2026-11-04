@@ -56,7 +56,8 @@ class EmbeddedThreefBrowserBridge {
 
   async getAriaTree() {
     const result = await this._pageAction('aria');
-    return { tabId: 'only-chat-3f', url: this.lastUrl, ariaTree: result.text || result.error || '' };
+    const error = result.error || result.stderr || '';
+    return { ok: !error, blocked: String(error).startsWith('Focus Fence 차단:'), tabId: error ? null : 'only-chat-3f', url: this.lastUrl, ariaTree: result.text || error };
   }
 
   async readText() {

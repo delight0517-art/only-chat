@@ -90,7 +90,9 @@ async function main() {
   assert.equal(controlledNavigation.ok, true);
   assert.equal(opened, null, 'live control channel should navigate the 3F tab without another handoff');
   assert.equal((await controlled.getStatus()).controlAvailable, true);
-  assert.match((await controlled.getAriaTree()).ariaTree, /oc-agent-1/);
+  const controlledAria = await controlled.getAriaTree();
+  assert.equal(controlledAria.ok, true);
+  assert.match(controlledAria.ariaTree, /oc-agent-1/);
   assert.equal((await controlled.readText()).stdout, 'page content');
   assert.equal((await controlled.act('click [oc-agent-1]')).stdout, 'clicked');
   assert.equal((await controlled.history('back')).ok, true);
@@ -169,6 +171,7 @@ async function main() {
       : { ok: true, url: 'https://private.example/account', ariaTree: 'button [oc-agent-1] Secret' } })
   });
   const racedAriaResult = await racedAria.getAriaTree();
+  assert.equal(racedAriaResult.ok, false, 'blocked ARIA results are marked as errors for the UI');
   assert.equal(racedAriaResult.blocked, true, 'ARIA is withheld when its response URL differs into a blocked page');
   assert.equal(racedAriaResult.ariaTree.startsWith('Focus Fence 차단'), true);
 
