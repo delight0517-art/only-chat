@@ -1736,6 +1736,7 @@ class DesktopServer {
         available: true,
         scope: 'active_in_process_paths',
         repositoryWide: false,
+        readAt: new Date().toISOString(),
         locks
       };
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1745,7 +1746,9 @@ class DesktopServer {
       }, workspaceLease: {
         ...workspaceLease,
         scope: 'workspace_execution',
-        repositoryWide: true
+        workspaceWide: true,
+        repositoryWide: false,
+        readAt: new Date().toISOString()
       } }));
       return;
     }
