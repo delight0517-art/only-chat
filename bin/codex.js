@@ -172,6 +172,23 @@ function isEmbeddedThreefReadRequest(prompt) {
   return /\bembedded_3f_read\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:read|읽기|본문)|3F Browser.{0,32}(?:read|읽기|본문)/i.test(String(prompt || ''));
 }
 
+function isTaskRegistryListRequest(prompt) {
+  return /\btask_registry_list\b/i.test(String(prompt || ''));
+}
+
+function groundTaskRegistryListAnswer(results = []) {
+  const result = results.at(-1);
+  if (!Array.isArray(result)) return 'Only Chat task_registry_list 결과를 받지 못해 작업 큐를 확인하지 못했습니다.';
+  if (!result.length) return 'Only Chat task_registry_list 결과: 작업이 없습니다.';
+  return `Only Chat task_registry_list 실제 결과 (${result.length}개):\n${result.map(task => {
+    const id = String(task?.taskKey || task?.id || 'ID 없음');
+    const title = redactToolMessage(task?.title) || '제목 없음';
+    const status = redactToolMessage(task?.status) || '상태 없음';
+    const owner = task?.ownerChatId == null ? '미할당' : redactToolMessage(task.ownerChatId);
+    return `- ${id} | ${title} | ${status} | 담당자: ${owner || '확인 불가'}`;
+  }).join('\n')}`;
+}
+
 function groundEmbeddedThreefStatusAnswer(results = []) {
   const result = results.at(-1);
   if (!result || typeof result !== 'object' || result.error || result.blocked || result.isError) return null;
@@ -466,10 +483,12 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const todoEvidenceRequest = isTodoEvidenceRequest(prompt);
   const embeddedThreefStatusRequest = isEmbeddedThreefStatusRequest(prompt);
   const embeddedThreefReadRequest = isEmbeddedThreefReadRequest(prompt);
-  const evidenceGroundedRequest = todoEvidenceRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest;
+  const taskRegistryListRequest = isTaskRegistryListRequest(prompt);
+  const evidenceGroundedRequest = todoEvidenceRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || taskRegistryListRequest;
   const readFileResults = [];
   const embeddedThreefStatusResults = [];
   const embeddedThreefReadResults = [];
+  const taskRegistryListResults = [];
   try {
     while (true) {
       const { value, done } = await reader.read();
@@ -525,6 +544,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           if (!failed && call?.name === 'read_file') readFileResults.push(result);
           if (!failed && call?.name === 'embedded_3f_status') embeddedThreefStatusResults.push(result);
           if (call?.name === 'embedded_3f_read') embeddedThreefReadResults.push(result);
+          if (call?.name === 'task_registry_list') taskRegistryListResults.push(result);
           write(`[도구 ${failed ? '실패' : '완료'}: ${tool}${detail ? ` · ${detail}` : ''}]\n`);
         }
         if (event.type === 'tool_approval_required') {
@@ -570,6 +590,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
       ? groundTodoSectionAnswer(prompt, responseText, readFileResults)
         ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
         ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
+        ?? (taskRegistryListRequest ? groundTaskRegistryListAnswer(taskRegistryListResults) : null)
         ?? groundTodoStatusAnswer(prompt, responseText, readFileResults)
       : responseText;
     if (recoveredResponse !== responseText && completed === false) {
@@ -582,6 +603,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const groundedResponse = groundTodoSectionAnswer(prompt, responseText, readFileResults)
     ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
     ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
+    ?? (taskRegistryListRequest ? groundTaskRegistryListAnswer(taskRegistryListResults) : null)
     ?? groundTodoStatusAnswer(prompt, responseText, readFileResults);
   if (evidenceGroundedRequest && groundedResponse !== responseText && completed) write(groundedResponse);
   else if (evidenceGroundedRequest && completed && responseText.trim()) write(responseText);

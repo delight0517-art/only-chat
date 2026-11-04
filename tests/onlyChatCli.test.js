@@ -517,6 +517,25 @@ async function main() {
   assert.match(failedEmbeddedReadTurn.response, /embedded_3f_read 실패: Focus Fence policy is unavailable/);
   assert.doesNotMatch(failedEmbeddedReadTurn.response, /read worked/);
 
+  const registryListOutput = [];
+  const registryListTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_task_registry_list_grounding',
+    prompt: 'Call task_registry_list and report exact task IDs, titles, statuses, and owners.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'registry-list', name: 'task_registry_list' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'registry-list', name: 'task_registry_list' }, result: [{ taskKey: 'onlychat-goal-1', title: 'Only Chat goal', status: 'blocked', ownerChatId: null, blocker: 'private blocker', repositoryPath: '/private/path' }] } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '{"name":"task_registry_list","arguments":{"limit":10}}' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '</tool_call>' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => registryListOutput.push(text)
+  });
+  assert.equal(registryListTurn.ok, true);
+  assert.equal(registryListTurn.recoveredFrom, 'invalid_provider_output');
+  assert.match(registryListTurn.response, /onlychat-goal-1 \| Only Chat goal \| blocked \| 담당자: 미할당/);
+  assert.doesNotMatch(registryListTurn.response, /private blocker|\/private\/path/);
+  assert.doesNotMatch(registryListOutput.join(''), /private blocker|\/private\/path/);
+
   now = 1_000;
   const interruptedGoalRequests = [];
   const interruptedGoal = await runOnlyChatGoal({
