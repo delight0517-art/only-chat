@@ -21,6 +21,7 @@ const { InstalledAppCatalog } = require('../../morph/ReaAppBridge.js');
 const { NativeSessionBridge } = require('../../core/NativeSessionBridge.js');
 const { ThreefBrowserBridge } = require('../../browser/ThreefBrowserBridge.js');
 const { EmbeddedThreefBrowserBridge } = require('../../browser/EmbeddedThreefBrowserBridge.js');
+const { TOOLS: EMBEDDED_THREEF_MCP_TOOLS, handleEmbeddedThreefMcpMessage } = require('../../features/provider/embeddedThreefMcp.js');
 const { ThreefBrowserControlSettings } = require('../../browser/ThreefBrowserControlSettings.js');
 const { MacScreenControlSettings } = require('../../browser/MacScreenControlSettings.js');
 const { FocusFencePolicy } = require('../../browser/FocusFencePolicy.js');
@@ -137,6 +138,7 @@ class DesktopServer {
     this.browserCommands = [];
     this.browserCommandWaiters = [];
     this.browserCommandSequence = 0;
+    this.embeddedThreefMcpSessions = new Map();
     // AI browser tools always target the standalone 3F Browser control API.
     // The embedded panel transport remains separate and must not masquerade as 3F app control.
     engineOptions.browser = this.isolated ? null : this.threefBridge;
@@ -372,6 +374,40 @@ class DesktopServer {
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    if (pathname === '/api/mcp/embedded-3f' && req.method === 'POST') {
+      const authorization = String(req.headers.authorization || '');
+      const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+      const context = this.embeddedThreefMcpSessions.get(token);
+      if (!context || context.expiresAt < Date.now() || context.sessionId !== this.engine.currentSession?.sessionId) {
+        return this._respondJson(res, { error: 'embedded_3f_mcp_session_expired' }, 401);
+      }
+      if (context.mcpSessionId && req.headers['mcp-session-id'] !== context.mcpSessionId) {
+        return this._respondJson(res, { error: 'invalid_mcp_session' }, 404);
+      }
+      const message = await this._readLimitedBody(req, 1024 * 1024);
+      if (!message || typeof message !== 'object' || Array.isArray(message)) return this._respondJson(res, { error: 'invalid_mcp_request' }, 400);
+      if (message.method?.startsWith('notifications/')) {
+        res.writeHead(202, { 'Cache-Control': 'no-store' });
+        res.end();
+        return;
+      }
+      const response = await handleEmbeddedThreefMcpMessage(this, context, message);
+      if (!response) {
+        res.writeHead(202, { 'Cache-Control': 'no-store' });
+        res.end();
+        return;
+      }
+      const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+      if (message.method === 'initialize') {
+        context.mcpSessionId = crypto.randomUUID();
+        headers['Mcp-Session-Id'] = context.mcpSessionId;
+        headers['Mcp-Protocol-Version'] = context.protocolVersion;
+      }
+      res.writeHead(200, headers);
+      res.end(JSON.stringify(response));
       return;
     }
 
@@ -1945,6 +1981,22 @@ class DesktopServer {
         });
       });
 
+      const embeddedThreefMcpToken = this.embeddedBrowserPanel && this.isThreefControlEnabled()
+        ? crypto.randomBytes(32).toString('hex') : '';
+      const embeddedThreefMcp = embeddedThreefMcpToken ? {
+        url: `http://127.0.0.1:${this.port}/api/mcp/embedded-3f`,
+        token: embeddedThreefMcpToken,
+        serverPath: process.resourcesPath
+          ? path.join(process.resourcesPath, 'onlychat-embedded-3f-mcp.py')
+          : path.resolve(__dirname, '../../../bin/onlychat-embedded-3f-mcp.py'),
+        pythonPath: '/usr/bin/python3'
+      } : null;
+      if (embeddedThreefMcpToken) this.embeddedThreefMcpSessions.set(embeddedThreefMcpToken, {
+        sessionId: turnSessionId,
+        requestToolApproval,
+        expiresAt: Date.now() + 10 * 60 * 1000
+      });
+
       try {
         if (overrideTierId) {
           this.engine.priorityChain.resolveActiveTier(overrideTierId);
@@ -1958,6 +2010,7 @@ class DesktopServer {
           managerSystemMessage,
           managerExecutionAllowed,
           requestToolApproval,
+          embeddedThreefMcp,
           onTierResolved: tier => sendSse({ type: 'tier_resolved', tier }),
           onReasoningDelta: delta => sendSse({ type: 'reasoning_delta', delta }),
           onMessageDelta: delta => sendSse({ type: 'message_delta', delta }),
@@ -1996,6 +2049,7 @@ class DesktopServer {
         sendSse(event);
         res.end();
       } finally {
+        if (embeddedThreefMcpToken) this.embeddedThreefMcpSessions.delete(embeddedThreefMcpToken);
         this.activeTurns = Math.max(0, this.activeTurns - 1);
         void this.engine.dispatcher.tick();
       }

@@ -6,6 +6,20 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { parseReasoningEffort } = require('../core/ReasoningEffort.js');
 const { withResponseGuidance } = require('./responseGuidance.js');
+const { TOOLS: EMBEDDED_THREEF_TOOLS } = require('../features/provider/embeddedThreefMcp.js');
+
+function embeddedThreefSettings(bridge) {
+  if (!bridge || typeof bridge.url !== 'string' || typeof bridge.serverPath !== 'string') return null;
+  return JSON.stringify({ mcpServers: {
+    'onlychat-3f': {
+      command: bridge.pythonPath || '/usr/bin/python3',
+      args: [bridge.serverPath],
+      env: { ONLYCHAT_MCP_URL: '$ONLYCHAT_MCP_URL', ONLYCHAT_MCP_TOKEN: '$ONLYCHAT_MCP_TOKEN' },
+      trust: true,
+      includeTools: EMBEDDED_THREEF_TOOLS.map(tool => tool.name)
+    }
+  } });
+}
 
 function formatHistory(history = []) {
   const transcript = history.map(item => {
@@ -139,11 +153,18 @@ class AntigravityCliAdapter {
     const resolvedModel = resolveModelEffort(tier?.model, reasoningEffort);
     if (resolvedModel.model) args.push('--model', resolvedModel.model);
     if (resolvedModel.passEffort) args.push('--effort', reasoningEffort);
+    const embeddedSettings = embeddedThreefSettings(context.embeddedThreefMcp);
+    const extraEnv = {};
+    if (embeddedSettings) {
+      args.push('--settings', embeddedSettings);
+      extraEnv.ONLYCHAT_MCP_URL = context.embeddedThreefMcp.url;
+      extraEnv.ONLYCHAT_MCP_TOKEN = context.embeddedThreefMcp.token;
+    }
     if (saved?.provider === 'antigravity-cli' && saved.model === (tier?.model || '')) {
       args.push('--conversation', saved.conversationId);
     }
 
-    const result = await this._run(args, context.workspaceDir, hooks);
+    const result = await this._run(args, context.workspaceDir, hooks, extraEnv);
     if (result.conversationId && sessionId) {
       this.conversations[sessionId] = {
         provider: 'antigravity-cli',
@@ -155,11 +176,11 @@ class AntigravityCliAdapter {
     return { content: result.response, toolCalls: [] };
   }
 
-  _run(args, cwd, hooks) {
+  _run(args, cwd, hooks, extraEnv = {}) {
     return new Promise((resolve, reject) => {
       let child;
       try {
-        child = this.spawn(this.command, args, { cwd: cwd || process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+        child = this.spawn(this.command, args, { cwd: cwd || process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...extraEnv } });
       } catch (error) {
         reject(error);
         return;
@@ -270,4 +291,4 @@ class AntigravityCliAdapter {
   }
 }
 
-module.exports = { AntigravityCliAdapter, formatHistory, parseUsageForTier, resolveModelEffort };
+module.exports = { AntigravityCliAdapter, formatHistory, parseUsageForTier, resolveModelEffort, embeddedThreefSettings };

@@ -3,12 +3,12 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
-const { AntigravityCliAdapter, formatHistory } = require('../src/providers/AntigravityCliAdapter.js');
+const { AntigravityCliAdapter, formatHistory, embeddedThreefSettings } = require('../src/providers/AntigravityCliAdapter.js');
 const { withResponseGuidance } = require('../src/providers/responseGuidance.js');
 
 function fakeSpawn(results, launches) {
   return (command, args, options) => {
-    launches.push({ command, args, cwd: options.cwd });
+    launches.push({ command, args, cwd: options.cwd, env: options.env });
     const child = new EventEmitter();
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
@@ -42,6 +42,7 @@ async function main() {
     { value: { status: 'SUCCESS', response: 'Hello', conversation_id: 'agy-conv-1' } },
     { value: { status: 'SUCCESS', response: 'Follow up', conversation_id: 'agy-conv-1' } },
     { value: { status: 'SUCCESS', response: 'Effort matched', conversation_id: 'agy-conv-2' } },
+    { value: { status: 'SUCCESS', response: 'MCP configured', conversation_id: 'agy-conv-3' } },
     { value: { status: 'ERROR', response: '', error: 'authentication required' }, code: 1 }
   ];
   try {
@@ -84,12 +85,31 @@ async function main() {
     assert.equal(launches[2].args[launches[2].args.indexOf('--model') + 1], 'gemini-3.8-flash-low');
     assert.equal(launches[2].args.includes('--effort'), false,
       'models with an effort suffix must use the matching model variant without a conflicting --effort flag');
+    const bridge = { url: 'http://127.0.0.1:8899/api/mcp/embedded-3f', token: 'turn-secret', serverPath: '/app/onlychat-embedded-3f-mcp.py' };
+    const mcpTurn = await adapter.call(tier, [{ role: 'user', content: 'inspect 3F' }], {}, {
+      sessionId: 'session-d', reasoningEffort: 'low', embeddedThreefMcp: bridge
+    });
+    assert.equal(mcpTurn.content, 'MCP configured');
+    const settingsArg = launches[3].args[launches[3].args.indexOf('--settings') + 1];
+    const mcpSettings = JSON.parse(settingsArg);
+    assert.equal(mcpSettings.mcpServers['onlychat-3f'].httpUrl, undefined);
+    assert.equal(mcpSettings.mcpServers['onlychat-3f'].command, '/usr/bin/python3');
+    assert.equal(mcpSettings.mcpServers['onlychat-3f'].args[0], bridge.serverPath);
+    assert.deepEqual(mcpSettings.mcpServers['onlychat-3f'].includeTools, [
+      'embedded_3f_status', 'embedded_3f_navigate', 'embedded_3f_read', 'embedded_3f_aria', 'embedded_3f_act', 'embedded_3f_history'
+    ]);
+    assert.equal(mcpSettings.mcpServers['onlychat-3f'].trust, true,
+      'the app MCP is trusted only because mutation approval is enforced by the authenticated Only Chat endpoint');
+    assert.doesNotMatch(settingsArg, /turn-secret/, 'the per-turn capability must not be placed on the process command line');
+    assert.equal(launches[3].env.ONLYCHAT_MCP_TOKEN, 'turn-secret');
+    assert.equal(launches[3].env.ONLYCHAT_MCP_URL, bridge.url);
+    assert.equal(embeddedThreefSettings(null), null, 'turns without an active 3F panel must not receive embedded 3F tools');
     await assert.rejects(adapter.call(
       { provider: 'antigravity-cli', model: 'gpt-oss-120b-medium' },
       [{ role: 'user', content: 'unsupported' }], {},
       { sessionId: 'session-c', reasoningEffort: 'high' }
     ), /does not support the high reasoning level/);
-    assert.equal(launches.length, 3, 'unsupported model/effort pairs must fail before launching the CLI');
+    assert.equal(launches.length, 4, 'unsupported model/effort pairs must fail before launching the CLI');
 
     await assert.rejects(adapter.call(tier, [{ role: 'user', content: 'again' }]), /authentication required/);
   } finally {

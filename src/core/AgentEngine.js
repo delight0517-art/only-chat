@@ -718,6 +718,7 @@ class AgentEngine {
           reasoningEffort,
           approvalPolicy: this.tools.approvalPolicy,
           fullAccess: callbacks.fullAccess === true,
+          embeddedThreefMcp: callbacks.embeddedThreefMcp || null,
           requestWorkspaceWriteApproval: request => this._requestToolApproval({
             name: 'codex_cli_workspace_write_scope',
             args: { directory: request.directory, reason: request.reason },
@@ -1138,6 +1139,7 @@ class AgentEngine {
       reasoningEffort,
       approvalPolicy: options.approvalPolicy,
       fullAccess: options.fullAccess === true,
+      embeddedThreefMcp: options.embeddedThreefMcp || null,
       requestWorkspaceWriteApproval: options.requestWorkspaceWriteApproval
     });
   }
