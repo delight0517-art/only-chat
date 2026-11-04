@@ -29,6 +29,8 @@ async function main() {
     assert.match(desktopHtml, /<label for="threefControlEnabled"><input id="threefControlEnabled" type="checkbox"/);
     assert.match(desktopHtml, /id="btnThreefRefresh"/);
     assert.match(desktopApp, /function setThreefControlUi\(enabled\)/);
+    assert.match(desktopApp, /btnToggleBrowser\?\.addEventListener\('click', \(\) => \{[\s\S]*?if \(opening\) void refreshThreefControlStatus\(\);/,
+      'opening the 3F panel refreshes connection state instead of leaving a stale unavailable banner');
     const navBrowser = desktopApp.match(/async function navBrowser\(url\) \{[\s\S]*?\n\}/)?.[0];
     assert.ok(navBrowser, 'navigation action stays in one auditable function');
     assert.match(navBrowser, /postNativeBrowserPanelAction\('navigate'/,

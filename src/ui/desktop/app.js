@@ -684,7 +684,11 @@ function setupEventListeners() {
   btnCloseMorph.addEventListener('click', () => setExclusiveDrawerOpen(drawerMorph, false));
 
   // Built-in Browser drawer
-  btnToggleBrowser?.addEventListener('click', () => setExclusiveDrawerOpen(drawerBrowser, !drawerBrowser.classList.contains('open')));
+  btnToggleBrowser?.addEventListener('click', () => {
+    const opening = !drawerBrowser.classList.contains('open');
+    setExclusiveDrawerOpen(drawerBrowser, opening);
+    if (opening) void refreshThreefControlStatus();
+  });
   btnCloseBrowser.addEventListener('click', () => setExclusiveDrawerOpen(drawerBrowser, false));
   document.getElementById('btnBrowserNav').addEventListener('click', () => {
     const url = document.getElementById('browserUrlInput').value.trim();
