@@ -610,7 +610,7 @@ class DesktopServer {
         try {
           const result = operation === 'messages'
             ? await this.taskRegistryStore.sendMessage({ taskKey, senderChatId: body.senderChatId, recipientChatId: body.recipientChatId,
-              text: body.text, idempotencyKey: body.idempotencyKey })
+              recipientHostId: body.recipientHostId, text: body.text, idempotencyKey: body.idempotencyKey })
             : await this.taskRegistryStore.sendMessage({ taskKey, senderChatId: body.senderChatId, type: 'ack',
               inReplyToMessageId: body.messageId, text: body.text, idempotencyKey: body.idempotencyKey });
           return this._respondJson(res, result, result.sent ? 200 : 404);
