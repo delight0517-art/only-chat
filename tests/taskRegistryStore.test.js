@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const { execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -493,6 +494,62 @@ test('host-qualified mailbox visibility and ACK reject a reused chat ID from ano
     fs.writeFileSync(unrelated.filePath, JSON.stringify({ schemaVersion: 1, tasks: [store.getTask('hosted-mail-task')],
       idempotency: [], messages: [sent.message], verificationCache: [] }), { mode: 0o600 });
     assert.equal(unrelated.listMessages({ taskKey: 'hosted-mail-task', viewerChatId: 'same-chat-id' }).length, 0);
+  });
+});
+
+test('exports repository-free conversation tasks and imports a remote shell idempotently', async () => {
+  await withFixture(async ({ root, repo, dataDir, store }) => {
+    await store.createTask(taskInput(repo, { taskKey: 'shared-conversation', idempotencyKey: 'create-shared-conversation' }));
+    const envelope = store.exportConversationTask('shared-conversation');
+    assert.deepEqual(Object.keys(envelope).sort(), ['createdAt', 'creatorChatId', 'schemaVersion', 'sourceHostId', 'taskKey', 'title']);
+    assert.doesNotMatch(JSON.stringify(envelope), /repositoryPath|baseSha|paths/);
+
+    const remote = new TaskRegistryStore({ dataDir: path.join(root, 'remote-conversation') });
+    const imported = await remote.importConversationTask(envelope);
+    assert.equal(imported.imported, true);
+    assert.equal(imported.task.conversationOnly, true);
+    assert.equal(imported.task.repositoryPath, null);
+    assert.equal(imported.task.baseSha, null);
+    assert.deepEqual(imported.task.paths, []);
+    assert.equal((await remote.importConversationTask(envelope)).replayed, true);
+
+    const claim = await remote.claimTask({ taskKey: envelope.taskKey, ownerChatId: 'remote-chat', idempotencyKey: 'claim-remote-conversation' });
+    assert.equal(claim.accepted, false);
+    assert.equal(claim.reason, 'conversation_only');
+    const reopened = new TaskRegistryStore({ dataDir: remote.dataDir });
+    assert.equal(reopened.getTask(envelope.taskKey).repositoryPath, null);
+    assert.equal(store.exportConversationTask(envelope.taskKey).sourceHostId, store.hostId);
+  });
+});
+
+test('imports remote messages by recipient host, deduplicates, and verifies durable ACK round trips', async () => {
+  await withFixture(async ({ root, repo, dataDir, store }) => {
+    await store.createTask(taskInput(repo, { taskKey: 'remote-mailbox', idempotencyKey: 'create-remote-mailbox' }));
+    const envelope = store.exportConversationTask('remote-mailbox');
+    const receiverDataDir = path.join(root, 'receiver');
+    const receiver = new TaskRegistryStore({ dataDir: receiverDataDir });
+    await receiver.importConversationTask(envelope);
+    const sent = await store.sendMessage({ taskKey: envelope.taskKey, senderChatId: 'mac-chat', recipientChatId: 'windows-chat',
+      recipientHostId: receiver.hostId, text: 'Task-scoped Mac message.', idempotencyKey: 'mac-message-1' });
+
+    assert.equal((await receiver.importRemoteMessage(sent.message)).imported, true);
+    assert.equal((await receiver.importRemoteMessage(sent.message)).replayed, true);
+    await assert.rejects(() => receiver.importRemoteMessage({ ...sent.message, text: 'Changed content under same ID.' }), /ID was reused/);
+    const unrelated = new TaskRegistryStore({ dataDir: path.join(root, 'unrelated') });
+    await unrelated.importConversationTask(envelope);
+    await assert.rejects(() => unrelated.importRemoteMessage(sent.message), /not addressed to this host/);
+
+    const ack = await receiver.sendMessage({ taskKey: envelope.taskKey, senderChatId: 'windows-chat', type: 'ack',
+      inReplyToMessageId: sent.message.messageId, text: 'Received on Windows.', idempotencyKey: 'windows-ack-1' });
+    assert.equal((await store.importRemoteMessage(ack.message)).imported, true);
+    assert.equal((await store.importRemoteMessage(ack.message)).replayed, true);
+    await assert.rejects(() => store.importRemoteMessage({ ...ack.message, messageId: crypto.randomUUID(), senderHostId: unrelated.hostId }), /does not match/);
+
+    const reopenedSender = new TaskRegistryStore({ dataDir });
+    const reopenedReceiver = new TaskRegistryStore({ dataDir: receiverDataDir });
+    assert.equal(reopenedSender.listMessages({ taskKey: envelope.taskKey, viewerChatId: 'mac-chat' }).length, 2);
+    assert.equal(reopenedReceiver.listMessages({ taskKey: envelope.taskKey, viewerChatId: 'windows-chat' }).length, 2);
+    assert.equal(reopenedSender.listMessages({ taskKey: envelope.taskKey, viewerChatId: 'other-chat' }).length, 0);
   });
 });
 

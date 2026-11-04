@@ -207,6 +207,62 @@ function operationHash(operation, input) {
   return crypto.createHash('sha256').update(`${operation}\0${JSON.stringify(input)}`).digest('hex');
 }
 
+function normalizeConversationTaskEnvelope(input) {
+  const allowed = new Set(['schemaVersion', 'taskKey', 'title', 'creatorChatId', 'sourceHostId', 'createdAt']);
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || Object.keys(input).some(key => !allowed.has(key)) || input.schemaVersion !== 1) {
+    throw new TypeError('remote conversation task envelope is invalid');
+  }
+  const envelope = {
+    schemaVersion: 1,
+    taskKey: printableString(input.taskKey, 'taskKey', 128),
+    title: printableString(input.title, 'title', 120),
+    creatorChatId: printableString(input.creatorChatId, 'creatorChatId', 256),
+    sourceHostId: printableString(input.sourceHostId, 'sourceHostId', 36),
+    createdAt: printableString(input.createdAt, 'createdAt', 40)
+  };
+  if (!TASK_KEY.test(envelope.taskKey)) throw new TypeError('taskKey must be a stable alphanumeric key');
+  if (!HOST_ID.test(envelope.sourceHostId)) throw new TypeError('sourceHostId must be a UUID v4 host identity');
+  if (!Number.isFinite(Date.parse(envelope.createdAt))) throw new TypeError('createdAt must be a valid timestamp');
+  return envelope;
+}
+
+function normalizeRemoteMessageEnvelope(input, localHostId) {
+  const allowed = new Set(['messageId', 'taskKey', 'senderChatId', 'senderHostId', 'recipientChatId',
+    'recipientHostId', 'type', 'text', 'inReplyToMessageId', 'createdAt']);
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || Object.keys(input).some(key => !allowed.has(key))) {
+    throw new TypeError('remote task message envelope is invalid');
+  }
+  const message = {
+    messageId: printableString(input.messageId, 'messageId', 36),
+    taskKey: printableString(input.taskKey, 'taskKey', 128),
+    senderChatId: printableString(input.senderChatId, 'senderChatId', 256),
+    senderHostId: printableString(input.senderHostId, 'senderHostId', 36),
+    recipientChatId: input.recipientChatId == null ? null : printableString(input.recipientChatId, 'recipientChatId', 256),
+    recipientHostId: printableString(input.recipientHostId, 'recipientHostId', 36),
+    type: input.type,
+    text: printableString(input.text, 'text', MAX_MESSAGE_LENGTH),
+    inReplyToMessageId: input.inReplyToMessageId == null ? null : printableString(input.inReplyToMessageId, 'inReplyToMessageId', 36),
+    createdAt: printableString(input.createdAt, 'createdAt', 40)
+  };
+  if (!HOST_ID.test(message.messageId) || !TASK_KEY.test(message.taskKey)
+    || !HOST_ID.test(message.senderHostId) || !HOST_ID.test(message.recipientHostId)
+    || message.senderHostId === localHostId || message.recipientHostId !== localHostId
+    || !['message', 'ack'].includes(message.type)
+    || !Number.isFinite(Date.parse(message.createdAt))) {
+    throw new TypeError('remote task message is not addressed to this host');
+  }
+  if (message.type === 'message' && message.inReplyToMessageId !== null) {
+    throw new TypeError('remote message cannot contain an ACK reference');
+  }
+  if (message.type === 'ack' && (!message.inReplyToMessageId || !HOST_ID.test(message.inReplyToMessageId)
+    || !message.recipientChatId)) {
+    throw new TypeError('remote ACK must reference a message and recipient chat');
+  }
+  return message;
+}
+
 class TaskRegistryStore {
   constructor(options = {}) {
     if (!options.dataDir) throw new TypeError('dataDir is required');
@@ -318,10 +374,19 @@ class TaskRegistryStore {
     }
     const taskKeys = new Set();
     for (const task of document.tasks) {
+      const conversationOnly = task?.conversationOnly === true;
       if (!task || typeof task.taskKey !== 'string' || !TASK_KEY.test(task.taskKey)
         || taskKeys.has(task.taskKey) || !TASK_STATUSES.has(task.status)
         || !Number.isSafeInteger(task.revision) || task.revision < 1
-        || !Array.isArray(task.paths) || typeof task.repositoryPath !== 'string') {
+        || !Array.isArray(task.paths)
+        || (conversationOnly
+          ? task.repositoryPath !== null || task.baseSha !== null || task.paths.length !== 0
+            || !HOST_ID.test(task.sourceHostId || '') || task.execution !== undefined || task.executionProgress !== undefined
+            || task.status !== 'planned' || task.ownerChatId !== null || task.leaseExpiresAt !== null
+            || typeof task.title !== 'string' || !task.title.trim() || task.title.length > 120
+            || typeof task.creatorChatId !== 'string' || !task.creatorChatId.trim() || task.creatorChatId.length > 256
+            || !Number.isFinite(Date.parse(task.createdAt))
+          : typeof task.repositoryPath !== 'string' || (task.conversationOnly !== undefined && task.conversationOnly !== false))) {
         throw new Error('invalid task registry record');
       }
       if (task.execution !== undefined) {
@@ -559,6 +624,7 @@ class TaskRegistryStore {
         taskKey: normalized.taskKey,
         title: normalized.title,
         creatorChatId: normalized.creatorChatId,
+        sourceHostId: this.hostId,
         repositoryPath: normalized.repositoryPath,
         baseSha: normalized.baseSha,
         paths: normalized.paths,
@@ -578,6 +644,58 @@ class TaskRegistryStore {
       this._remember(state, replay, result);
       this._saveState(state);
       return result;
+    });
+  }
+
+  exportConversationTask(taskKey) {
+    const task = this.getTask(taskKey);
+    if (!task) throw new Error('task not found');
+    return {
+      schemaVersion: 1,
+      taskKey: task.taskKey,
+      title: task.title,
+      creatorChatId: task.creatorChatId,
+      sourceHostId: task.sourceHostId || this.hostId,
+      createdAt: task.createdAt
+    };
+  }
+
+  async importConversationTask(input = {}) {
+    const envelope = normalizeConversationTaskEnvelope(input);
+    if (envelope.sourceHostId === this.hostId) throw new Error('cannot import a conversation task from this host');
+    return this._withWriteLock(`task-registry:conversation-task:${envelope.taskKey}`, async () => {
+      const state = this._loadState();
+      const existing = state.tasks.find(task => task.taskKey === envelope.taskKey);
+      if (existing) {
+        const same = existing.title === envelope.title && existing.creatorChatId === envelope.creatorChatId
+          && (existing.sourceHostId || this.hostId) === envelope.sourceHostId
+          && existing.createdAt === envelope.createdAt;
+        if (!same) throw new Error('task key already exists with different conversation identity');
+        if (existing.conversationOnly) return { imported: false, replayed: true, task: clone(existing) };
+        return { imported: false, replayed: true, localTaskPreserved: true, task: clone(existing) };
+      }
+      if (state.tasks.length >= MAX_TASKS) throw new Error('task registry capacity reached; preserve the store and review retention');
+      const now = new Date(this.clock()).toISOString();
+      const task = {
+        taskKey: envelope.taskKey,
+        title: envelope.title,
+        creatorChatId: envelope.creatorChatId,
+        sourceHostId: envelope.sourceHostId,
+        conversationOnly: true,
+        repositoryPath: null,
+        baseSha: null,
+        paths: [],
+        status: 'planned',
+        ownerChatId: null,
+        leaseExpiresAt: null,
+        revision: 1,
+        checkpoint: { nextAction: 'Shared conversation only; no local repository claim.', blocker: '', evidenceRefs: [] },
+        createdAt: envelope.createdAt,
+        updatedAt: now
+      };
+      state.tasks.push(task);
+      this._saveState(state);
+      return { imported: true, replayed: false, task: clone(task) };
     });
   }
 
@@ -602,6 +720,12 @@ class TaskRegistryStore {
       const nowMs = this.clock();
       if (!task) {
         const result = { accepted: false, reason: 'task_not_found', taskKey: normalized.taskKey };
+        this._remember(state, replay, result);
+        this._saveState(state);
+        return result;
+      }
+      if (task.conversationOnly) {
+        const result = { accepted: false, reason: 'conversation_only', taskKey: normalized.taskKey, revision: task.revision };
         this._remember(state, replay, result);
         this._saveState(state);
         return result;
@@ -932,6 +1056,35 @@ class TaskRegistryStore {
       this._remember(state, replay, { sent: true, messageId: message.messageId });
       this._saveState(state);
       return { sent: true, replayed: false, message: clone(message) };
+    });
+  }
+
+  async importRemoteMessage(input = {}) {
+    const message = normalizeRemoteMessageEnvelope(input, this.hostId);
+    return this._withWriteLock(`task-registry:import-message:${message.taskKey}`, async () => {
+      const state = this._loadState();
+      const existing = state.messages.find(item => item.messageId === message.messageId);
+      if (existing) {
+        if (JSON.stringify(existing) !== JSON.stringify(message)) throw new Error('remote message ID was reused with different content');
+        return { imported: false, replayed: true, message: clone(existing) };
+      }
+      if (!state.tasks.some(task => task.taskKey === message.taskKey)) {
+        return { imported: false, reason: 'task_not_found', taskKey: message.taskKey };
+      }
+      if (state.messages.length >= MAX_MESSAGES) throw new Error('task registry message capacity reached; preserve messages and review retention');
+      if (message.type === 'ack') {
+        const original = state.messages.find(item => item.messageId === message.inReplyToMessageId);
+        if (!original || original.taskKey !== message.taskKey || original.type !== 'message'
+          || (original.senderHostId || this.hostId) !== this.hostId
+          || (original.recipientHostId || this.hostId) !== message.senderHostId
+          || (original.recipientChatId && original.recipientChatId !== message.senderChatId)
+          || message.recipientChatId !== original.senderChatId) {
+          throw new Error('remote ACK does not match the locally sent message and recipient');
+        }
+      }
+      state.messages.push(message);
+      this._saveState(state);
+      return { imported: true, replayed: false, message: clone(message) };
     });
   }
 
