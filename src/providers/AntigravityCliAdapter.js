@@ -10,15 +10,19 @@ const { TOOLS: EMBEDDED_THREEF_TOOLS } = require('../features/provider/embeddedT
 
 function embeddedThreefSettings(bridge) {
   if (!bridge || typeof bridge.url !== 'string' || typeof bridge.serverPath !== 'string') return null;
-  return JSON.stringify({ mcpServers: {
-    'onlychat-3f': {
-      command: bridge.pythonPath || '/usr/bin/python3',
-      args: [bridge.serverPath],
-      env: { ONLYCHAT_MCP_URL: '$ONLYCHAT_MCP_URL', ONLYCHAT_MCP_TOKEN: '$ONLYCHAT_MCP_TOKEN' },
-      trust: true,
-      includeTools: EMBEDDED_THREEF_TOOLS.map(tool => tool.name)
+  return JSON.stringify({
+    tools: { core: [] },
+    mcp: { allowed: ['onlychat-3f'] },
+    mcpServers: {
+      'onlychat-3f': {
+        command: bridge.pythonPath || '/usr/bin/python3',
+        args: [bridge.serverPath],
+        env: { ONLYCHAT_MCP_URL: '$ONLYCHAT_MCP_URL', ONLYCHAT_MCP_TOKEN: '$ONLYCHAT_MCP_TOKEN' },
+        trust: true,
+        includeTools: EMBEDDED_THREEF_TOOLS.map(tool => tool.name)
+      }
     }
-  } });
+  });
 }
 
 function formatHistory(history = []) {

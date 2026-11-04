@@ -92,11 +92,13 @@ async function main() {
     assert.equal(mcpTurn.content, 'MCP configured');
     const settingsArg = launches[3].args[launches[3].args.indexOf('--settings') + 1];
     const mcpSettings = JSON.parse(settingsArg);
+    assert.deepEqual(mcpSettings.tools, { core: [] }, 'Antigravity turns must not use built-in tools outside Only Chat approval and ownership controls');
+    assert.deepEqual(mcpSettings.mcp, { allowed: ['onlychat-3f'] }, 'only the session-scoped Only Chat MCP bridge may be connected');
     assert.equal(mcpSettings.mcpServers['onlychat-3f'].httpUrl, undefined);
     assert.equal(mcpSettings.mcpServers['onlychat-3f'].command, '/usr/bin/python3');
     assert.equal(mcpSettings.mcpServers['onlychat-3f'].args[0], bridge.serverPath);
     assert.deepEqual(mcpSettings.mcpServers['onlychat-3f'].includeTools, [
-      'embedded_3f_status', 'embedded_3f_navigate', 'embedded_3f_read', 'embedded_3f_aria', 'embedded_3f_act', 'embedded_3f_history'
+      'read_file', 'edit_file', 'embedded_3f_status', 'embedded_3f_navigate', 'embedded_3f_read', 'embedded_3f_aria', 'embedded_3f_act', 'embedded_3f_history'
     ]);
     assert.equal(mcpSettings.mcpServers['onlychat-3f'].trust, true,
       'the app MCP is trusted only because mutation approval is enforced by the authenticated Only Chat endpoint');
