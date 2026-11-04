@@ -166,9 +166,22 @@ class GoogleConnector {
     const token = await this.getAccessToken();
     const query = typeof options.q === 'string' && options.q.trim() ? options.q.trim().slice(0, 1000) : "trashed = false";
     const pageSize = Math.max(1, Math.min(100, Number.parseInt(options.pageSize, 10) || 20));
-    const path = `/drive/v3/files?q=${encodeURIComponent(query)}&pageSize=${pageSize}&fields=files(id,name,mimeType,modifiedTime,size,webViewLink)`;
+    if (options.pageToken !== undefined && options.pageToken !== null && typeof options.pageToken !== 'string') {
+      throw new TypeError('Google Drive pageToken must be a string');
+    }
+    const pageToken = typeof options.pageToken === 'string' ? options.pageToken.trim() : '';
+    if (pageToken.length > 4096 || /[\u0000-\u001f\u007f]/u.test(pageToken)) {
+      throw new TypeError('Google Drive pageToken is invalid');
+    }
+    const params = new URLSearchParams({
+      q: query,
+      pageSize: String(pageSize),
+      fields: 'nextPageToken,files(id,name,mimeType,modifiedTime,size,webViewLink)'
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+    const requestPath = `/drive/v3/files?${params.toString()}`;
 
-    return this._httpRequest('www.googleapis.com', path, 'GET', null, {
+    return this._httpRequest('www.googleapis.com', requestPath, 'GET', null, {
       Authorization: `Bearer ${token}`
     });
   }
