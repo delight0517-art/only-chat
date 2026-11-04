@@ -473,6 +473,57 @@ async function main() {
   assert.match(embeddedStatusTurn.response, /웹사이트 페이지 없음/);
   assert.ok(!embeddedStatusOutput.join('').includes('{}'), 'the malformed empty model response is withheld from the CLI user');
 
+  const navigateOutput = [];
+  const embeddedNavigateTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_embedded_3f_navigate_grounding',
+    prompt: 'Call embedded_3f_navigate with https://example.com/ and report the verified address.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'threef-navigate', name: 'embedded_3f_navigate' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'threef-navigate', name: 'embedded_3f_navigate', args: { url: 'https://example.com/' } }, result: { ok: true, addressMatchesRequested: true, requestedUrl: 'https://example.com/', url: 'https://example.com/', stdout: 'verified', stderr: '' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '{}' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '</tool_call>' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => navigateOutput.push(text)
+  });
+  assert.equal(embeddedNavigateTurn.ok, true, 'a matching navigation readback must recover a malformed model follow-up');
+  assert.equal(embeddedNavigateTurn.recoveredFrom, 'invalid_provider_output');
+  assert.match(embeddedNavigateTurn.response, /navigate 성공.*https:\/\/example\.com\//);
+  assert.ok(!navigateOutput.join('').includes('{}'), 'the malformed navigation follow-up is withheld');
+
+  const historyOutput = [];
+  const embeddedHistoryTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_embedded_3f_history_grounding',
+    prompt: 'Call embedded_3f_history with action back and report the result.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'threef-history', name: 'embedded_3f_history' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'threef-history', name: 'embedded_3f_history', args: { action: 'back' } }, result: { ok: true, stdout: '3F Browser back 완료', stderr: '', url: 'https://www.youtube.com/' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '{}' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '</tool_call>' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => historyOutput.push(text)
+  });
+  assert.equal(embeddedHistoryTurn.ok, true, 'a verified browser history result must recover a malformed model follow-up');
+  assert.equal(embeddedHistoryTurn.recoveredFrom, 'invalid_provider_output');
+  assert.match(embeddedHistoryTurn.response, /back 완료, 현재 주소 https:\/\/www\.youtube\.com\//);
+  assert.ok(!historyOutput.join('').includes('{}'), 'the malformed empty history follow-up is withheld');
+
+  const failedEmbeddedHistoryTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_embedded_3f_history_failed',
+    prompt: 'Call embedded_3f_history with action forward and report the result.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'threef-history-fail', name: 'embedded_3f_history' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'threef-history-fail', name: 'embedded_3f_history', args: { action: 'forward' } }, result: { ok: false, stderr: 'No safe forward page is available.', url: 'https://www.youtube.com/' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '{}' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '</tool_call>' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(failedEmbeddedHistoryTurn.ok, true, 'the CLI can report a grounded tool failure as a completed response');
+  assert.match(failedEmbeddedHistoryTurn.response, /embedded_3f_history 실패 또는 미검증: No safe forward page is available/);
+
   const fencedStatusTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_embedded_3f_fence_status',
     prompt: 'Use embedded_3f_status and report the exact status.',

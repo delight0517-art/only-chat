@@ -172,6 +172,47 @@ function isEmbeddedThreefReadRequest(prompt) {
   return /\bembedded_3f_read\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:read|읽기|본문)|3F Browser.{0,32}(?:read|읽기|본문)/i.test(String(prompt || ''));
 }
 
+function isEmbeddedThreefNavigateRequest(prompt) {
+  return /\bembedded_3f_navigate\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:navigate|이동|열기)|3F Browser.{0,32}(?:navigate|이동|열기)/i.test(String(prompt || ''));
+}
+
+function isEmbeddedThreefHistoryRequest(prompt) {
+  return /\bembedded_3f_history\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:history|back|forward|reload|뒤로|앞으로|새로고침)|3F Browser.{0,32}(?:history|back|forward|reload|뒤로|앞으로|새로고침)/i.test(String(prompt || ''));
+}
+
+function safeBrowserAddress(value) {
+  try {
+    const url = new URL(String(value || ''));
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return '';
+    return `${url.origin}${url.pathname}`;
+  } catch (_) { return ''; }
+}
+
+function groundEmbeddedThreefNavigateAnswer(results = []) {
+  const result = results.at(-1);
+  if (!result || typeof result !== 'object') return 'Only Chat embedded_3f_navigate 결과가 없어 이동을 검증하지 못했습니다.';
+  const requested = safeBrowserAddress(result.requestedUrl);
+  const current = safeBrowserAddress(result.url);
+  if (result.ok !== true || result.addressMatchesRequested !== true || !requested || requested !== current) {
+    const error = redactToolMessage(result.stderr || result.error || '요청 주소와 현재 주소가 일치하지 않습니다.');
+    return `Only Chat embedded_3f_navigate 실패 또는 미검증: ${error}`;
+  }
+  return `Only Chat embedded_3f_navigate 성공: 요청한 주소와 3F Browser 현재 주소가 일치합니다 (${current}).`;
+}
+
+function groundEmbeddedThreefHistoryAnswer(results = []) {
+  const entry = results.at(-1);
+  const result = entry?.result;
+  if (!result || typeof result !== 'object') return 'Only Chat embedded_3f_history 결과가 없어 뒤로·앞으로 이동을 검증하지 못했습니다.';
+  const action = ['back', 'forward', 'reload'].includes(entry.action) ? entry.action : '';
+  const current = safeBrowserAddress(result.url);
+  if (result.ok !== true || !current || !action) {
+    const error = redactToolMessage(result.stderr || result.error || '성공 상태, 동작 또는 현재 주소를 검증할 수 없습니다.');
+    return `Only Chat embedded_3f_history 실패 또는 미검증: ${error}`;
+  }
+  return `Only Chat embedded_3f_history 성공: ${action} 완료, 현재 주소 ${current}.`;
+}
+
 function isTaskRegistryListRequest(prompt) {
   return /\btask_registry_list\b/i.test(String(prompt || ''));
 }
@@ -501,12 +542,16 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const todoEvidenceRequest = isTodoEvidenceRequest(prompt);
   const embeddedThreefStatusRequest = isEmbeddedThreefStatusRequest(prompt);
   const embeddedThreefReadRequest = isEmbeddedThreefReadRequest(prompt);
+  const embeddedThreefNavigateRequest = isEmbeddedThreefNavigateRequest(prompt);
+  const embeddedThreefHistoryRequest = isEmbeddedThreefHistoryRequest(prompt);
   const taskRegistryListRequest = isTaskRegistryListRequest(prompt);
   const taskRegistryReadRequest = isTaskRegistryReadRequest(prompt);
-  const evidenceGroundedRequest = todoEvidenceRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || taskRegistryListRequest || taskRegistryReadRequest;
+  const evidenceGroundedRequest = todoEvidenceRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || embeddedThreefNavigateRequest || embeddedThreefHistoryRequest || taskRegistryListRequest || taskRegistryReadRequest;
   const readFileResults = [];
   const embeddedThreefStatusResults = [];
   const embeddedThreefReadResults = [];
+  const embeddedThreefNavigateResults = [];
+  const embeddedThreefHistoryResults = [];
   const taskRegistryListResults = [];
   const taskRegistryReadResults = [];
   try {
@@ -529,7 +574,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           if (markerIndex >= 0) {
             const safeDelta = nextResponseText.slice(0, markerIndex);
             responseText += safeDelta;
-            if (safeDelta) write(safeDelta);
+            if (safeDelta && !evidenceGroundedRequest) write(safeDelta);
             error = { category: 'invalid_provider_output' };
             try { await reader.cancel(); } catch (_) {}
             break;
@@ -564,6 +609,8 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           if (!failed && call?.name === 'read_file') readFileResults.push(result);
           if (!failed && call?.name === 'embedded_3f_status') embeddedThreefStatusResults.push(result);
           if (call?.name === 'embedded_3f_read') embeddedThreefReadResults.push(result);
+          if (call?.name === 'embedded_3f_navigate') embeddedThreefNavigateResults.push(result);
+          if (call?.name === 'embedded_3f_history') embeddedThreefHistoryResults.push({ action: call.args?.action, result });
           if (call?.name === 'task_registry_list') taskRegistryListResults.push(result);
           if (call?.name === 'task_registry_read') taskRegistryReadResults.push(result);
           write(`[도구 ${failed ? '실패' : '완료'}: ${tool}${detail ? ` · ${detail}` : ''}]\n`);
@@ -611,6 +658,8 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
       ? groundTodoSectionAnswer(prompt, responseText, readFileResults)
         ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
         ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
+        ?? (embeddedThreefNavigateRequest ? groundEmbeddedThreefNavigateAnswer(embeddedThreefNavigateResults) : null)
+        ?? (embeddedThreefHistoryRequest ? groundEmbeddedThreefHistoryAnswer(embeddedThreefHistoryResults) : null)
         ?? (taskRegistryListRequest ? groundTaskRegistryListAnswer(taskRegistryListResults) : null)
         ?? (taskRegistryReadRequest ? groundTaskRegistryReadAnswer(prompt, taskRegistryReadResults) : null)
         ?? groundTodoStatusAnswer(prompt, responseText, readFileResults)
@@ -625,6 +674,8 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const groundedResponse = groundTodoSectionAnswer(prompt, responseText, readFileResults)
     ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
     ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
+    ?? (embeddedThreefNavigateRequest ? groundEmbeddedThreefNavigateAnswer(embeddedThreefNavigateResults) : null)
+    ?? (embeddedThreefHistoryRequest ? groundEmbeddedThreefHistoryAnswer(embeddedThreefHistoryResults) : null)
     ?? (taskRegistryListRequest ? groundTaskRegistryListAnswer(taskRegistryListResults) : null)
     ?? (taskRegistryReadRequest ? groundTaskRegistryReadAnswer(prompt, taskRegistryReadResults) : null)
     ?? groundTodoStatusAnswer(prompt, responseText, readFileResults);
