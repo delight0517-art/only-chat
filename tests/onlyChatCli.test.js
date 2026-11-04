@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { parseGoalDuration, parseChatCommand, safeToolError, streamOnlyChatTurn, runOnlyChatGoal } = require('../bin/codex.js');
+const { parseGoalDuration, parseChatCommand, safeToolError, loadOnlyChatWorkspaceContext, streamOnlyChatTurn, runOnlyChatGoal } = require('../bin/codex.js');
 
 async function main() {
   assert.equal(parseGoalDuration('3h'), 10_800_000);
@@ -21,6 +21,41 @@ async function main() {
   assert.equal(safeToolError({ isError: true, content: [{ type: 'text', text: 'File unavailable; access_token=hidden' }] }),
     'File unavailable; access_token=[redacted]');
   assert.equal(safeToolError('const error = "file not found";'), '', 'successful tool text must never be printed as an error');
+
+  const contextCommands = [];
+  const liveContext = await loadOnlyChatWorkspaceContext({
+    baseUrl: 'http://127.0.0.1:8899', workspaceRoot: '/workspace/only-chat',
+    fetchImpl: async (url, options) => {
+      assert.equal(url, 'http://127.0.0.1:8899/api/status');
+      assert.equal(options.headers.Host, '127.0.0.1:8899');
+      return new Response(JSON.stringify({ sessionWorkspaceDir: '/workspace/only-chat' }), { status: 200 });
+    },
+    execFileSyncImpl: (command, args) => {
+      contextCommands.push({ command, args });
+      if (command.endsWith('/agent-coord')) return 'No active leases.\n';
+      if (command.endsWith('/app-integration-guard')) return JSON.stringify({ ok: true, leases_clear: true, current_branch: 'main', current_status: { entries: 0, untracked: 0 } });
+      if (command.endsWith('/integration-backlog')) return JSON.stringify([
+        { id: 'todo_1', kind: 'todo', title: 'Open Only Chat TODO', status: 'recorded', source: 'user', blocker: 'Bearer abc.def; account@example.com' },
+        { id: 'todo_2', title: 'Already done', status: 'complete' }
+      ]);
+      if (args.includes('rev-parse')) return '0123456789abcdef';
+      if (args.includes('--show-current')) return 'main';
+      throw new Error(`unexpected command ${command}`);
+    }
+  });
+  assert.equal(liveContext.workspaceRoot, '/workspace/only-chat');
+  assert.equal(liveContext.gitHead, '0123456789abcdef');
+  assert.equal(liveContext.integrationBranch, 'main');
+  assert.equal(liveContext.leases, 'No active leases.');
+  assert.equal(liveContext.integrationGuard.leasesClear, true);
+  assert.equal(liveContext.activeBacklog.length, 1, 'completed integration backlog rows are excluded');
+  assert.equal(liveContext.activeBacklog[0].blocker, 'Bearer [redacted]; [redacted-email]');
+  assert.equal(contextCommands.length, 5, 'the CLI calls only fixed read-only status commands for the approved repository');
+  await assert.rejects(loadOnlyChatWorkspaceContext({
+    baseUrl: 'http://127.0.0.1:8899', workspaceRoot: '/workspace/other',
+    fetchImpl: async () => new Response(JSON.stringify({ sessionWorkspaceDir: '/workspace/only-chat' }), { status: 200 }),
+    execFileSyncImpl: () => { throw new Error('must not inspect a mismatched root'); }
+  }), /경로와 일치하지 않습니다/);
 
   const writes = [];
   const approvals = [];
@@ -114,16 +149,22 @@ async function main() {
 
   let goalNow = 1_000;
   let goalWorkspaceTurns = 0;
+  let goalWorkspaceContextReads = 0;
   const goalWorkspaceApprovals = [];
   const goalWorkspaceRun = await runOnlyChatGoal({
     baseUrl: 'http://127.0.0.1:8899', prompt: 'continue scoped goal', durationMs: 1_000, fixedDuration: true,
     model: 'gpt-6-luna', approveWorkspaceWrite: '/workspace/only-chat', now: () => goalNow, write: () => {},
+    workspaceContextLoader: async () => {
+      goalWorkspaceContextReads++;
+      return { workspaceRoot: '/workspace/only-chat', integrationBranch: 'main', gitHead: 'abc123', leases: 'No active leases.', activeBacklog: [{ id: 'todo_1', title: 'Open TODO', status: 'recorded' }] };
+    },
     fetchImpl: async (url, options) => {
       if (url.endsWith('/api/tool-approval')) {
         goalWorkspaceApprovals.push(JSON.parse(options.body));
         return new Response('{"ok":true}', { status: 200 });
       }
       goalWorkspaceTurns++;
+      assert.match(JSON.parse(options.body).prompt, /Open TODO/, 'the current lease/backlog snapshot reaches every Goal turn');
       goalNow += 600;
       const turnEvents = [
         { type: 'session_started', sessionId: 'ses_0123456789abcdef' },
@@ -136,6 +177,7 @@ async function main() {
   });
   assert.equal(goalWorkspaceRun.ok, true);
   assert.equal(goalWorkspaceTurns, 2, 'Goal keeps running sequential Only Chat turns until the deadline');
+  assert.equal(goalWorkspaceContextReads, 2, 'Goal refreshes the ownership snapshot before each turn');
   assert.equal(goalWorkspaceApprovals.length, 2, 'each Goal turn rechecks the exact workspace scope');
   assert.ok(goalWorkspaceApprovals.every(approval => approval.decision === 'approve'));
 
