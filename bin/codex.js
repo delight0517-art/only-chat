@@ -189,6 +189,24 @@ function groundTaskRegistryListAnswer(results = []) {
   }).join('\n')}`;
 }
 
+function isTaskRegistryReadRequest(prompt) {
+  return /\btask_registry_read\b/i.test(String(prompt || ''));
+}
+
+function groundTaskRegistryReadAnswer(prompt, results = []) {
+  const task = results.at(-1);
+  const requestedKey = /taskKey\s+(?:exactly\s+)?([A-Za-z0-9][A-Za-z0-9._:-]*[A-Za-z0-9])/i.exec(String(prompt || ''))?.[1];
+  if (!task || typeof task !== 'object' || Array.isArray(task) || task.error) return 'Only Chat task_registry_read 결과를 받지 못해 작업 세부 상태를 확인하지 못했습니다.';
+  if (requestedKey && task.taskKey !== requestedKey) return `Only Chat task_registry_read 결과의 작업 ID가 요청한 ${requestedKey}와 일치하지 않아 세부 상태를 검증하지 못했습니다.`;
+  const checkpoint = task.checkpoint && typeof task.checkpoint === 'object' ? task.checkpoint : {};
+  const owner = task.ownerChatId == null ? '미할당' : redactToolMessage(task.ownerChatId);
+  return [
+    `Only Chat task_registry_read 실제 결과: ${redactToolMessage(task.taskKey) || 'ID 없음'} | ${redactToolMessage(task.title) || '제목 없음'} | ${redactToolMessage(task.status) || '상태 없음'} | 담당자: ${owner || '확인 불가'}`,
+    `다음 조치: ${redactToolMessage(checkpoint.nextAction) || '기록 없음'}`,
+    `차단 사유: ${redactToolMessage(checkpoint.blocker) || '기록 없음'}`
+  ].join('\n');
+}
+
 function groundEmbeddedThreefStatusAnswer(results = []) {
   const result = results.at(-1);
   if (!result || typeof result !== 'object' || result.error || result.blocked || result.isError) return null;
@@ -484,11 +502,13 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const embeddedThreefStatusRequest = isEmbeddedThreefStatusRequest(prompt);
   const embeddedThreefReadRequest = isEmbeddedThreefReadRequest(prompt);
   const taskRegistryListRequest = isTaskRegistryListRequest(prompt);
-  const evidenceGroundedRequest = todoEvidenceRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || taskRegistryListRequest;
+  const taskRegistryReadRequest = isTaskRegistryReadRequest(prompt);
+  const evidenceGroundedRequest = todoEvidenceRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || taskRegistryListRequest || taskRegistryReadRequest;
   const readFileResults = [];
   const embeddedThreefStatusResults = [];
   const embeddedThreefReadResults = [];
   const taskRegistryListResults = [];
+  const taskRegistryReadResults = [];
   try {
     while (true) {
       const { value, done } = await reader.read();
@@ -545,6 +565,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           if (!failed && call?.name === 'embedded_3f_status') embeddedThreefStatusResults.push(result);
           if (call?.name === 'embedded_3f_read') embeddedThreefReadResults.push(result);
           if (call?.name === 'task_registry_list') taskRegistryListResults.push(result);
+          if (call?.name === 'task_registry_read') taskRegistryReadResults.push(result);
           write(`[도구 ${failed ? '실패' : '완료'}: ${tool}${detail ? ` · ${detail}` : ''}]\n`);
         }
         if (event.type === 'tool_approval_required') {
@@ -591,6 +612,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
         ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
         ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
         ?? (taskRegistryListRequest ? groundTaskRegistryListAnswer(taskRegistryListResults) : null)
+        ?? (taskRegistryReadRequest ? groundTaskRegistryReadAnswer(prompt, taskRegistryReadResults) : null)
         ?? groundTodoStatusAnswer(prompt, responseText, readFileResults)
       : responseText;
     if (recoveredResponse !== responseText && completed === false) {
@@ -604,6 +626,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
     ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
     ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
     ?? (taskRegistryListRequest ? groundTaskRegistryListAnswer(taskRegistryListResults) : null)
+    ?? (taskRegistryReadRequest ? groundTaskRegistryReadAnswer(prompt, taskRegistryReadResults) : null)
     ?? groundTodoStatusAnswer(prompt, responseText, readFileResults);
   if (evidenceGroundedRequest && groundedResponse !== responseText && completed) write(groundedResponse);
   else if (evidenceGroundedRequest && completed && responseText.trim()) write(responseText);

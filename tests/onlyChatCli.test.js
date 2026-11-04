@@ -536,6 +536,40 @@ async function main() {
   assert.doesNotMatch(registryListTurn.response, /private blocker|\/private\/path/);
   assert.doesNotMatch(registryListOutput.join(''), /private blocker|\/private\/path/);
 
+  const registryReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_task_registry_read_grounding',
+    prompt: 'Call task_registry_read with taskKey exactly onlychat-evolution-loop-20261103 and report nextAction/blocker.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'registry-read', name: 'task_registry_read' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'registry-read', name: 'task_registry_read' }, result: { taskKey: 'onlychat-evolution-loop-20261103', title: 'Goal loop', status: 'blocked', ownerChatId: null, checkpoint: { nextAction: 'Use a verified free dispatcher provider.', blocker: 'dispatcher.ready=false, no_verified_free_provider' }, privateMessages: ['do not expose'] } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '{}' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '</tool_call>' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(registryReadTurn.ok, true);
+  assert.equal(registryReadTurn.recoveredFrom, 'invalid_provider_output');
+  assert.match(registryReadTurn.response, /onlychat-evolution-loop-20261103 .* blocked .* 담당자: 미할당/);
+  assert.match(registryReadTurn.response, /다음 조치: Use a verified free dispatcher provider/);
+  assert.match(registryReadTurn.response, /차단 사유: dispatcher\.ready=false, no_verified_free_provider/);
+  assert.doesNotMatch(registryReadTurn.response, /do not expose/);
+
+  const mismatchedRegistryReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_task_registry_read_mismatch',
+    prompt: 'Call task_registry_read with taskKey exactly onlychat-evolution-loop-20261103.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'registry-read', name: 'task_registry_read' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'registry-read', name: 'task_registry_read' }, result: { taskKey: 'other-task', title: 'Wrong task', status: 'complete' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The requested task is complete.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.match(mismatchedRegistryReadTurn.response, /작업 ID가 요청한 onlychat-evolution-loop-20261103와 일치하지 않아 세부 상태를 검증하지 못했습니다/);
+  assert.doesNotMatch(mismatchedRegistryReadTurn.response, /Wrong task|complete/);
+
   now = 1_000;
   const interruptedGoalRequests = [];
   const interruptedGoal = await runOnlyChatGoal({
