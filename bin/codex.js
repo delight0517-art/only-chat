@@ -126,20 +126,21 @@ function readFileText(value, depth = 0) {
 
 function isTodoEvidenceRequest(prompt) {
   return /\bTODO-[A-Za-z0-9_-]+\b/i.test(String(prompt || ''))
-    && /(?:완료\s*여부|미완료|체크(?:박스)?\s*(?:상태|한\s*줄)|상태|complete|completed|done|status|정확한\s*(?:요구사항|원문|내용)|acceptance\s*(?:checks?|criteria)|exact\s+(?:requirements|source|text))/i.test(String(prompt || ''));
+    && /(?:완료\s*여부|미완료|체크(?:박스)?\s*(?:상태|한\s*줄)|상태|complete|completed|done|status|정확한\s*(?:요구사항|원문|내용)|acceptance[-\s]*(?:checks?|criteria)|exact\s+(?:requirements|source|text))/i.test(String(prompt || ''));
 }
 
 function groundTodoSectionAnswer(prompt, answer, readFileResults = []) {
-  if (!/정확한\s*(?:요구사항|원문|내용)|acceptance\s*(?:checks?|criteria)|exact\s+(?:requirements|source|text)/i.test(String(prompt || ''))) return null;
+  if (!/정확한\s*(?:요구사항|원문|내용)|acceptance[-\s]*(?:checks?|criteria)|exact\s+(?:requirements|source|text)/i.test(String(prompt || ''))) return null;
   const requestedId = /\bTODO-[A-Za-z0-9_-]+\b/i.exec(String(prompt || ''))?.[0];
   if (!requestedId) return null;
   const evidence = readFileResults.map(readFileText).filter(Boolean).join('\n');
+  if (!evidence.trim()) return null;
   const lines = evidence.split(/\r?\n/);
   const start = lines.findIndex(line => {
     const match = /^\s*-\s+\[[ xX]\]\s+\*\*(TODO-[A-Za-z0-9_-]+)\./i.exec(line);
     return match?.[1].toUpperCase() === requestedId.toUpperCase();
   });
-  if (start < 0) return null;
+  if (start < 0) return `Only Chat read_file 결과에 요청한 ${requestedId} 원문이 없어 요구사항을 검증하지 못했습니다.`;
   const section = [lines[start]];
   for (const line of lines.slice(start + 1)) {
     if (line.trim() && !/^\s/.test(line)) break;
@@ -155,7 +156,9 @@ function groundTodoStatusAnswer(prompt, answer, readFileResults = []) {
   const evidence = readFileResults.map(readFileText).filter(Boolean).join('\n');
   const row = [...evidence.matchAll(/^\s*-\s+\[([ xX])\]\s+\*\*(TODO-[A-Za-z0-9_-]+)\.\s*([^\n]*)/gmi)]
     .find(([, , id]) => id.toUpperCase() === requestedId.toUpperCase());
-  if (!row) return answer;
+  if (!row) return evidence.trim()
+    ? `Only Chat read_file 결과에서 ${requestedId} 체크 항목을 찾지 못해 상태를 검증하지 못했습니다.`
+    : `Only Chat read_file 근거가 없어 ${requestedId} 상태를 검증하지 못했습니다.`;
   const [, marker, id, rawTitle] = row;
   const title = rawTitle.replace(/\*\*:?\s*$/, '').trim();
   return `원문 체크박스 기준: - [${marker}] **${id}. ${title}** — ${marker.trim() ? '완료 표시' : '미완료'}.`;

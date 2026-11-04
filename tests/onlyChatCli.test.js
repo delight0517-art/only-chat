@@ -419,6 +419,40 @@ async function main() {
   assert.ok(!checkboxLineOutput.join('').includes('is done'), 'unverified completion claims are withheld for checkbox-line requests');
   assert.match(checkboxLineOutput.join(''), /\[ \].*미완료/);
 
+  const exactTodoSection = '- [ ] **TODO-3FBROWSER-01. Only Chat과 3F Browser 연결 확인**:\n  - 실제 탐색 응답 확인\n  - 페이지 읽기 결과 확인';
+  const exactTodoSectionTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_section_grounding',
+    prompt: 'TODO-3FBROWSER-01 exact requirements and acceptance-criteria from the source.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'todo-read', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'todo-read', name: 'read_file' }, result: exactTodoSection } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The requested TODO does not exist.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(exactTodoSectionTurn.ok, true);
+  assert.match(exactTodoSectionTurn.response, /TODO-3FBROWSER-01/);
+  assert.match(exactTodoSectionTurn.response, /실제 탐색 응답 확인/);
+  assert.doesNotMatch(exactTodoSectionTurn.response, /does not exist/);
+
+  const mismatchedTodoSectionTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_section_mismatch',
+    prompt: 'TODO-3FBROWSER-01 exact requirements and acceptance-criteria from the source.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'todo-read', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'todo-read', name: 'read_file' }, result: '- [ ] **TODO-OTHER-02. unrelated item**:\\n  - unrelated evidence' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'TODO-3FBROWSER-01 is complete.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(mismatchedTodoSectionTurn.ok, true);
+  assert.match(mismatchedTodoSectionTurn.response, /TODO-3FBROWSER-01 원문이 없어 요구사항을 검증하지 못했습니다/);
+  assert.doesNotMatch(mismatchedTodoSectionTurn.response, /is complete/);
+
   const embeddedStatusOutput = [];
   const embeddedStatusTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_embedded_3f_status_grounding',
