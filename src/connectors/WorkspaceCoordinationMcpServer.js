@@ -16,7 +16,7 @@ const MAX_LEASE_MINUTES = 60;
 const tools = [
   {
     name: 'workspace_lease_status',
-    description: 'Read current file-scoped coordination leases for Only Chat’s selected Git workspace. Lease status is advisory; never edit a path owned by another task.',
+    description: 'Read agent-coord edit/integration/deploy leases for Only Chat’s selected Git repository. Results apply only to this repository and this lease registry; they do not report other lock systems, active writers, or app runtime state. A lease on one path does not block unrelated paths. Lease status is advisory; never edit a path owned by another task.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   },
@@ -141,8 +141,17 @@ function createServer(options = {}) {
     const repo = identity.root;
     if (name === 'workspace_lease_status') {
       if (Object.keys(args).length) throw new Error('workspace_lease_status takes no arguments.');
-      const output = String(runAgentCoord(['status', '--repo', repo])).trim().slice(0, 12_000);
-      return { repository: repo, leases: output || 'No active leases.' };
+      const raw = String(runAgentCoord(['status', '--repo', repo])).trim();
+      const maxOutputLength = 12_000;
+      return {
+        repository: repo,
+        scope: 'Only Chat selected Git repository; agent-coord lease registry only',
+        leaseKinds: ['edit', 'integrate', 'deploy'],
+        checkedAt: new Date().toISOString(),
+        complete: raw.length <= maxOutputLength,
+        leases: raw.slice(0, maxOutputLength) || 'No active agent-coord leases for this repository.',
+        limitation: 'This result does not report workspace execution leases, other coordination registries, ordinary file writers, or application runtime locks. It cannot establish that the repository or product is globally locked or unlocked.'
+      };
     }
     if (name === 'workspace_lease_claim') {
       if (Object.keys(args).some(key => !['task', 'paths', 'lease_minutes'].includes(key))) throw new Error('Unsupported lease claim arguments.');
