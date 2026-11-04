@@ -16,6 +16,8 @@ test('requires lock claims to name their measured scope and lock kind', () => {
   assert.match(RESPONSE_GUIDANCE, /출처, 정확한 저장소\/작업공간\/경로, 잠금 종류, 결과, 확인 시각을 행별로 분리한다/);
   assert.match(RESPONSE_GUIDANCE, /현재 대상과 다른 저장소의 측정값은 명시적으로 제외/);
   assert.match(RESPONSE_GUIDANCE, /정확한 대상의 새 조회가 없으면 잠금 상태는 unknown/);
+  assert.match(RESPONSE_GUIDANCE, /사용자가 앞선 잠금·기능 상태 판단이 틀렸다고 지적하면 먼저/);
+  assert.match(RESPONSE_GUIDANCE, /대상 리소스의 상태를 다시 읽고/);
 });
 
 test('separates source edits, reload eligibility, loaded revision, and visible behavior', () => {

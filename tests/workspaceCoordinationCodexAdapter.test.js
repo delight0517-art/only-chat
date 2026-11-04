@@ -55,6 +55,7 @@ test('Codex calls expose workspace-confined lease tools with the selected worksp
     assert.match(developerInstructions, /정확한 경로 또는 리소스, 잠금 종류/);
     assert.match(developerInstructions, /다른 저장소나 다른 작업에서 얻은 결과/);
     assert.match(developerInstructions, /hot reload 가능 여부와 source 소유권/);
+    assert.match(developerInstructions, /사용자가 앞선 잠금 판단이 틀렸다고 지적하면 먼저/);
     assert.equal(spawnOptions.env.ONLY_CHAT_WORKSPACE_DIR, workspaceDir);
     assert.equal(spawnOptions.env.ONLY_CHAT_SESSION_ID, 'session_test_0001');
   } else {
