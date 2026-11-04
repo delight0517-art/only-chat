@@ -8,4 +8,9 @@
  */
 'use strict';
 
-require('./codex.js');
+const { main } = require('./codex.js');
+
+main().catch(error => {
+  console.error('Fatal:', error.message || error);
+  process.exitCode = 1;
+});

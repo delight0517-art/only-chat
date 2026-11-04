@@ -66,8 +66,135 @@ function createToolSummary() {
   };
 }
 
+function parseGoalDuration(value) {
+  const match = /^(\d{1,3})(m|h)$/.exec(String(value || '').trim());
+  if (!match) throw new Error('시간은 1m, 30m, 2h처럼 입력하세요. 최대 3h입니다.');
+  const minutes = Number(match[1]) * (match[2] === 'h' ? 60 : 1);
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 180) throw new Error('Goal 시간은 1분에서 3시간 사이여야 합니다.');
+  return minutes * 60_000;
+}
+
+async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTools = [], fetchImpl = fetch, write = text => process.stdout.write(text), signal } = {}) {
+  const response = await fetchImpl(`${baseUrl}/api/turn`, {
+    method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, prompt, reasoningEffort: 'low', modelSelection: model, managerMode: false, fullAccess: false, sandboxPolicy: 'workspace-write' }), signal
+  });
+  if (!response.ok) throw new Error(`Only Chat HTTP ${response.status}: ${(await response.text()).slice(0, 240)}`);
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('Only Chat did not return a readable event stream.');
+  const decoder = new TextDecoder();
+  let buffer = '', resolvedSessionId = null, responseText = '', error = null, completed = false;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n'); buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (!raw || raw === '[DONE]') continue;
+        let event;
+        try { event = JSON.parse(raw); } catch (_) { continue; }
+        if (event.type === 'session_started') resolvedSessionId = event.sessionId || resolvedSessionId;
+        if (event.type === 'tier_resolved') write(`\n[Only Chat: ${event.tier?.name || '모델 확인'} · ${event.tier?.model || model}]\n`);
+        if (event.type === 'message_delta') {
+          const delta = String(event.delta || ''); responseText += delta; write(delta);
+        }
+        if (event.type === 'tool_start') write(`\n[도구: ${event.call?.name || '알 수 없음'}]\n`);
+        if (event.type === 'tool_approval_required') {
+          if (!approveTools.includes(event.name)) {
+            error = { category: 'approval_required', name: event.name };
+            await reader.cancel();
+            break;
+          }
+          const approved = await fetchImpl(`${baseUrl}/api/tool-approval`, {
+            method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requestId: event.requestId, sessionId: event.sessionId, decision: 'allow_tool' }), signal
+          });
+          if (!approved.ok) {
+            error = { category: 'approval_required', name: event.name };
+            await reader.cancel();
+            break;
+          }
+          write(`[Only Chat 승인 범위: ${event.name}]\n`);
+        }
+        if (event.type === 'error') error = { category: event.category || 'provider_failure', model: event.model, rank: event.rank };
+        if (event.type === 'turn_complete') completed = true;
+      }
+      if (error) break;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (error) return { ok: false, ...error, sessionId: resolvedSessionId, response: responseText };
+  return { ok: completed && Boolean(responseText.trim()), sessionId: resolvedSessionId, response: responseText };
+}
+
+async function runOnlyChatGoal({ baseUrl, prompt, durationMs, model = 'gemini-3.8-flash-medium', approveTools = [], fetchImpl = fetch, write = text => process.stdout.write(text), now = Date.now, signal } = {}) {
+  if (!/^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/.test(baseUrl || '')) throw new Error('Only Chat은 이 Mac의 loopback 주소로만 연결할 수 있습니다.');
+  const deadline = now() + durationMs;
+  let sessionId = `session_${now()}`, iteration = 0;
+  while (now() < deadline) {
+    iteration++;
+    const nextPrompt = iteration === 1 ? prompt : `계속 같은 Goal을 진행하세요. 남은 시간은 약 ${Math.max(0, Math.ceil((deadline - now()) / 60_000))}분입니다. 직전 결과와 남은 작업을 확인하고, 이미 끝난 일을 반복하지 말고 다음의 가장 작은 안전한 단계를 실행하세요. 무료로 선택한 모델만 사용하고, 셸/브랜치/워크트리는 만들지 마세요. 진행이 막히면 원인과 필요한 조치를 보고하고 도구를 반복 재시도하지 마세요.`;
+    write(`\n[Goal 반복 ${iteration} 시작 · ${sessionId}]\n`);
+    const goalSignal = AbortSignal.timeout(Math.max(1, deadline - now()));
+    const activeSignal = signal ? AbortSignal.any([signal, goalSignal]) : goalSignal;
+    let result;
+    try {
+      result = await streamOnlyChatTurn({ baseUrl, sessionId, prompt: nextPrompt, model, approveTools, fetchImpl, write, signal: activeSignal });
+    } catch (error) {
+      if (now() >= deadline) break;
+      throw error;
+    }
+    if (result.sessionId) sessionId = result.sessionId;
+    if (!result.ok) {
+      write(`\n[중단: ${result.category}${result.name ? ` · ${result.name}` : ''}]\n`);
+      return { ...result, sessionId, iteration, deadline };
+    }
+    if (/^\s*GOAL_COMPLETE\s*$/m.test(result.response)) return { ok: true, sessionId, iteration, deadline, completedEarly: true };
+  }
+  write(`\n[정해진 시간이 끝났습니다 · 반복 ${iteration}회 · 세션 ${sessionId}]\n`);
+  return { ok: true, sessionId, iteration, deadline, completedEarly: false };
+}
+
+function parseChatCommand(commandArgs) {
+  const options = { model: 'gemini-3.8-flash-medium', approveTools: [] };
+  const positional = [];
+  for (let i = 0; i < commandArgs.length; i++) {
+    const arg = commandArgs[i];
+    if (arg === '--model') options.model = commandArgs[++i] || '';
+    else if (arg === '--duration') options.durationMs = parseGoalDuration(commandArgs[++i]);
+    else if (arg === '--approve-tool') options.approveTools.push(commandArgs[++i] || '');
+    else positional.push(arg);
+  }
+  options.prompt = positional.join(' ').trim();
+  if (!options.prompt) throw new Error('요청 내용을 입력하세요.');
+  if (options.approveTools.some(name => !['edit_file', 'embedded_3f_navigate', 'embedded_3f_act', 'embedded_3f_history'].includes(name))) {
+    throw new Error('승인 가능 도구는 파일 편집 또는 3F 브라우저 작업으로 제한됩니다.');
+  }
+  return options;
+}
+
 async function main() {
   switch (command) {
+    case 'chat':
+    case 'goal': {
+      const options = parseChatCommand(args.slice(1));
+      const baseUrl = process.env.ONLY_CHAT_URL || 'http://127.0.0.1:8899';
+      if (command === 'goal') {
+        if (!options.durationMs) throw new Error('사용법: my-codex goal --duration 3h [--approve-tool edit_file] "Goal"');
+        const result = await runOnlyChatGoal({ ...options, baseUrl });
+        if (!result.ok) process.exitCode = 1;
+      } else {
+        if (!/^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/.test(baseUrl)) throw new Error('Only Chat은 이 Mac의 loopback 주소로만 연결할 수 있습니다.');
+        const result = await streamOnlyChatTurn({ ...options, baseUrl, sessionId: `session_${Date.now()}` });
+        if (!result.ok) { console.error(`\n요청 중단: ${result.category}${result.name ? ` · ${result.name}` : ''}`); process.exitCode = 1; }
+        else console.log(`\n\n응답 완료 · 세션 ${result.sessionId || '확인 불가'}`);
+      }
+      break;
+    }
     case 'status': {
       const engine = new PriorityChainEngine();
       const status = engine.getStatus();
@@ -193,6 +320,9 @@ Author: Rogan Kim (GeunHu Kim)
   my-codex accounts            등록된 Google/ChatGPT 계정 목록 확인
   my-codex login add <...>     새로운 Google / ChatGPT 계정 등록
   my-codex exec "<프롬프트>"   비대화형 1회성 명령/에이전트 실행
+  my-codex chat "<프롬프트>"   실행 중인 Only Chat에 요청하고 텍스트 응답 읽기
+  my-codex goal --duration 3h "<Goal>"  Only Chat에서 순차 반복 Goal 실행
+    --approve-tool edit_file   이 세션에서 제한된 파일 편집 승인
   my-codex app-server          Codex 호환 JSON-RPC 2.0 stdio 서버 실행
       `);
       break;
@@ -214,4 +344,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createToolSummary, readableModelName };
+module.exports = { main, createToolSummary, readableModelName, parseGoalDuration, parseChatCommand, streamOnlyChatTurn, runOnlyChatGoal };
