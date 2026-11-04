@@ -186,6 +186,38 @@ class GoogleConnector {
     });
   }
 
+  async driveGetAccountIdentityHash() {
+    const token = await this.getAccessToken();
+    const about = await this._httpRequest('www.googleapis.com', '/drive/v3/about?fields=user(permissionId)', 'GET', null, {
+      Authorization: `Bearer ${token}`
+    });
+    if (about?.error) throw new Error(about.error.message || 'Google Drive 계정 정보를 확인하지 못했습니다.');
+    const permissionId = typeof about?.user?.permissionId === 'string' ? about.user.permissionId.trim() : '';
+    if (!permissionId) throw new Error('Google Drive 계정 식별자를 확인할 수 없습니다.');
+    return crypto.createHash('sha256').update(permissionId, 'utf8').digest('hex');
+  }
+
+  async driveVerifyMailboxFolder(folderId) {
+    const safeId = String(folderId || '').trim();
+    if (!safeId || safeId.length > 512 || /[\u0000-\u001f\u007f]/u.test(safeId)) {
+      throw new Error('Google Drive 메일박스 폴더 ID가 올바르지 않습니다.');
+    }
+    const token = await this.getAccessToken();
+    const fields = 'id,mimeType,capabilities(canListChildren,canAddChildren)';
+    const metadata = await this._httpRequest('www.googleapis.com',
+      `/drive/v3/files/${encodeURIComponent(safeId)}?fields=${encodeURIComponent(fields)}`, 'GET', null, {
+        Authorization: `Bearer ${token}`
+      });
+    if (metadata?.error) throw new Error(metadata.error.message || 'Google Drive 메일박스 폴더를 확인하지 못했습니다.');
+    if (metadata?.id !== safeId || metadata?.mimeType !== 'application/vnd.google-apps.folder') {
+      throw new Error('Google Drive 메일박스 대상은 확인된 폴더여야 합니다.');
+    }
+    if (metadata.capabilities?.canListChildren !== true || metadata.capabilities?.canAddChildren !== true) {
+      throw new Error('Google Drive 메일박스 폴더에 목록 및 파일 추가 권한이 필요합니다.');
+    }
+    return { folderId: safeId, canListChildren: true, canAddChildren: true };
+  }
+
   async driveReadFile(fileId) {
     const safeId = String(fileId || '').trim();
     if (!safeId || safeId.length > 512) throw new Error('Google Drive fileId가 필요합니다.');
