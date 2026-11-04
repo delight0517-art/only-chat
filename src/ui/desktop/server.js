@@ -504,7 +504,9 @@ class DesktopServer {
       try {
         const task = this.taskRegistryStore.getTask(taskKey);
         if (!task) return this._respondJson(res, { error: 'task_not_found' }, 404);
-        const taskReceipt = await adapter.publishTask(taskKey);
+        const taskReceipt = (task.sourceHostId || this.taskRegistryStore.hostId) === this.taskRegistryStore.hostId
+          ? await adapter.publishTask(taskKey)
+          : { created: false, replayed: true, importedFromPeer: true };
         const messages = this.taskRegistryStore.listMessages({ taskKey, viewerChatId: body.viewerChatId.trim(),
           afterMessageId: body.afterMessageId || undefined, limit: body.limit === undefined ? 100 : body.limit });
         const messageReceipts = [];

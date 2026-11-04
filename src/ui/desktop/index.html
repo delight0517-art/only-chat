@@ -309,6 +309,17 @@
       <aside class="workbench-panel" id="workbenchPanel" aria-labelledby="workbenchPanelTitle">
         <header class="workbench-panel-header"><div><span class="workbench-eyebrow">WORK MAP</span><h2 id="workbenchPanelTitle">변화가 이어지는 곳</h2></div><button class="workbench-icon-button" id="btnRefreshWorkbench" type="button" aria-label="작업 지도 새로고침">↻</button></header>
         <p class="workbench-intro">앱별 변화가 어디까지 왔는지, 다음에 무엇을 확인할지 한눈에.</p>
+        <section class="joint-dev-card" aria-labelledby="taskMailboxTitle">
+          <div class="workbench-section-title"><h3 id="taskMailboxTitle">Only Chat 간 작업 대화</h3><button type="button" class="workbench-text-button" id="btnRefreshTaskMailbox">상태 새로고침 ↻</button></div>
+          <p class="workbench-footnote">선택한 Google Drive 폴더로 작업 제목과 명시적으로 보낸 메시지만 동기화합니다. 대화 전체, 초안, 녹음은 공유하지 않습니다.</p>
+          <p id="taskMailboxStatus" class="workbench-read-status" role="status">연결 상태 확인 중</p>
+          <div class="joint-dev-create"><form id="taskMailboxConfigForm">
+            <label>공유 폴더 ID<input name="folderId" required maxlength="256" autocomplete="off" placeholder="Google Drive 폴더 ID"></label>
+            <label>상대 Only Chat 호스트 ID<input name="peerHostId" required maxlength="36" autocomplete="off" placeholder="상대 앱의 호스트 ID (UUID)"></label>
+            <button type="submit">Drive 폴더 확인 후 연결</button><p id="taskMailboxConfigStatus" role="status"></p>
+          </form></div>
+          <button type="button" class="workbench-text-button" id="btnSyncTaskMailbox">새 작업·메시지 확인 및 수신</button>
+        </section>
         <section class="joint-dev-card" aria-labelledby="jointDevTitle">
           <div class="workbench-section-title"><h3 id="jointDevTitle">Mac · Windows 공동 개발</h3><button type="button" class="workbench-text-button" id="btnRefreshJointDev">새로고침 ↻</button></div>
           <p class="workbench-footnote">다중 OS 앱은 보통 한 OS에서 완성한 뒤 다른 OS에 복제하지 않습니다. 먼저 공통 요구사항·인터페이스와 파일 소유권을 정하고, Mac·Windows 구현을 병렬로 진행합니다. 각 OS에서 빌드·테스트한 근거를 모아 검토한 뒤 통합 기준에 반영합니다. 이 작업공간은 짧은 변경 제안과 명시적 적용으로 장기 브랜치 분기를 줄입니다. 여기 적힌 담당자 상태는 자기 보고이며, 자동 CI 결과·Drive readback·상대 적용·ACK는 각각 구분됩니다.</p>

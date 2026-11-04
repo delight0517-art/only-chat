@@ -132,6 +132,16 @@ class TaskMailboxDriveAdapter {
     const created = await this.connector.driveCreateFile(name, JSON_MIME, content, this.folderId);
     if (created?.error) throw new Error(created.error.message || 'Google Drive mailbox write failed');
     if (!created?.id) throw new Error('Google Drive mailbox write did not return a file ID');
+    const readback = await this.connector.driveReadFile(created.id);
+    if (readback?.error || typeof readback?.content !== 'string') {
+      throw new Error('Google Drive mailbox write could not be read back');
+    }
+    let readbackEnvelope;
+    try { readbackEnvelope = JSON.parse(readback.content); }
+    catch (_) { throw new Error('Google Drive mailbox readback is not valid JSON'); }
+    if (stableJson(readbackEnvelope) !== expected) {
+      throw new Error('Google Drive mailbox readback does not match the published content');
+    }
     return { created: true, replayed: false, fileId: created.id, duplicateFileCount: 0 };
   }
 

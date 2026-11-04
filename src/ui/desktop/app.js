@@ -4359,6 +4359,7 @@ let workbenchSnapshot = null;
 let workbenchReadAt = null;
 let workbenchFilter = 'open';
 let workbenchRefreshing = false;
+let taskMailboxStatusSnapshot = null;
 let jointDevLocalPlatform = 'mac';
 
 function workbenchText(tag, className, text) {
@@ -4409,6 +4410,25 @@ function initJointDevelopment() {
   if (!list || !form) return;
   document.getElementById('btnRefreshJointDev')?.addEventListener('click', () => { void refreshJointDevelopment(); });
   document.getElementById('btnJointDevDriveInbox')?.addEventListener('click', () => { void refreshJointDevelopmentDriveInbox(); });
+  document.getElementById('btnRefreshTaskMailbox')?.addEventListener('click', () => { void refreshTaskMailboxStatus(); });
+  document.getElementById('btnSyncTaskMailbox')?.addEventListener('click', () => { void syncTaskMailbox(); });
+  document.getElementById('taskMailboxConfigForm')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const status = document.getElementById('taskMailboxConfigStatus');
+    const values = Object.fromEntries(new FormData(form).entries());
+    status.textContent = '현재 연결된 Google 계정과 폴더의 읽기·쓰기 권한을 확인하는 중';
+    try {
+      const response = await fetch('/api/task-registry/mailbox/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderId: values.folderId.trim(), peerHostId: values.peerHostId.trim() })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Drive 폴더를 연결하지 못했습니다.');
+      status.textContent = '폴더 권한 확인 완료 · 작업이나 메시지를 보낼 때만 게시됩니다.';
+      await refreshTaskMailboxStatus();
+    } catch (error) { status.textContent = error.message || 'Drive 연결 실패'; }
+  });
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const status = document.getElementById('jointDevFormStatus');
@@ -4431,7 +4451,134 @@ function initJointDevelopment() {
       await refreshJointDevelopment();
     } catch (error) { status.textContent = error.message || '공동 작업을 등록할 수 없습니다.'; }
   });
+  void refreshTaskMailboxStatus();
   void refreshJointDevelopment();
+}
+
+async function refreshTaskMailboxStatus() {
+  const status = document.getElementById('taskMailboxStatus');
+  if (!status) return;
+  try {
+    const response = await fetch('/api/task-registry/mailbox', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '메일박스 상태를 읽지 못했습니다.');
+    taskMailboxStatusSnapshot = data;
+    status.textContent = data.configured
+      ? `상대 호스트 ${data.peerHostId} · ${data.connected ? 'Google Drive 연결됨' : 'Google Drive 로그인 필요'} · 폴더 ${data.folderId}`
+      : `이 기기 호스트 ID ${data.localHostId || '확인 불가'} · Drive 연결과 상대 호스트 ID 설정 필요`;
+    const form = document.getElementById('taskMailboxConfigForm');
+    if (form && data.configured) {
+      form.elements.folderId.value = data.folderId || '';
+      form.elements.peerHostId.value = data.peerHostId || '';
+    }
+  } catch (error) {
+    taskMailboxStatusSnapshot = null;
+    status.textContent = error.message || '메일박스 상태를 읽지 못했습니다.';
+  }
+}
+
+async function publishTaskMailboxConversation(taskKey, viewerChatId) {
+  let afterMessageId;
+  const receipts = [];
+  let taskReceipt = null;
+  for (;;) {
+    const response = await fetch(`/api/task-registry/tasks/${encodeURIComponent(taskKey)}/mailbox-publish`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ viewerChatId, afterMessageId, limit: 100 })
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Drive 게시 실패');
+    taskReceipt ||= result.task;
+    receipts.push(...result.messages);
+    if (!result.nextAfterMessageId || result.nextAfterMessageId === afterMessageId || result.messages.length < 100) break;
+    afterMessageId = result.nextAfterMessageId;
+  }
+  return { task: taskReceipt, messages: receipts };
+}
+
+async function syncTaskMailbox() {
+  const button = document.getElementById('btnSyncTaskMailbox');
+  const status = document.getElementById('taskMailboxStatus');
+  if (!button || !status) return;
+  button.disabled = true;
+  status.textContent = 'Drive에서 상대 호스트의 작업과 메시지를 확인하는 중';
+  try {
+    const response = await fetch('/api/task-registry/mailbox/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Drive 동기화 실패');
+    const result = payload.sync;
+    status.textContent = `수신 완료 · 작업 ${result.tasksImported}개 · 메시지 ${result.messagesImported}개 · 중복 ${result.replayed}개 · 제외 ${result.ignored}개`;
+    await refreshWorkbench();
+  } catch (error) { status.textContent = error.message || 'Drive 동기화 실패'; }
+  finally { button.disabled = false; }
+}
+
+function createTaskMailboxConversation(row, card) {
+  if (!row.creatorChatId) return null;
+  const section = workbenchText('section', 'joint-dev-report', '');
+  const title = workbenchText('strong', '', '작업 대화');
+  const messageList = workbenchText('div', 'joint-dev-list', '대화를 열면 동기화된 메시지를 불러옵니다.');
+  const status = workbenchText('small', 'workbench-resume-status', '');
+  const publish = document.createElement('button');
+  publish.type = 'button'; publish.textContent = '저장된 대화 Drive에 보내기';
+  publish.addEventListener('click', async event => {
+    event.preventDefault(); event.stopPropagation(); publish.disabled = true;
+    status.textContent = '작업과 상대 호스트용 메시지를 Drive에 게시하고 읽기 확인 중';
+    try {
+      const result = await publishTaskMailboxConversation(row.key, row.creatorChatId);
+      status.textContent = `게시 확인 · 새 메시지 ${result.messages.filter(item => item.created).length}개 · 이미 게시 ${result.messages.filter(item => item.replayed).length}개`;
+    } catch (error) { status.textContent = error.message || 'Drive 게시 실패'; }
+    finally { publish.disabled = false; }
+  });
+  const form = document.createElement('form');
+  const input = document.createElement('textarea'); input.name = 'text'; input.required = true; input.maxLength = 4000; input.rows = 2; input.placeholder = '이 작업의 상대 Only Chat에 보낼 메시지';
+  const send = document.createElement('button'); send.type = 'submit'; send.textContent = '메시지 저장 후 보내기';
+  form.append(input, send);
+  form.addEventListener('submit', async event => {
+    event.preventDefault(); event.stopPropagation(); send.disabled = true;
+    if (!taskMailboxStatusSnapshot?.configured || !taskMailboxStatusSnapshot.connected) {
+      status.textContent = '메시지 보낼 수 없음 · 먼저 Google Drive와 상대 호스트를 연결하세요.';
+      send.disabled = false;
+      return;
+    }
+    const idempotencyKey = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    status.textContent = '작업 대화에 저장하는 중';
+    try {
+      const response = await fetch(`/api/task-registry/tasks/${encodeURIComponent(row.key)}/messages`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ senderChatId: row.creatorChatId, recipientHostId: taskMailboxStatusSnapshot?.peerHostId, text: input.value, idempotencyKey: `ui-${idempotencyKey}` })
+      });
+      const result = await response.json();
+      if (!response.ok || !result.sent) throw new Error(result.error || result.reason || '메시지를 저장하지 못했습니다.');
+      input.value = '';
+      try {
+        await publishTaskMailboxConversation(row.key, row.creatorChatId);
+        status.textContent = '메시지 Drive 게시·readback 확인 완료';
+      } catch (error) { status.textContent = `메시지는 이 기기에 저장됨 · Drive 게시 실패: ${error.message}`; }
+      await loadMessages();
+    } catch (error) { status.textContent = error.message || '메시지 전송 실패'; }
+    finally { send.disabled = false; }
+  });
+  section.append(title, messageList, form, publish, status);
+
+  let loaded = false;
+  async function loadMessages() {
+    try {
+      const query = new URLSearchParams({ viewerChatId: row.creatorChatId, limit: '100' });
+      const response = await fetch(`/api/task-registry/tasks/${encodeURIComponent(row.key)}/messages?${query}`, { cache: 'no-store' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '메시지를 읽지 못했습니다.');
+      messageList.replaceChildren();
+      if (!result.messages.length) { messageList.textContent = '아직 동기화된 메시지가 없습니다.'; return; }
+      for (const message of result.messages) {
+        const line = workbenchText('p', 'joint-dev-drive', `${message.senderHostId === taskMailboxStatusSnapshot?.localHostId ? '이 기기' : '상대 기기'} · ${new Date(message.createdAt).toLocaleString('ko-KR')}`);
+        line.append(workbenchText('span', '', ` ${message.text}`)); messageList.append(line);
+      }
+    } catch (error) { messageList.textContent = error.message || '메시지를 읽지 못했습니다.'; }
+  }
+  card.addEventListener('toggle', () => { if (!loaded && card.open) { loaded = true; void loadMessages(); } });
+  if (card.open) { loaded = true; void loadMessages(); }
+  return section;
 }
 
 async function refreshJointDevelopmentDriveInbox() {
@@ -4728,6 +4875,8 @@ function renderWorkbenchTasks() {
       if (executor.result) worker.append(workbenchText('pre', '', executor.result));
       detail.append(worker);
     }
+    const mailboxConversation = createTaskMailboxConversation(row, card);
+    if (mailboxConversation) detail.append(mailboxConversation);
     card.append(summary, detail);
     list.append(card);
   }
