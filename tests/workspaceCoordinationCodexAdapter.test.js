@@ -51,6 +51,10 @@ test('Codex calls expose workspace-confined lease tools with the selected worksp
     assert.match(developerInstructions, /workspace_lease_status/);
     assert.match(developerInstructions, /workspace_lease_claim/);
     assert.match(developerInstructions, /workspace_lease_release/);
+    assert.match(developerInstructions, /leases_clear:false/);
+    assert.match(developerInstructions, /정확한 경로 또는 리소스, 잠금 종류/);
+    assert.match(developerInstructions, /다른 저장소나 다른 작업에서 얻은 결과/);
+    assert.match(developerInstructions, /hot reload 가능 여부와 source 소유권/);
     assert.equal(spawnOptions.env.ONLY_CHAT_WORKSPACE_DIR, workspaceDir);
     assert.equal(spawnOptions.env.ONLY_CHAT_SESSION_ID, 'session_test_0001');
   } else {

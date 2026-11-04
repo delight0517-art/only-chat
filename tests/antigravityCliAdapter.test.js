@@ -155,6 +155,9 @@ async function main() {
     assert.deepEqual(launches[4].mcpConfig.mcpServers['onlychat-workspace-coordination'].enabledTools,
       ['workspace_lease_status', 'workspace_lease_claim', 'workspace_lease_release']);
     assert.match(launches[4].agent, /claim the exact relative files/);
+    assert.match(launches[4].agent, /false alone does not establish a repository-wide or feature lock/);
+    assert.match(launches[4].agent, /lease kind, paths, task, and owner/);
+    assert.match(launches[4].agent, /active writers, and app runtime state distinct/);
     assert.equal(fs.existsSync(launches[4].cwd), false, 'workspace MCP config is removed after the provider turn');
 
     const readOnlyTurn = await adapter.call(tier, [{ role: 'user', content: 'read a workspace source file' }], {}, {
