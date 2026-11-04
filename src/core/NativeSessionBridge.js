@@ -91,9 +91,9 @@ unicode_anchor_raw = unicode_anchor.encode('utf-8') if unicode_anchor else b''
 unicode_anchor_escaped = json.dumps(unicode_anchor, ensure_ascii=True)[1:-1].encode('ascii') if unicode_anchor else b''
 unicode_anchor_escape_pattern = re.compile(re.escape(unicode_anchor_escaped), re.IGNORECASE) if unicode_anchor_escaped else None
 unicode_candidate_needles = (unicode_seed, b'\\\\u') if unicode_seed else ()
-ascii_term_patterns = [re.compile(re.escape(term), re.IGNORECASE) for term in terms_bytes] if ascii_query else []
+ascii_term_bytes = [term.lower() for term in terms_bytes] if ascii_query else []
 ascii_seed_bytes = max(terms_bytes, key=len) if terms_bytes else b''
-ascii_seed_pattern = re.compile(re.escape(ascii_seed_bytes), re.IGNORECASE) if ascii_seed_bytes else None
+ascii_seed_lower = ascii_seed_bytes.lower()
 scan_chunk_bytes = 16 * 1024 * 1024
 results = []
 
@@ -190,20 +190,20 @@ def candidate_lines(path, on_progress=None):
                     primary_end = min(size, chunk_start + scan_chunk_bytes)
                     search_start = max(0, chunk_start - seed_size + 1)
                     search_end = min(size, primary_end + seed_size - 1)
-                    block = data[search_start:search_end]
+                    block = data[search_start:search_end].lower()
                     offset = 0
                     while True:
-                        match = ascii_seed_pattern.search(block, offset)
-                        if match is None:
+                        match = block.find(ascii_seed_lower, offset)
+                        if match < 0:
                             break
-                        absolute = search_start + match.start()
+                        absolute = search_start + match
                         if absolute < chunk_start:
-                            offset = match.end()
+                            offset = match + len(ascii_seed_lower)
                             continue
                         if absolute >= primary_end:
                             break
                         if absolute < last_line_end:
-                            offset = max(match.end(), last_line_end - search_start + 1)
+                            offset = max(match + len(ascii_seed_lower), last_line_end - search_start + 1)
                             continue
                         start = data.rfind(b'\\n', 0, absolute) + 1
                         last_line_start = start
@@ -212,9 +212,10 @@ def candidate_lines(path, on_progress=None):
                             end = size
                         last_line_end = end
                         line = data[start:end]
-                        if all(pattern.search(line) for pattern in ascii_term_patterns):
+                        lowered_line = line.lower()
+                        if all(term in lowered_line for term in ascii_term_bytes):
                             yield line
-                        offset = max(match.end(), end - search_start + 1)
+                        offset = max(match + len(ascii_seed_lower), end - search_start + 1)
                     if on_progress:
                         on_progress(primary_end, size)
 
