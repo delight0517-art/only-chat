@@ -38,6 +38,26 @@ function parseUsageForTier(usage, tier) {
   };
 }
 
+const MODEL_EFFORT_VARIANTS = new Map([
+  ['gemini-3.8-flash', new Set(['low', 'medium', 'high'])],
+  ['gemini-4-argon', new Set(['low', 'medium', 'high'])],
+  ['claude-opus-5-5', new Set(['low', 'medium', 'high'])],
+  ['claude-sonnet-5-5', new Set(['low', 'medium', 'high'])],
+  ['gpt-oss-120b', new Set(['medium'])]
+]);
+
+function resolveModelEffort(model, effort) {
+  const match = /^(.*)-(low|medium|high)$/.exec(String(model || ''));
+  const variants = match && MODEL_EFFORT_VARIANTS.get(match[1]);
+  if (!variants) return { model, passEffort: true };
+  if (!variants.has(effort)) {
+    const error = new Error(`The selected Antigravity model does not support the ${effort} reasoning level.`);
+    error.category = 'model_unavailable';
+    throw error;
+  }
+  return { model: `${match[1]}-${effort}`, passEffort: false };
+}
+
 class AntigravityCliAdapter {
   constructor(options = {}) {
     this.command = options.command || path.join(os.homedir(), '.local/bin/agy');
@@ -116,8 +136,9 @@ class AntigravityCliAdapter {
     ];
     const reasoningEffort = parseReasoningEffort(context.reasoningEffort);
     if (!reasoningEffort) throw new Error('지원하지 않는 추론 강도입니다.');
-    args.push('--effort', reasoningEffort);
-    if (tier?.model) args.push('--model', tier.model);
+    const resolvedModel = resolveModelEffort(tier?.model, reasoningEffort);
+    if (resolvedModel.model) args.push('--model', resolvedModel.model);
+    if (resolvedModel.passEffort) args.push('--effort', reasoningEffort);
     if (saved?.provider === 'antigravity-cli' && saved.model === (tier?.model || '')) {
       args.push('--conversation', saved.conversationId);
     }
@@ -249,4 +270,4 @@ class AntigravityCliAdapter {
   }
 }
 
-module.exports = { AntigravityCliAdapter, formatHistory, parseUsageForTier };
+module.exports = { AntigravityCliAdapter, formatHistory, parseUsageForTier, resolveModelEffort };

@@ -41,6 +41,7 @@ async function main() {
   const results = [
     { value: { status: 'SUCCESS', response: 'Hello', conversation_id: 'agy-conv-1' } },
     { value: { status: 'SUCCESS', response: 'Follow up', conversation_id: 'agy-conv-1' } },
+    { value: { status: 'SUCCESS', response: 'Effort matched', conversation_id: 'agy-conv-2' } },
     { value: { status: 'ERROR', response: '', error: 'authentication required' }, code: 1 }
   ];
   try {
@@ -73,6 +74,22 @@ async function main() {
     assert.match(launches[1].args[1], /USER\nnext/);
     assert.doesNotMatch(launches[1].args[1], /Hello/);
     assert.equal(new AntigravityCliAdapter({ stateFile }).conversations['session-a'].conversationId, 'agy-conv-1');
+
+    const effortMatched = await adapter.call(
+      { provider: 'antigravity-cli', model: 'gemini-3.8-flash-medium' },
+      [{ role: 'user', content: 'check' }], {},
+      { sessionId: 'session-b', workspaceDir: '/workspace/a', reasoningEffort: 'low' }
+    );
+    assert.equal(effortMatched.content, 'Effort matched');
+    assert.equal(launches[2].args[launches[2].args.indexOf('--model') + 1], 'gemini-3.8-flash-low');
+    assert.equal(launches[2].args.includes('--effort'), false,
+      'models with an effort suffix must use the matching model variant without a conflicting --effort flag');
+    await assert.rejects(adapter.call(
+      { provider: 'antigravity-cli', model: 'gpt-oss-120b-medium' },
+      [{ role: 'user', content: 'unsupported' }], {},
+      { sessionId: 'session-c', reasoningEffort: 'high' }
+    ), /does not support the high reasoning level/);
+    assert.equal(launches.length, 3, 'unsupported model/effort pairs must fail before launching the CLI');
 
     await assert.rejects(adapter.call(tier, [{ role: 'user', content: 'again' }]), /authentication required/);
   } finally {
