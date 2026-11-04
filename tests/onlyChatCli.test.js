@@ -53,6 +53,23 @@ async function main() {
   assert.ok(writes.some(text => text.includes('[도구 실패: read_file · MCP bridge unavailable; access_token=[redacted]]')));
   assert.ok(!writes.join('').includes('hidden'));
 
+  const loopEvents = Array.from({ length: 4 }, (_, index) => `data: ${JSON.stringify({ type: 'tool_start', call: { id: `loop-${index}`, name: 'call_mcp_tool' } })}\n\n`).join('');
+  const limitedTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_1793780000000', prompt: 'loop guard', maxToolCalls: 3,
+    fetchImpl: async () => new Response(loopEvents, { status: 200, headers: { 'content-type': 'text/event-stream' } }), write: () => {}
+  });
+  assert.equal(limitedTurn.ok, false);
+  assert.equal(limitedTurn.category, 'tool_call_limit', 'CLI stops a provider turn that begins too many tool calls');
+  assert.equal(limitedTurn.limit, 3);
+
+  const timedTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_1793780000000', prompt: 'timeout guard', timeoutMs: 5,
+    fetchImpl: async (_url, options) => new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true })),
+    write: () => {}
+  });
+  assert.equal(timedTurn.ok, false);
+  assert.equal(timedTurn.category, 'turn_timeout', 'CLI reports a bounded provider-turn timeout');
+
   let now = 1_000;
   const goalRequests = [];
   const goalFetch = async (url, options) => {
@@ -99,13 +116,37 @@ async function main() {
   assert.match(fixedRequests[1].prompt, /전체 시간이 끝나기 전에는 GOAL_COMPLETE/);
 
   now = 1_000;
+  const stepBlockedRequests = [];
+  const stepBlockedGoal = await runOnlyChatGoal({
+    baseUrl: 'http://127.0.0.1:8899', prompt: 'multi-task goal', durationMs: 1_000, fixedDuration: true,
+    fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      stepBlockedRequests.push(body);
+      now += stepBlockedRequests.length === 1 ? 400 : 700;
+      const responseText = stepBlockedRequests.length === 1
+        ? 'GOAL_STEP_BLOCKED: one candidate overlaps an active lease.'
+        : 'second task advanced';
+      return new Response([
+        `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_0123456789abcdef' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'message_delta', delta: responseText })}\n\n`,
+        `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+        'data: [DONE]\n\n'
+      ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    now: () => now, write: () => {}
+  });
+  assert.equal(stepBlockedGoal.ok, true);
+  assert.equal(stepBlockedGoal.iteration, 2, 'a blocked subtask advances to a distinct next task in fixed-duration mode');
+  assert.match(stepBlockedRequests[1].prompt, /one candidate overlaps an active lease/);
+
+  now = 1_000;
   const blockedGoal = await runOnlyChatGoal({
     baseUrl: 'http://127.0.0.1:8899', prompt: 'blocked goal', durationMs: 1_000, fixedDuration: true,
     fetchImpl: async () => {
       now += 100;
       return new Response([
         `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_0123456789abcdef' })}\n\n`,
-        `data: ${JSON.stringify({ type: 'message_delta', delta: 'GOAL_BLOCKED' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'message_delta', delta: 'GOAL_BLOCKED: MCP workspace read returned an error; verify canonical root access.' })}\n\n`,
         `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
         'data: [DONE]\n\n'
       ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
@@ -114,6 +155,7 @@ async function main() {
   });
   assert.equal(blockedGoal.ok, false);
   assert.equal(blockedGoal.category, 'goal_blocked', 'fixed-duration stops instead of idling when no safe next step exists');
+  assert.equal(blockedGoal.reason, 'MCP workspace read returned an error; verify canonical root access.');
 
   console.log('Only Chat CLI duration, scoped approval, and SSE response checks passed');
 }

@@ -123,16 +123,24 @@ function safeMcpErrorContent(value, depth = 0) {
   return safeMcpErrorContent(value.content ?? value.result, depth + 1);
 }
 
-async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTools = [], fetchImpl = fetch, write = text => process.stdout.write(text), signal } = {}) {
-  const response = await fetchImpl(`${baseUrl}/api/turn`, {
-    method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, prompt, reasoningEffort: 'low', modelSelection: model, managerMode: false, fullAccess: false, sandboxPolicy: 'workspace-write' }), signal
-  });
+async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTools = [], fetchImpl = fetch, write = text => process.stdout.write(text), signal, maxToolCalls = 12, timeoutMs = 120_000 } = {}) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const activeSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  let response;
+  try {
+    response = await fetchImpl(`${baseUrl}/api/turn`, {
+      method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, prompt, reasoningEffort: 'low', modelSelection: model, managerMode: false, fullAccess: false, sandboxPolicy: 'workspace-write' }), signal: activeSignal
+    });
+  } catch (requestError) {
+    if (timeoutSignal.aborted) return { ok: false, category: 'turn_timeout', sessionId };
+    throw requestError;
+  }
   if (!response.ok) throw new Error(`Only Chat HTTP ${response.status}: ${(await response.text()).slice(0, 240)}`);
   const reader = response.body?.getReader();
   if (!reader) throw new Error('Only Chat did not return a readable event stream.');
   const decoder = new TextDecoder();
-  let buffer = '', resolvedSessionId = null, responseText = '', error = null, completed = false;
+  let buffer = '', resolvedSessionId = null, responseText = '', error = null, completed = false, toolCalls = 0;
   try {
     while (true) {
       const { value, done } = await reader.read();
@@ -150,7 +158,15 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
         if (event.type === 'message_delta') {
           const delta = String(event.delta || ''); responseText += delta; write(delta);
         }
-        if (event.type === 'tool_start') write(`\n[도구: ${event.call?.name || '알 수 없음'}]\n`);
+        if (event.type === 'tool_start') {
+          toolCalls++;
+          write(`\n[도구: ${event.call?.name || '알 수 없음'}]\n`);
+          if (toolCalls >= maxToolCalls) {
+            error = { category: 'tool_call_limit', limit: maxToolCalls };
+            try { await reader.cancel(); } catch (_) {}
+            break;
+          }
+        }
         if (event.type === 'tool_end') {
           const call = event.result?.call || event.call;
           const tool = /^[a-z][a-z0-9_]{0,63}$/i.test(String(call?.name || '')) ? call.name : '알 수 없는 도구';
@@ -167,7 +183,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           }
           const approved = await fetchImpl(`${baseUrl}/api/tool-approval`, {
             method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ requestId: event.requestId, sessionId: event.sessionId, decision: 'allow_tool' }), signal
+            body: JSON.stringify({ requestId: event.requestId, sessionId: event.sessionId, decision: 'allow_tool' }), signal: activeSignal
           });
           if (!approved.ok) {
             error = { category: 'approval_required', name: event.name };
@@ -181,6 +197,9 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
       }
       if (error) break;
     }
+  } catch (streamError) {
+    if (timeoutSignal.aborted) error = { category: 'turn_timeout' };
+    else throw streamError;
   } finally {
     reader.releaseLock();
   }
@@ -192,14 +211,15 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
   if (!/^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/.test(baseUrl || '')) throw new Error('Only Chat은 이 Mac의 loopback 주소로만 연결할 수 있습니다.');
   const deadline = now() + durationMs;
   let sessionId = `session_${now()}`, iteration = 0;
+  const blockedSteps = [];
   while (now() < deadline) {
     iteration++;
     const fixedDurationRules = fixedDuration
-      ? ' 사용자가 지정한 전체 시간이 끝나기 전에는 GOAL_COMPLETE를 출력하거나 완료를 선언하지 마세요. 더 이상 안전하게 진행할 수 있는 새 작업이 없으면 정확히 GOAL_BLOCKED만 출력해 조기 종료하세요. 완료된 작업이나 이전 점검을 반복하지 마세요.'
+      ? ' 사용자가 지정한 전체 시간이 끝나기 전에는 GOAL_COMPLETE를 출력하거나 완료를 선언하지 마세요. 한 하위 작업이 막히면 GOAL_STEP_BLOCKED: <짧은 사유>를 출력하고 다음 반복에서 다른 안전한 하위 작업을 선택하세요. Goal 전체에 남은 안전한 작업이 없거나 전체 범위가 막혔을 때만 GOAL_BLOCKED: <짧은 사유와 다음 조치>로 종료하세요. 비밀값이나 개인 식별 정보는 사유에 넣지 마세요. 완료된 작업과 이미 막힌 하위 작업을 반복하지 마세요.'
       : '';
     const nextPrompt = iteration === 1
       ? `${prompt}${fixedDurationRules}`
-      : `계속 같은 Goal을 진행하세요. 남은 시간은 약 ${Math.max(0, Math.ceil((deadline - now()) / 60_000))}분입니다. 직전 결과와 남은 작업을 확인하고, 이미 끝난 일을 반복하지 말고 다음의 가장 작은 안전한 단계를 실행하세요.${fixedDurationRules} 무료로 선택한 모델만 사용하고, 셸/브랜치/워크트리는 만들지 마세요. 진행이 막히면 원인과 필요한 조치를 보고하고 도구를 반복 재시도하지 마세요.`;
+      : `계속 같은 Goal을 진행하세요. 남은 시간은 약 ${Math.max(0, Math.ceil((deadline - now()) / 60_000))}분입니다. 직전 결과와 남은 작업을 확인하고, 이미 끝난 일을 반복하지 말고 다음의 가장 작은 안전한 단계를 실행하세요.${blockedSteps.length ? ` 이전에 막힌 하위 작업(반복 금지): ${blockedSteps.slice(-8).join(' | ')}` : ''}${fixedDurationRules} 무료로 선택한 모델만 사용하고, 셸/브랜치/워크트리는 만들지 마세요. 진행이 막히면 원인과 필요한 조치를 보고하고 도구를 반복 재시도하지 마세요.`;
     write(`\n[Goal 반복 ${iteration} 시작 · ${sessionId}]\n`);
     const goalSignal = AbortSignal.timeout(Math.max(1, deadline - now()));
     const activeSignal = signal ? AbortSignal.any([signal, goalSignal]) : goalSignal;
@@ -215,9 +235,22 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
       write(`\n[중단: ${result.category}${result.name ? ` · ${result.name}` : ''}]\n`);
       return { ...result, sessionId, iteration, deadline };
     }
-    if (/^\s*GOAL_BLOCKED\s*$/m.test(result.response)) {
-      write('\n[중단: 안전하게 진행할 수 있는 다음 단계가 없습니다. 응답의 차단 사유를 확인하세요.]\n');
-      return { ok: false, category: 'goal_blocked', sessionId, iteration, deadline, response: result.response };
+    const stepBlockedMatch = /^\s*GOAL_STEP_BLOCKED\s*:\s*(.+?)\s*$/m.exec(result.response);
+    if (fixedDuration && stepBlockedMatch) {
+      const reason = redactToolMessage(stepBlockedMatch[1]) || '하위 작업이 진행 불가 상태입니다.';
+      blockedSteps.push(reason);
+      write(`\n[하위 작업 보류 · ${reason} · 다음 작업 탐색]\n`);
+      if (blockedSteps.length >= 5) {
+        write('\n[중단: 서로 다른 하위 작업 5개가 연속으로 막혀 더 진행하지 않았습니다.]\n');
+        return { ok: false, category: 'goal_no_progress', reason, blockedSteps, sessionId, iteration, deadline };
+      }
+      continue;
+    }
+    const blockedMatch = /^\s*GOAL_BLOCKED(?:\s*:\s*(.+?))?\s*$/m.exec(result.response);
+    if (blockedMatch) {
+      const reason = redactToolMessage(blockedMatch[1] || '') || '새로 진행할 안전한 작업이 없습니다.';
+      write(`\n[중단: ${reason}]\n`);
+      return { ok: false, category: 'goal_blocked', reason, sessionId, iteration, deadline, response: result.response };
     }
     if (!fixedDuration && /^\s*GOAL_COMPLETE\s*$/m.test(result.response)) return { ok: true, sessionId, iteration, deadline, completedEarly: true };
   }
@@ -387,8 +420,8 @@ Author: Rogan Kim (GeunHu Kim)
   my-codex accounts            등록된 Google/ChatGPT 계정 목록 확인
   my-codex login add <...>     새로운 Google / ChatGPT 계정 등록
   my-codex exec "<프롬프트>"   비대화형 1회성 명령/에이전트 실행
-  my-codex chat "<프롬프트>"   실행 중인 Only Chat에 요청하고 텍스트 응답 읽기
-  my-codex goal --duration 3h [--fixed-duration] "<Goal>"  Only Chat에서 순차 반복 Goal 실행
+  my-codex chat "<프롬프트>"   실행 중인 Only Chat에 요청하고 텍스트 응답 읽기 (턴당 도구 12회 상한, 2분 제한)
+  my-codex goal --duration 3h [--fixed-duration] "<Goal>"  Only Chat에서 순차 반복 Goal 실행 (회차당 도구 12회 상한, 2분 제한)
     --approve-tool edit_file   이 세션에서 제한된 파일 편집 승인
   my-codex app-server          Codex 호환 JSON-RPC 2.0 stdio 서버 실행
       `);
