@@ -304,7 +304,9 @@ class CodexCliAdapter {
         args.splice(args.length - 3, 0,
           '-c', 'mcp_servers.onlychat_workspace_coordination.enabled=true',
           '-c', `mcp_servers.onlychat_workspace_coordination.command=${JSON.stringify(process.execPath)}`,
-          '-c', `mcp_servers.onlychat_workspace_coordination.args=${JSON.stringify([coordinationServer])}`);
+          '-c', `mcp_servers.onlychat_workspace_coordination.args=${JSON.stringify([coordinationServer])}`,
+          '-c', `mcp_servers.onlychat_workspace_coordination.env.ONLY_CHAT_WORKSPACE_DIR=${JSON.stringify(workspaceDir)}`,
+          '-c', `mcp_servers.onlychat_workspace_coordination.env.ONLY_CHAT_SESSION_ID=${JSON.stringify(String(context.sessionId || ''))}`);
         args.splice(args.length - 3, 0,
           '-c', 'mcp_servers.onlychat_35closer.enabled=true',
           '-c', `mcp_servers.onlychat_35closer.command=${JSON.stringify(process.execPath)}`,

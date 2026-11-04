@@ -45,6 +45,8 @@ test('Codex calls expose workspace-confined lease tools with the selected worksp
   if (process.platform === 'darwin') {
     assert.ok(spawnArgs.includes('mcp_servers.onlychat_workspace_coordination.enabled=true'));
     assert.ok(spawnArgs.includes(`mcp_servers.onlychat_workspace_coordination.args=${JSON.stringify([path.join(workspaceDir, 'src/connectors/WorkspaceCoordinationMcpServer.js')])}`));
+    assert.ok(spawnArgs.includes(`mcp_servers.onlychat_workspace_coordination.env.ONLY_CHAT_WORKSPACE_DIR=${JSON.stringify(workspaceDir)}`));
+    assert.ok(spawnArgs.includes('mcp_servers.onlychat_workspace_coordination.env.ONLY_CHAT_SESSION_ID="session_test_0001"'));
     const developerInstructions = spawnArgs.find(arg => String(arg).startsWith('developer_instructions='));
     assert.match(developerInstructions, /workspace_lease_status/);
     assert.match(developerInstructions, /workspace_lease_claim/);
