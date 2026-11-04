@@ -31,6 +31,7 @@ function fixture(options = {}) {
       throw new Error('unexpected command');
     },
     readOwnedLeaseRows: () => [],
+    readRepoLeaseRows: () => [],
     ...options
   });
   return { server, calls };
@@ -45,13 +46,30 @@ test('workspace coordination exposes only status, scoped edit claim, and own-ses
   const { server, calls } = fixture();
   const status = await server.invoke('workspace_lease_status', {});
   assert.equal(status.repository, workspaceDir);
-  assert.equal(status.leases, 'No active leases.');
+  assert.equal(status.evidenceComplete, true);
+  assert.equal(status.activeLeaseCount, 0);
+  assert.deepEqual(status.pathAssessment, { kind: 'edit-path lease conflict check only', status: 'not-requested' });
 
   const claim = await server.invoke('workspace_lease_claim', { task: 'onlychat-feature-1', paths: ['src/ui/desktop/app.js'], lease_minutes: 10 });
   assert.equal(claim.lease_id, leaseId);
   assert.match(claim.owner, /^onlychat-[a-f0-9]{20}$/);
   assert.doesNotMatch(claim.owner, /session_test_0001/);
   assert.deepEqual(calls[1], ['claim', '--mode', 'edit', '--repo', workspaceDir, '--task', 'onlychat-feature-1', '--owner', claim.owner, '--lease-minutes', '10', '--paths', 'src/ui/desktop/app.js']);
+});
+
+test('workspace lease status reports exact path conflicts without labeling unrelated paths or the whole repo locked', async () => {
+  const { server } = fixture({ readRepoLeaseRows: () => [
+    { id: leaseId, workspace: workspaceDir, mode: 'edit', task: 'parallel-test', paths: [`${workspaceDir}/src/ui/desktop/app.js`], owner: 'agent-abc', expiresAt: Date.now() + 60_000 },
+    { id: '22222222-2222-4222-8222-222222222222', workspace: workspaceDir, mode: 'edit', task: 'other-path', paths: [`${workspaceDir}/src/providers/responseGuidance.js`], owner: 'agent-def', expiresAt: Date.now() + 60_000 }
+  ] });
+  const overlapping = await server.invoke('workspace_lease_status', { paths: ['src/ui/desktop/app.js'] });
+  assert.equal(overlapping.pathAssessment.status, 'conflict');
+  assert.deepEqual(overlapping.pathAssessment.conflictingLeaseIds, [leaseId]);
+  assert.equal(overlapping.leases[0].repositoryWide, false);
+  const independent = await server.invoke('workspace_lease_status', { paths: ['src/connectors/WorkspaceCoordinationMcpServer.js'] });
+  assert.equal(independent.pathAssessment.status, 'no-agent-coord-conflict');
+  assert.equal(independent.limitation.includes('cannot establish that the repository or product is globally unlocked'), true);
+  await assert.rejects(server.invoke('workspace_lease_status', { paths: ['../outside.js'] }), /Lease paths/);
 });
 
 test('workspace coordination rejects absolute, traversing, directory, malformed, and overlong claims before invoking the lease tool', async () => {
@@ -83,7 +101,8 @@ test('workspace coordination implements the MCP initialize, list, and tool-call 
   assert.equal(listed.result.tools.length, 3);
   const called = await server.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'workspace_lease_status', arguments: {} } });
   assert.equal(called.result.isError, false);
-  assert.equal(called.result.structuredContent.leases, 'No active leases.');
+  assert.equal(called.result.structuredContent.activeLeaseCount, 0);
+  assert.equal(called.result.structuredContent.pathAssessment.status, 'not-requested');
 });
 
 test('workspace coordination claims and releases an exact lease through the real local registry', async () => {
@@ -103,7 +122,10 @@ test('workspace coordination claims and releases an exact lease through the real
     assert.match(claimedLeaseId, /^[a-f0-9-]{36}$/i);
     assert.deepEqual(claimed.paths, [path.join(canonicalTempRepo, 'src/candidate.js')]);
     const status = await server.invoke('workspace_lease_status', {});
-    assert.match(status.leases, /onlychat-coord-smoke/);
+    assert.equal(status.activeLeaseCount, 1);
+    assert.equal(status.leases[0].task, 'onlychat-coord-smoke');
+    assert.equal(status.leases[0].mode, 'edit');
+    assert.deepEqual(status.leases[0].paths, [path.join(canonicalTempRepo, 'src/candidate.js')]);
     const released = await server.invoke('workspace_lease_release', { lease_id: claimedLeaseId });
     claimedLeaseId = '';
     assert.equal(released.released, true);

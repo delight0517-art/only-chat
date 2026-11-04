@@ -16,8 +16,8 @@ const MAX_LEASE_MINUTES = 60;
 const tools = [
   {
     name: 'workspace_lease_status',
-    description: 'Read agent-coord edit/integration/deploy leases for Only Chat’s selected Git repository. Results apply only to this repository and this lease registry; they do not report other lock systems, active writers, or app runtime state. A lease on one path does not block unrelated paths. Lease status is advisory; never edit a path owned by another task.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    description: 'Read agent-coord edit/integration/deploy leases for Only Chat’s selected Git repository. Optionally pass the exact relative files you plan to edit to get path-level conflicts. Results apply only to this repository and this lease registry; they do not report other lock systems, active writers, or app runtime state. A lease on one path does not block unrelated paths. Lease status is advisory; never edit a path owned by another task.',
+    inputSchema: { type: 'object', properties: { paths: { type: 'array', minItems: 1, maxItems: MAX_PATHS, items: { type: 'string', minLength: 1, maxLength: 256 } } }, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   },
   {
@@ -71,6 +71,24 @@ function createServer(options = {}) {
     }
   });
   const readOwnedLeaseRows = options.readOwnedLeaseRows;
+  const readRepoLeaseRows = options.readRepoLeaseRows || ((repo) => {
+    const dbPath = path.join(os.homedir(), '.codex/agent-coordination/leases.sqlite3');
+    const script = [
+      'import json, sqlite3, sys, time',
+      'db, repo = sys.argv[1:3]',
+      'con = sqlite3.connect("file:" + db + "?mode=ro", uri=True, timeout=2)',
+      'rows = con.execute("SELECT id, workspace, mode, task, paths, owner, expires_at FROM leases WHERE repo=? AND expires_at>? ORDER BY created_at", (repo, time.time())).fetchall()',
+      'print(json.dumps([{"id": r[0], "workspace": r[1], "mode": r[2], "task": r[3], "paths": json.loads(r[4]), "owner": r[5], "expiresAt": r[6]} for r in rows]))',
+      'con.close()'
+    ].join('; ');
+    const raw = execImpl('python3', ['-c', script, dbPath, repo], {
+      cwd: workspaceDir, encoding: 'utf8', timeout: 3000, maxBuffer: 32 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    const rows = parseJson(raw, 'Could not read the repository-scoped lease evidence.');
+    if (!Array.isArray(rows)) throw new Error('Repository-scoped lease evidence is invalid.');
+    return rows;
+  });
 
   function repoIdentity() {
     const root = path.resolve(String(execImpl('git', ['-C', workspaceDir, 'rev-parse', '--show-toplevel'], {
@@ -140,17 +158,41 @@ function createServer(options = {}) {
     const identity = repoIdentity();
     const repo = identity.root;
     if (name === 'workspace_lease_status') {
-      if (Object.keys(args).length) throw new Error('workspace_lease_status takes no arguments.');
-      const raw = String(runAgentCoord(['status', '--repo', repo])).trim();
-      const maxOutputLength = 12_000;
+      if (Object.keys(args).some(key => key !== 'paths')) throw new Error('Unsupported workspace lease status arguments.');
+      const requestedPaths = args.paths === undefined ? [] : validatePaths(args.paths);
+      runAgentCoord(['status', '--repo', repo]);
+      const rows = readRepoLeaseRows(identity.repo);
+      if (rows.some(row => !row || !['edit', 'integrate', 'deploy'].includes(row.mode) || !Array.isArray(row.paths))) {
+        throw new Error('Repository-scoped lease evidence is incomplete.');
+      }
+      const requestedAbsolute = requestedPaths.map(item => path.resolve(workspaceDir, item));
+      const overlaps = (left, right) => left.some(a => right.some(b => {
+        const relative = path.relative(a, b);
+        const reverse = path.relative(b, a);
+        return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+          || reverse === '' || (!reverse.startsWith(`..${path.sep}`) && reverse !== '..' && !path.isAbsolute(reverse));
+      }));
+      const conflicts = requestedPaths.length ? rows.filter(row => {
+        if (row.mode === 'deploy') return true;
+        if (row.mode === 'integrate') return !row.paths.length || overlaps(requestedAbsolute, row.paths);
+        return row.workspace === workspaceDir && overlaps(requestedAbsolute, row.paths);
+      }) : [];
       return {
         repository: repo,
-        scope: 'Only Chat selected Git repository; agent-coord lease registry only',
+        workspace: workspaceDir,
+        scope: 'Only this Git common repository and active agent-coord edit/integration/deploy leases',
         leaseKinds: ['edit', 'integrate', 'deploy'],
         checkedAt: new Date().toISOString(),
-        complete: raw.length <= maxOutputLength,
-        leases: raw.slice(0, maxOutputLength) || 'No active agent-coord leases for this repository.',
-        limitation: 'This result does not report workspace execution leases, other coordination registries, ordinary file writers, or application runtime locks. It cannot establish that the repository or product is globally locked or unlocked.'
+        evidenceComplete: true,
+        activeLeaseCount: rows.length,
+        leases: rows.map(row => ({ ...row, repositoryWide: row.paths.length === 0 })),
+        requestedPaths,
+        pathAssessment: requestedPaths.length ? {
+          kind: 'edit-path lease conflict check only',
+          status: conflicts.length ? 'conflict' : 'no-agent-coord-conflict',
+          conflictingLeaseIds: conflicts.map(row => row.id)
+        } : { kind: 'edit-path lease conflict check only', status: 'not-requested' },
+        limitation: 'This result does not report workspace execution leases, other coordination registries, ordinary file writers, or application runtime locks. A no-agent-coord-conflict result applies only to the requested paths in this repository and cannot establish that the repository or product is globally unlocked.'
       };
     }
     if (name === 'workspace_lease_claim') {
