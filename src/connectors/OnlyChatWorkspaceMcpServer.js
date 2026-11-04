@@ -14,7 +14,7 @@ const SECRET_NAME = /(?:^|\/)(?:\.env(?:\.[^/]*)?|[^/]*(?:auth|credential|secret
 
 const readTool = {
   name: 'workspace_file_read',
-  description: 'Read a UTF-8 regular file by relative path under Only Chat’s selected workspace. Secret-like files and symlinks are rejected.',
+  description: 'Read a UTF-8 regular file under Only Chat’s selected workspace. Always pass path. For long files, pass start_line and end_line to read a focused excerpt (maximum 400 lines per call); omit them only for a short file. Example: {"path":"src/example.js","start_line":40,"end_line":100}. Secret-like files and symlinks are rejected.',
   inputSchema: { type: 'object', properties: { path: { type: 'string', minLength: 1, maxLength: 256 }, start_line: { type: 'integer', minimum: 1 }, end_line: { type: 'integer', minimum: 1 } }, required: ['path'], additionalProperties: false },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
 };
@@ -32,7 +32,7 @@ const createTool = {
 };
 const checkTool = {
   name: 'workspace_check',
-  description: 'Run one bounded Node syntax check, one named tests/*.test.js file, or git diff --check in the selected workspace. No shell is used.',
+  description: 'Run exactly one bounded check in the selected workspace. Required: kind. For JavaScript syntax use {"kind":"syntax","path":"src/file.js"}; for one test use {"kind":"test","path":"tests/file.test.js"}; for whitespace/conflict-marker checks use {"kind":"diff"} and omit path. Do not pass command, args, or other fields. No shell is used.',
   inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['syntax', 'test', 'diff'] }, path: { type: 'string', maxLength: 256 } }, required: ['kind'], additionalProperties: false },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
 };

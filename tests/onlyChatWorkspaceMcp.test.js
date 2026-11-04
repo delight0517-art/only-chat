@@ -23,6 +23,9 @@ test('Only Chat workspace MCP confines reads and requires this session file leas
     });
 
     assert.deepEqual(server.tools.map(tool => tool.name), ['workspace_file_read', 'workspace_file_edit', 'workspace_file_create', 'workspace_check']);
+    assert.match(server.tools.find(tool => tool.name === 'workspace_file_read').description, /start_line.*end_line/);
+    assert.match(server.tools.find(tool => tool.name === 'workspace_check').description, /"kind":"syntax".*"path"/);
+    assert.match(server.tools.find(tool => tool.name === 'workspace_check').description, /omit path/);
     assert.equal((await server.invoke('workspace_file_read', { path: 'sample.js' })).content, 'const value = 1;\nconsole.log(value);\n');
     await assert.rejects(server.invoke('workspace_file_edit', { path: 'sample.js', target: 'value = 1', replacement: 'value = 2' }), /lease/);
     leases = [[source]];
