@@ -401,6 +401,7 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
   const deadline = now() + durationMs;
   let sessionId = `session_${now()}`, iteration = 0;
   const blockedSteps = [];
+  let consecutiveInterruptedTurns = 0;
   while (now() < deadline) {
     iteration++;
     const fixedDurationRules = fixedDuration
@@ -432,9 +433,21 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
     }
     if (result.sessionId) sessionId = result.sessionId;
     if (!result.ok) {
+      if (fixedDuration && ['tool_call_limit', 'turn_timeout'].includes(result.category)) {
+        consecutiveInterruptedTurns++;
+        const reason = `회차 ${iteration} ${result.category}`;
+        blockedSteps.push(reason);
+        write(`\n[회차 제한 도달 · ${result.category} · 다음 하위 작업으로 계속]\n`);
+        if (consecutiveInterruptedTurns >= 5) {
+          write('\n[중단: 제한된 회차가 5번 연속 이어져 진행을 멈췄습니다.]\n');
+          return { ...result, category: 'goal_no_progress', reason, blockedSteps, sessionId, iteration, deadline };
+        }
+        continue;
+      }
       write(`\n[중단: ${result.category}${result.name ? ` · ${result.name}` : ''}]\n`);
       return { ...result, sessionId, iteration, deadline };
     }
+    consecutiveInterruptedTurns = 0;
     const stepBlockedMatch = /^\s*GOAL_STEP_BLOCKED\s*:\s*(.+?)\s*$/m.exec(result.response);
     if (fixedDuration && stepBlockedMatch) {
       const reason = redactToolMessage(stepBlockedMatch[1]) || '하위 작업이 진행 불가 상태입니다.';

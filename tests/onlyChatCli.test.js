@@ -245,6 +245,36 @@ async function main() {
   assert.match(fixedRequests[1].prompt, /전체 시간이 끝나기 전에는 GOAL_COMPLETE/);
 
   now = 1_000;
+  const interruptedGoalRequests = [];
+  const interruptedGoal = await runOnlyChatGoal({
+    baseUrl: 'http://127.0.0.1:8899', prompt: 'continue after a bounded turn', durationMs: 1_000, fixedDuration: true,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/api/tool-approval')) return new Response('{"ok":true}', { status: 200 });
+      const body = JSON.parse(options.body);
+      interruptedGoalRequests.push(body);
+      now += interruptedGoalRequests.length === 1 ? 400 : 700;
+      if (interruptedGoalRequests.length === 1) {
+        const limitEvents = [
+          { type: 'session_started', sessionId: 'ses_0123456789abcdef' },
+          ...Array.from({ length: 12 }, (_, index) => ({ type: 'tool_start', call: { id: `bounded-${index}`, name: 'call_mcp_tool' } }))
+        ];
+        return new Response(limitEvents.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }
+      return new Response([
+        `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_0123456789abcdef' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'message_delta', delta: 'next safe step' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+        'data: [DONE]\n\n'
+      ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    now: () => now, write: () => {}
+  });
+  assert.equal(interruptedGoal.ok, true);
+  assert.equal(interruptedGoal.iteration, 2, 'fixed-duration continues after one bounded tool-call turn');
+  assert.equal(interruptedGoalRequests[1].sessionId, 'ses_0123456789abcdef', 'continuation uses the same Only Chat session');
+  assert.match(interruptedGoalRequests[1].prompt, /tool_call_limit/, 'the next turn receives the prior bound as a no-repeat clue');
+
+  now = 1_000;
   const stepBlockedRequests = [];
   const stepBlockedGoal = await runOnlyChatGoal({
     baseUrl: 'http://127.0.0.1:8899', prompt: 'multi-task goal', durationMs: 1_000, fixedDuration: true,
