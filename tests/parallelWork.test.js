@@ -61,6 +61,7 @@ async function testParallelSystem() {
   const lock = new OwnershipLock({ workspaceDir: tmpDir });
   const lock1 = lock.acquireLocks('task_worker_1', ['src/app.js']);
   assert.strictEqual(lock1.acquired, true);
+  assert.strictEqual(lock.acquireLocks('task_worker_1', ['src/other.js']).acquired, true);
 
   // Attempt to acquire same file from another task
   const lock2 = lock.acquireLocks('task_worker_2', ['src/app.js']);
@@ -68,6 +69,9 @@ async function testParallelSystem() {
   assert.ok(lock2.reason.includes('병렬 충돌 방지를 위해 직렬화 대기합니다'));
   console.log('  ✓ 동일 파일 동시 수정 시 충돌 방지 대기(Serialization) 정상 작동 확인');
 
+  lock.releaseLocks('task_worker_1', ['src/app.js']);
+  assert.strictEqual(lock.acquireLocks('task_worker_2', ['src/other.js']).acquired, false,
+    'releasing the embedded edit lock must preserve another lock held by the same turn');
   lock.releaseLocks('task_worker_1');
   const lock3 = lock.acquireLocks('task_worker_2', ['src/app.js']);
   assert.strictEqual(lock3.acquired, true);

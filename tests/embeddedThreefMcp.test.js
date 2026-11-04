@@ -40,7 +40,7 @@ async function main() {
     tools: { approvalPolicy: 'on-request' },
     ownership: {
       acquireLocks: (_session, files) => { calls.push(['lock', files]); return { acquired: true }; },
-      releaseLocks: () => calls.push(['unlock'])
+      releaseLocks: (_session, files) => calls.push(['unlock', files])
     },
     _executeToolCall: async call => {
       calls.push([call.name, call.args]);

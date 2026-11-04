@@ -85,7 +85,7 @@ async function dispatchEmbeddedThreefTool(server, context, name, args = {}) {
       fs.writeFileSync(filePath, current.replace(args.target, args.replacement), 'utf8');
       return { path: filePath, modified: true };
     } finally {
-      server.engine.ownership.releaseLocks(context.sessionId);
+      server.engine.ownership.releaseLocks(context.sessionId, [filePath]);
     }
   }
   switch (name) {

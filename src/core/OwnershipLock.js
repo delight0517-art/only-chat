@@ -57,11 +57,10 @@ class OwnershipLock {
   /**
    * Release locks when a task completes or fails
    */
-  releaseLocks(taskId) {
+  releaseLocks(taskId, filePaths = null) {
+    const releaseSet = filePaths ? new Set(filePaths.map(f => this.normalizePath(f))) : null;
     for (const [f, holder] of this.locks.entries()) {
-      if (holder.taskId === taskId) {
-        this.locks.delete(f);
-      }
+      if (holder.taskId === taskId && (!releaseSet || releaseSet.has(f))) this.locks.delete(f);
     }
   }
 
