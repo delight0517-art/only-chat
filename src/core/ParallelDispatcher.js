@@ -162,6 +162,8 @@ class ParallelDispatcher extends EventEmitter {
         prompt: t.prompt || t.title,
         targetFiles: Array.isArray(t.files) ? t.files : [],
         allowedTools: [...new Set(t.allowedTools)],
+        ...(typeof t.forAiProject === 'string' ? { forAiProject: t.forAiProject } : {}),
+        ...(typeof t.forAiReceiptKey === 'string' ? { forAiReceiptKey: t.forAiReceiptKey } : {}),
         requireToolExecution: t.requireToolExecution !== false,
         status: 'queued', // 'queued' | 'running' | 'completed' | 'blocked'
         blockReason: null,

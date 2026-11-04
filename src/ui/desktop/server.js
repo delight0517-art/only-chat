@@ -35,6 +35,7 @@ const { RecurringScheduleStore } = require('../../scheduler/RecurringScheduleSto
 const { RecurringScheduleService } = require('../../scheduler/RecurringScheduleService.js');
 const { TaskRegistryStore } = require('../../core/TaskRegistryStore.js');
 const { MacWindowsDevelopment } = require('../../core/MacWindowsDevelopment.js');
+const { ForAiFeedbackInbox } = require('../../connectors/ForAiFeedbackInbox.js');
 
 const QUOTA_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 const SESSION_SEARCH_TIMEOUT_MS = 20000;
@@ -158,6 +159,8 @@ class DesktopServer {
     this.macWindowsDevelopment = this.isolated ? null : new MacWindowsDevelopment({ dataDir: this.dataDir });
     engineOptions.macWindowsDevelopment = this.macWindowsDevelopment;
     this.engine = new AgentEngine(engineOptions);
+    this.forAiInbox = this.isolated ? null : new ForAiFeedbackInbox({ dataDir: this.dataDir, dispatcher: this.engine.dispatcher });
+    this.engine.forAiTaskGuard = task => this.forAiInbox?.isTaskAuthorized(task) === true;
     this.taskRegistryStore = this.isolated ? null : new TaskRegistryStore({ dataDir: this.dataDir });
     this.scheduleStore = options.scheduleStore || new RecurringScheduleStore({ dataDir: this.dataDir });
     this.modelSwitchScheduleStore = options.modelSwitchScheduleStore || new ModelSwitchScheduleStore({ dataDir: this.dataDir, clock: options.modelSwitchClock });
@@ -1686,6 +1689,47 @@ class DesktopServer {
       const snapshot = this.engine.dispatcher.getSnapshot();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(snapshot));
+      return;
+    }
+
+    if (pathname === '/api/integrations/for-ai/feedback' && req.method === 'POST') {
+      if (Number(req.headers['content-length']) > 64 * 1024) {
+        res.writeHead(413, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'payload_too_large' }));
+        return;
+      }
+      const body = await this._readLimitedBody(req, 64 * 1024);
+      try {
+        if (!body || !this.forAiInbox) throw Object.assign(new Error('for_ai_unavailable'), { statusCode: 503 });
+        const receipt = this.forAiInbox.submit(req, body);
+        res.writeHead(receipt.duplicate ? 200 : 202, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, ...receipt }));
+      } catch (error) {
+        const status = error.statusCode || 400;
+        const code = ['for_ai_not_authorized', 'for_ai_connection_unavailable'].includes(error.message)
+          ? 'unauthorized'
+          : ['origin_not_allowed', 'project_not_allowed'].includes(error.message) ? 'forbidden'
+            : error.message === 'id_conflict' ? 'id_conflict'
+              : status === 503 ? 'temporarily_unavailable' : 'invalid_request';
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: code }));
+      }
+      return;
+    }
+
+    const forAiStatusMatch = /^\/api\/integrations\/for-ai\/feedback\/([0-9a-f-]{36})$/.exec(pathname);
+    if (forAiStatusMatch && req.method === 'GET') {
+      try {
+        if (!this.forAiInbox) throw Object.assign(new Error('for_ai_unavailable'), { statusCode: 503 });
+        const receipt = this.forAiInbox.status(req, forAiStatusMatch[1]);
+        res.writeHead(receipt ? 200 : 404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(receipt ? { ok: true, ...receipt } : { ok: false, error: 'not_found' }));
+      } catch (error) {
+        const status = error.statusCode || 401;
+        const code = error.message === 'origin_not_allowed' ? 'forbidden' : status === 503 ? 'temporarily_unavailable' : 'unauthorized';
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: code }));
+      }
       return;
     }
 
