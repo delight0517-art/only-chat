@@ -15,6 +15,9 @@ test('requires lock claims to name their measured scope and lock kind', () => {
   assert.match(RESPONSE_GUIDANCE, /한 경로의 잠금은 저장소 전체 잠금이 아니/);
   assert.match(RESPONSE_GUIDANCE, /출처, 정확한 저장소\/작업공간\/경로, 잠금 종류, 결과, 확인 시각을 행별로 분리한다/);
   assert.match(RESPONSE_GUIDANCE, /현재 대상과 다른 저장소의 측정값은 명시적으로 제외/);
+  assert.match(RESPONSE_GUIDANCE, /Detox 저장소의 편집 lease가 있어도 Focus Fence 저장소가 잠겼다는 뜻은 아니다/);
+  assert.match(RESPONSE_GUIDANCE, /Focus Fence 저장소를 직접 조회한 결과만으로 설명/);
+  assert.match(RESPONSE_GUIDANCE, /Detox lease는 그 결론의 원인이나 근거에서 제외/);
   assert.match(RESPONSE_GUIDANCE, /정확한 대상의 새 조회가 없으면 잠금 상태는 unknown/);
   assert.match(RESPONSE_GUIDANCE, /사용자가 앞선 잠금·기능 상태 판단이 틀렸다고 지적하면 먼저/);
   assert.match(RESPONSE_GUIDANCE, /대상 리소스의 상태를 다시 읽고/);
