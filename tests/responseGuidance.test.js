@@ -11,6 +11,9 @@ test('requires lock claims to name their measured scope and lock kind', () => {
   assert.match(withResponseGuidance('USER\ninspect lock'), /다른 저장소나 작업의 잠금 상태를 현재 대상의 상태로 옮겨 말하지 않는다/);
   assert.match(RESPONSE_GUIDANCE, /lease 종류·경로·task·owner/);
   assert.match(RESPONSE_GUIDANCE, /해당 lease가 현재 수정 경로와 충돌하는지 확인/);
+  assert.match(RESPONSE_GUIDANCE, /integration guard의 실패는 소스 통합 가능성에 대한 측정/);
+  assert.match(RESPONSE_GUIDANCE, /앱의 스케줄 잠금\/해제 측정으로 바꾸어 말하지 않는다/);
+  assert.match(RESPONSE_GUIDANCE, /`leases_clear:false`만으로 실제 lease의 존재·소유자·충돌 여부를 단정하지 않는다/);
   assert.match(RESPONSE_GUIDANCE, /앱 기능\)/);
   assert.match(RESPONSE_GUIDANCE, /한 경로의 잠금은 저장소 전체 잠금이 아니/);
   assert.match(RESPONSE_GUIDANCE, /출처, 정확한 저장소\/작업공간\/경로, 잠금 종류, 결과, 확인 시각을 행별로 분리한다/);
