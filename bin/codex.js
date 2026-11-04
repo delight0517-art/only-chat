@@ -311,7 +311,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   try {
     response = await fetchImpl(`${baseUrl}/api/turn`, {
       method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, prompt: workspaceContext ? `${prompt}\n\n${formatOnlyChatWorkspaceContext(workspaceContext)}` : prompt, reasoningEffort: 'low', modelSelection: model, managerMode: false, fullAccess: false, sandboxPolicy: 'workspace-write' }), signal: activeSignal
+      body: JSON.stringify({ sessionId, prompt: workspaceContext ? `${prompt}\n\n${formatOnlyChatWorkspaceContext(workspaceContext)}` : prompt, reasoningEffort: /-(low|medium|high)$/.exec(String(model || ''))?.[1] || 'low', modelSelection: model, managerMode: false, fullAccess: false, sandboxPolicy: 'workspace-write' }), signal: activeSignal
     });
   } catch (requestError) {
     if (timeoutSignal.aborted) return { ok: false, category: 'turn_timeout', sessionId };

@@ -77,6 +77,7 @@ async function main() {
     assert.equal(payload.fullAccess, false);
     assert.equal(payload.managerMode, false);
     assert.equal(payload.modelSelection, 'gemini-3.8-flash-medium');
+    assert.equal(payload.reasoningEffort, 'medium');
     return new Response(events, { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   const result = await streamOnlyChatTurn({
