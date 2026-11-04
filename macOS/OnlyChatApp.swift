@@ -408,6 +408,7 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 self.authorizeBrowserNavigation(url, completion: completion)
             },
             onWebView: { model, view in ThreeFEmbeddedBrowserSession.shared.attach(model: model, webView: view) },
+            onPageStateChange: { [weak self] url in self?.sendBrowserNavigateResult(url) },
             onBlockedNavigation: { [weak self] url in self?.showBrowserNotice("Focus Fence에서 탐색을 차단했습니다.", url: url) }
         ).environmentObject(ThreeFURLRouter.shared)
         let hostingView = NSHostingView(rootView: AnyView(browser))
@@ -423,6 +424,13 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
         DispatchQueue.main.async { self.webView.evaluateJavaScript("window.onlyChatBrowserResult && window.onlyChatBrowserResult(\(json))") }
+    }
+
+    private func sendBrowserNavigateResult(_ url: URL?) {
+        let payload = ["url": url?.absoluteString ?? ""]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        DispatchQueue.main.async { self.webView.evaluateJavaScript("window.onlyChatBrowserNavigateResult && window.onlyChatBrowserNavigateResult(\(json))") }
     }
 
     private static func validBrowserURL(_ value: String) -> URL? {

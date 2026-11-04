@@ -3887,6 +3887,10 @@ async function navBrowser(url) {
     return;
   }
   document.getElementById('browserUrlInput').value = url;
+  if (postNativeBrowserPanelAction('navigate', { url })) {
+    consoleEl.textContent = `[3F Browser 이동 요청] ${url}`;
+    return;
+  }
   if (!(await threefControlEnabled())) { consoleEl.textContent = '[3F Browser 제어가 꺼져 있습니다.]'; return; }
   try {
     const response = await fetch('/api/browser/threef/open', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url}) });
@@ -3905,11 +3909,8 @@ async function threefControlEnabled() {
 function setThreefControlUi(enabled) {
   const toggle = document.getElementById('threefControlEnabled');
   if (toggle) toggle.checked = enabled;
-  for (const control of [
-    document.getElementById('btnBrowserNav'), document.getElementById('btnBrowserThreef'),
-    document.getElementById('btnBrowserAria'), document.getElementById('btnBrowserRead'),
-    ...document.querySelectorAll('[data-browser-action]')
-  ]) if (control) control.disabled = !enabled;
+  const openInThreef = document.getElementById('btnBrowserThreef');
+  if (openInThreef) openInThreef.disabled = !enabled;
 }
 async function refreshThreefControlStatus() {
   try {
@@ -3943,13 +3944,21 @@ async function handleBrowserOpenInThreef() {
   const consoleEl = document.getElementById('browserAriaConsole');
   const url = window.onlyChatResolveBrowserInput?.(document.getElementById('browserUrlInput').value) || null;
   if (!url) { consoleEl.textContent = '[주소 오류] HTTP/HTTPS 주소를 확인해 주세요.'; return; }
-  await navBrowser(url);
+  if (!(await threefControlEnabled())) { consoleEl.textContent = '[3F Browser 제어가 꺼져 있습니다.]'; return; }
+  try {
+    const response = await fetch('/api/browser/threef/open', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url })
+    });
+    const result = await response.json();
+    consoleEl.textContent = response.ok ? '[독립 3F Browser에 열기 요청을 보냈습니다.]' : `[3F Browser 오류] ${result.error || '요청 실패'}`;
+  } catch (error) { consoleEl.textContent = `[3F Browser 오류] ${error.message}`; }
 }
 
 async function handleBrowserAria() {
   const consoleEl = document.getElementById('browserAriaConsole');
-  if (!(await threefControlEnabled())) { consoleEl.textContent = '[3F Browser 제어가 꺼져 있습니다.]'; return; }
   consoleEl.textContent = `[3F Browser 페이지 연결 확인 중...]`;
+  if (postNativeBrowserPanelAction('aria')) return;
+  if (!(await threefControlEnabled())) { consoleEl.textContent = '[3F Browser 제어가 꺼져 있습니다.]'; return; }
   try {
     const res = await fetch('/api/browser/aria', {
       method: 'POST',
@@ -3965,6 +3974,7 @@ async function handleBrowserAria() {
 
 async function handleBrowserRead() {
   const consoleEl = document.getElementById('browserAriaConsole');
+  if (postNativeBrowserPanelAction('read')) return;
   if (!(await threefControlEnabled())) { consoleEl.textContent = '[3F Browser 제어가 꺼져 있습니다.]'; return; }
   try {
     const res = await fetch('/api/browser/read', {
@@ -3980,6 +3990,7 @@ async function handleBrowserRead() {
 }
 
 function sendBrowserPanelAction(action) {
+  if (postNativeBrowserPanelAction(action)) return;
   if (!threefControlAllowed) { document.getElementById('browserAriaConsole').textContent = '[3F Browser 제어가 꺼져 있습니다.]'; return; }
   fetch('/api/browser/history', {
     method: 'POST',
@@ -3991,6 +4002,13 @@ function sendBrowserPanelAction(action) {
     if (result.url) document.getElementById('browserUrlInput').value = result.url;
     document.getElementById('browserAriaConsole').textContent = `[3F Browser ${action}] ${result.stdout || result.url || '완료'}`;
   }).catch(error => { document.getElementById('browserAriaConsole').textContent = `[3F Browser 오류] ${error.message}`; });
+}
+
+function postNativeBrowserPanelAction(action, payload = {}) {
+  const handler = window.webkit?.messageHandlers?.browserPanel;
+  if (!handler) return false;
+  handler.postMessage({ action, ...payload });
+  return true;
 }
 
 // The native surface is transport-only; these callbacks are also available to its adapter.
@@ -4185,9 +4203,9 @@ window.onlyChatBrowserResult = ({ action, text, error }) => {
 };
 
 window.onlyChatBrowserNavigateResult = ({ url }) => {
-  if (!url) return;
+  if (typeof url !== 'string') return;
   document.getElementById('browserUrlInput').value = url;
-  document.getElementById('browserAriaConsole').textContent = `[3F Browser 세션] ${url}`;
+  document.getElementById('browserAriaConsole').textContent = url ? `[3F Browser 세션] ${url}` : '[3F Browser 새 탭]';
 };
 
 async function loadReaApps() {

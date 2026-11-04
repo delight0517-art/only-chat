@@ -31,12 +31,22 @@ async function main() {
     assert.match(desktopApp, /function setThreefControlUi\(enabled\)/);
     const navBrowser = desktopApp.match(/async function navBrowser\(url\) \{[\s\S]*?\n\}/)?.[0];
     assert.ok(navBrowser, 'navigation action stays in one auditable function');
+    assert.match(navBrowser, /postNativeBrowserPanelAction\('navigate'/,
+      'the Only Chat address bar must navigate the embedded browser session');
     assert.match(navBrowser, /fetch\('\/api\/browser\/threef\/open'/);
     assert.match(navBrowser, /finally\s*\{\s*await refreshThreefControlStatus\(\);/,
       'a navigation failure must refresh the panel so stale connected-page status is cleared');
-    assert.match(desktopApp, /function handleBrowserAria\(\)[\s\S]*?fetch\('\/api\/browser\/aria'/);
-    assert.match(desktopApp, /function handleBrowserRead\(\)[\s\S]*?fetch\('\/api\/browser\/read'/);
-    assert.match(desktopApp, /function sendBrowserPanelAction\(action\)[\s\S]*?fetch\('\/api\/browser\/history'/);
+    assert.match(desktopApp, /function handleBrowserOpenInThreef\(\)[\s\S]*?fetch\('\/api\/browser\/threef\/open'/,
+      'opening a URL in the standalone 3F app remains a separate explicit action');
+    assert.match(desktopApp, /function handleBrowserAria\(\)[\s\S]*?postNativeBrowserPanelAction\('aria'\)[\s\S]*?fetch\('\/api\/browser\/aria'/);
+    assert.match(desktopApp, /function handleBrowserRead\(\)[\s\S]*?postNativeBrowserPanelAction\('read'\)[\s\S]*?fetch\('\/api\/browser\/read'/);
+    assert.match(desktopApp, /function sendBrowserPanelAction\(action\)[\s\S]*?postNativeBrowserPanelAction\(action\)[\s\S]*?fetch\('\/api\/browser\/history'/);
+    assert.match(desktopApp, /function postNativeBrowserPanelAction\(action, payload = \{\}\)[\s\S]*?handler\.postMessage\(\{ action, \.\.\.payload \}\)/);
+    const controlUi = desktopApp.match(/function setThreefControlUi\(enabled\) \{[\s\S]*?\n\}/)?.[0];
+    assert.doesNotMatch(controlUi, /btnBrowserNav|data-browser-action/,
+      'manual embedded browsing stays available when AI browser control is off');
+    assert.match(desktopApp, /url \? `\[3F Browser 세션\] \$\{url\}` : '\[3F Browser 새 탭\]'/,
+      'switching to a blank tab clears the outer address bar');
     assert.match(desktopApp, /독립 3F Browser 연결됨/);
 
     const { DesktopServer } = require('../src/ui/desktop/server.js');
