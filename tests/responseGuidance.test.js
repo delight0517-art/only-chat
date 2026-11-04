@@ -24,6 +24,9 @@ test('requires lock claims to name their measured scope and lock kind', () => {
   assert.match(RESPONSE_GUIDANCE, /정확한 대상의 새 조회가 없으면 잠금 상태는 unknown/);
   assert.match(RESPONSE_GUIDANCE, /사용자가 앞선 잠금·기능 상태 판단이 틀렸다고 지적하면 먼저/);
   assert.match(RESPONSE_GUIDANCE, /대상 리소스의 상태를 다시 읽고/);
+  assert.match(RESPONSE_GUIDANCE, /관련 없는 저장소 lease나 통합 경고를 이유로 기능 결함 판단·수정을 보류하지 않는다/);
+  assert.match(RESPONSE_GUIDANCE, /런타임을 확인할 수 없으면 수정 결과와 런타임 미검증을 분리해 보고한다/);
+  assert.match(RESPONSE_GUIDANCE, /재현하지 않은 원인까지 사실로 단정하지 않는다/);
 });
 
 test('separates source edits, reload eligibility, loaded revision, and visible behavior', () => {
