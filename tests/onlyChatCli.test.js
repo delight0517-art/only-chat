@@ -11,6 +11,10 @@ async function main() {
   assert.equal(args.durationMs, 7_200_000);
   assert.equal(args.fixedDuration, true);
   assert.equal(args.model, 'gemini-3.8-flash-medium');
+  const scopedArgs = parseChatCommand(['--model', 'gpt-6-luna', '--approve-workspace-write', '/workspace/only-chat', '한 번 진행']);
+  assert.equal(scopedArgs.approveWorkspaceWrite, '/workspace/only-chat');
+  assert.equal(scopedArgs.model, 'gpt-6-luna');
+  assert.throws(() => parseChatCommand(['--approve-workspace-write', 'relative/path', 'unsafe']), /절대 경로/);
   assert.throws(() => parseChatCommand(['--approve-tool', 'exec_command', 'unsafe']), /승인 가능 도구/);
   assert.equal(safeToolError({ error: 'MCP bridge failed Bearer abc.def; access_token=secret user@example.com' }),
     'MCP bridge failed Bearer [redacted]; access_token=[redacted] [redacted-email]');
@@ -52,6 +56,88 @@ async function main() {
   assert.ok(writes.some(text => text.includes('[Only Chat 승인 범위: edit_file]')));
   assert.ok(writes.some(text => text.includes('[도구 실패: read_file · MCP bridge unavailable; access_token=[redacted]]')));
   assert.ok(!writes.join('').includes('hidden'));
+
+  const workspaceScopeEvent = {
+    type: 'tool_approval_required', requestId: 'req-workspace', sessionId: 'ses_0123456789abcdef',
+    name: 'codex_cli_workspace_write_scope', scopeRequiresExplicit: false,
+    args: { directory: '/workspace/only-chat', reason: 'Codex CLI may write in this workspace.' }
+  };
+  const workspaceEvents = [
+    { type: 'session_started', sessionId: 'ses_0123456789abcdef' },
+    workspaceScopeEvent,
+    { type: 'message_delta', delta: '작업공간 승인 후 응답' },
+    { type: 'turn_complete' }
+  ].map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n';
+  const workspaceApprovals = [];
+  const workspaceWrites = [];
+  const workspaceTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_1793780000000', prompt: 'scoped approval',
+    approveWorkspaceWrite: '/workspace/only-chat',
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/api/tool-approval')) {
+        workspaceApprovals.push(JSON.parse(options.body));
+        return new Response('{"ok":true}', { status: 200 });
+      }
+      return new Response(workspaceEvents, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    write: text => workspaceWrites.push(text)
+  });
+  assert.equal(workspaceTurn.ok, true, 'an exact, explicit workspace path can approve one bounded Codex request');
+  assert.equal(workspaceApprovals.length, 1);
+  assert.equal(workspaceApprovals[0].decision, 'approve', 'workspace approval does not persist as a session tool grant');
+  assert.ok(workspaceWrites.some(text => text.includes('[Only Chat 작업공간 쓰기 승인: /workspace/only-chat]')));
+
+  let mismatchedScopeApprovalCount = 0;
+  const mismatchedScopeTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_1793780000000', prompt: 'mismatch guard',
+    approveWorkspaceWrite: '/workspace/only-chat',
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/api/tool-approval')) mismatchedScopeApprovalCount++;
+      return new Response(`data: ${JSON.stringify({ ...workspaceScopeEvent, args: { directory: '/workspace/other' } })}\n\n`, {
+        status: 200, headers: { 'content-type': 'text/event-stream' }
+      });
+    },
+    write: () => {}
+  });
+  assert.equal(mismatchedScopeTurn.category, 'approval_required', 'a different workspace is not approved');
+  assert.equal(mismatchedScopeApprovalCount, 0);
+
+  const fullAccessScopeTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_1793780000000', prompt: 'full access guard',
+    approveWorkspaceWrite: '/workspace/only-chat',
+    fetchImpl: async () => new Response(`data: ${JSON.stringify({ ...workspaceScopeEvent, scopeRequiresExplicit: true })}\n\n`, {
+      status: 200, headers: { 'content-type': 'text/event-stream' }
+    }),
+    write: () => {}
+  });
+  assert.equal(fullAccessScopeTurn.category, 'approval_required', 'the workspace flag cannot approve Full Access');
+
+  let goalNow = 1_000;
+  let goalWorkspaceTurns = 0;
+  const goalWorkspaceApprovals = [];
+  const goalWorkspaceRun = await runOnlyChatGoal({
+    baseUrl: 'http://127.0.0.1:8899', prompt: 'continue scoped goal', durationMs: 1_000, fixedDuration: true,
+    model: 'gpt-6-luna', approveWorkspaceWrite: '/workspace/only-chat', now: () => goalNow, write: () => {},
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/api/tool-approval')) {
+        goalWorkspaceApprovals.push(JSON.parse(options.body));
+        return new Response('{"ok":true}', { status: 200 });
+      }
+      goalWorkspaceTurns++;
+      goalNow += 600;
+      const turnEvents = [
+        { type: 'session_started', sessionId: 'ses_0123456789abcdef' },
+        workspaceScopeEvent,
+        { type: 'message_delta', delta: 'goal step' },
+        { type: 'turn_complete' }
+      ].map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n';
+      return new Response(turnEvents, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }
+  });
+  assert.equal(goalWorkspaceRun.ok, true);
+  assert.equal(goalWorkspaceTurns, 2, 'Goal keeps running sequential Only Chat turns until the deadline');
+  assert.equal(goalWorkspaceApprovals.length, 2, 'each Goal turn rechecks the exact workspace scope');
+  assert.ok(goalWorkspaceApprovals.every(approval => approval.decision === 'approve'));
 
   const loopEvents = Array.from({ length: 4 }, (_, index) => `data: ${JSON.stringify({ type: 'tool_start', call: { id: `loop-${index}`, name: 'call_mcp_tool' } })}\n\n`).join('');
   const limitedTurn = await streamOnlyChatTurn({

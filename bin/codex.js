@@ -123,7 +123,7 @@ function safeMcpErrorContent(value, depth = 0) {
   return safeMcpErrorContent(value.content ?? value.result, depth + 1);
 }
 
-async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTools = [], fetchImpl = fetch, write = text => process.stdout.write(text), signal, maxToolCalls = 12, timeoutMs = 120_000 } = {}) {
+async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTools = [], approveWorkspaceWrite = null, fetchImpl = fetch, write = text => process.stdout.write(text), signal, maxToolCalls = 12, timeoutMs = 120_000 } = {}) {
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const activeSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   let response;
@@ -176,21 +176,29 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           write(`[도구 ${failed ? '실패' : '완료'}: ${tool}${detail ? ` · ${detail}` : ''}]\n`);
         }
         if (event.type === 'tool_approval_required') {
-          if (!approveTools.includes(event.name)) {
+          const isExactWorkspaceWrite = event.name === 'codex_cli_workspace_write_scope'
+            && event.scopeRequiresExplicit !== true
+            && typeof approveWorkspaceWrite === 'string'
+            && typeof event.args?.directory === 'string'
+            && path.resolve(event.args.directory) === approveWorkspaceWrite;
+          if (!approveTools.includes(event.name) && !isExactWorkspaceWrite) {
             error = { category: 'approval_required', name: event.name };
             await reader.cancel();
             break;
           }
+          const decision = isExactWorkspaceWrite ? 'approve' : 'allow_tool';
           const approved = await fetchImpl(`${baseUrl}/api/tool-approval`, {
             method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ requestId: event.requestId, sessionId: event.sessionId, decision: 'allow_tool' }), signal: activeSignal
+            body: JSON.stringify({ requestId: event.requestId, sessionId: event.sessionId, decision }), signal: activeSignal
           });
           if (!approved.ok) {
             error = { category: 'approval_required', name: event.name };
             await reader.cancel();
             break;
           }
-          write(`[Only Chat 승인 범위: ${event.name}]\n`);
+          write(isExactWorkspaceWrite
+            ? `[Only Chat 작업공간 쓰기 승인: ${approveWorkspaceWrite}]\n`
+            : `[Only Chat 승인 범위: ${event.name}]\n`);
         }
         if (event.type === 'error') error = { category: event.category || 'provider_failure', model: event.model, rank: event.rank };
         if (event.type === 'turn_complete') completed = true;
@@ -207,7 +215,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   return { ok: completed && Boolean(responseText.trim()), sessionId: resolvedSessionId, response: responseText };
 }
 
-async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = false, model = 'gemini-3.8-flash-medium', approveTools = [], fetchImpl = fetch, write = text => process.stdout.write(text), now = Date.now, signal } = {}) {
+async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = false, model = 'gemini-3.8-flash-medium', approveTools = [], approveWorkspaceWrite = null, fetchImpl = fetch, write = text => process.stdout.write(text), now = Date.now, signal } = {}) {
   if (!/^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/.test(baseUrl || '')) throw new Error('Only Chat은 이 Mac의 loopback 주소로만 연결할 수 있습니다.');
   const deadline = now() + durationMs;
   let sessionId = `session_${now()}`, iteration = 0;
@@ -225,7 +233,7 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
     const activeSignal = signal ? AbortSignal.any([signal, goalSignal]) : goalSignal;
     let result;
     try {
-      result = await streamOnlyChatTurn({ baseUrl, sessionId, prompt: nextPrompt, model, approveTools, fetchImpl, write, signal: activeSignal });
+      result = await streamOnlyChatTurn({ baseUrl, sessionId, prompt: nextPrompt, model, approveTools, approveWorkspaceWrite, fetchImpl, write, signal: activeSignal });
     } catch (error) {
       if (now() >= deadline) break;
       throw error;
@@ -259,7 +267,7 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
 }
 
 function parseChatCommand(commandArgs) {
-  const options = { model: 'gemini-3.8-flash-medium', approveTools: [] };
+  const options = { model: 'gemini-3.8-flash-medium', approveTools: [], approveWorkspaceWrite: null };
   const positional = [];
   for (let i = 0; i < commandArgs.length; i++) {
     const arg = commandArgs[i];
@@ -267,6 +275,11 @@ function parseChatCommand(commandArgs) {
     else if (arg === '--duration') options.durationMs = parseGoalDuration(commandArgs[++i]);
     else if (arg === '--fixed-duration') options.fixedDuration = true;
     else if (arg === '--approve-tool') options.approveTools.push(commandArgs[++i] || '');
+    else if (arg === '--approve-workspace-write') {
+      const directory = commandArgs[++i] || '';
+      if (!path.isAbsolute(directory)) throw new Error('--approve-workspace-write에는 승인할 작업공간의 절대 경로를 입력하세요.');
+      options.approveWorkspaceWrite = path.resolve(directory);
+    }
     else positional.push(arg);
   }
   options.prompt = positional.join(' ').trim();
@@ -284,7 +297,7 @@ async function main() {
       const options = parseChatCommand(args.slice(1));
       const baseUrl = process.env.ONLY_CHAT_URL || 'http://127.0.0.1:8899';
       if (command === 'goal') {
-        if (!options.durationMs) throw new Error('사용법: my-codex goal --duration 3h [--approve-tool edit_file] "Goal"');
+        if (!options.durationMs) throw new Error('사용법: my-codex goal --duration 3h [--approve-tool edit_file] [--approve-workspace-write ABSOLUTE_PATH] "Goal"');
         const result = await runOnlyChatGoal({ ...options, baseUrl });
         if (!result.ok) process.exitCode = 1;
       } else {
@@ -420,9 +433,10 @@ Author: Rogan Kim (GeunHu Kim)
   my-codex accounts            등록된 Google/ChatGPT 계정 목록 확인
   my-codex login add <...>     새로운 Google / ChatGPT 계정 등록
   my-codex exec "<프롬프트>"   비대화형 1회성 명령/에이전트 실행
-  my-codex chat "<프롬프트>"   실행 중인 Only Chat에 요청하고 텍스트 응답 읽기 (턴당 도구 12회 상한, 2분 제한)
-  my-codex goal --duration 3h [--fixed-duration] "<Goal>"  Only Chat에서 순차 반복 Goal 실행 (회차당 도구 12회 상한, 2분 제한)
+  my-codex chat [--model MODEL] [--approve-workspace-write ABSOLUTE_PATH] "<프롬프트>"   Only Chat에 요청하고 텍스트 응답 읽기 (턴당 도구 12회 상한, 2분 제한)
+  my-codex goal --duration 3h [--fixed-duration] [--model MODEL] [--approve-workspace-write ABSOLUTE_PATH] "<Goal>"  Only Chat에서 순차 반복 Goal 실행 (회차당 도구 12회 상한, 2분 제한)
     --approve-tool edit_file   이 세션에서 제한된 파일 편집 승인
+    --approve-workspace-write는 지정한 정확한 폴더에서만 Codex CLI 셸/파일 쓰기를 해당 실행 동안 승인합니다. Full Access는 승인하지 않습니다.
   my-codex app-server          Codex 호환 JSON-RPC 2.0 stdio 서버 실행
       `);
       break;
