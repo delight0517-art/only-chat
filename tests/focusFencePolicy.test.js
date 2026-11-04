@@ -12,21 +12,35 @@ assert.equal(matchPolicy('https://google.com/search?q=casino', { searchQueries: 
 assert.equal(matchPolicy('https://example.com/safe', { blockedDomains: [], keywords: [] }), null);
 assert.equal(matchPolicy('https://example.com/blocked/path', { blockedDomains: [], blockedUrlParts: ['blocked/path'], keywords: [] }), 'blocked/path');
 assert.equal(matchPolicy('https://youtube.com/watch?v=AbCdEf12345', { blockedDomains: [], keywords: [], blockedYoutubeVideoIds: ['AbCdEf12345'] }), 'AbCdEf12345');
+assert.equal(matchPolicy('https://youtube.com/watch?v=AbCdEf12345', { blockedDomains: [], keywords: [], blockedVideos: ['AbCdEf12345'] }), 'AbCdEf12345');
 assert.equal(matchPolicy('https://youtube.com/@Creator', { blockedDomains: [], keywords: [], blockedYoutubeHandles: ['creator'] }), '@Creator');
+assert.equal(matchPolicy('https://youtube.com/@Creator', { blockedDomains: [], keywords: [], blockedChannels: ['@creator'] }), '@Creator');
 
 async function main() {
   const calls = [];
   const youtube = new FocusFencePolicy({ ports: [17361], fetch: async url => {
     calls.push(String(url));
-    if (String(url).includes('/rules')) return { ok: true, json: async () => ({ protectionEnabled: true, blockedDomains: [], blockedUrlParts: [], keywords: [] }) };
-    if (String(url).includes('/youtube/check')) return { ok: true, json: async () => ({ blocked: true, videoId: 'AbCdEf12345' }) };
+    if (String(url).includes('/rules')) return { ok: true, json: async () => ({ protectionEnabled: true, blockedDomains: [], blockedUrlParts: [], keywords: [], youtubeQuotaBlocked: true }) };
     if (String(url).includes('/block')) return { ok: true, json: async () => ({}) };
     throw new Error('Unexpected request');
   } });
   const videoDecision = await youtube.check('https://youtube.com/watch?v=AbCdEf12345');
   assert.equal(videoDecision.allowed, false);
-  assert.equal(videoDecision.rule, 'AbCdEf12345');
-  assert(calls.some(url => url.includes('/youtube/check?v=AbCdEf12345&browser=onlychat')));
+  assert.equal(videoDecision.rule, 'YouTube 사용량 제한');
+  assert.equal(calls.some(url => url.includes('/youtube/check') || url.includes('/youtube/channel-check')), false,
+    'the current Focus Fence rules snapshot supplies the YouTube quota decision');
+
+  const youtubeAllowed = await new FocusFencePolicy({ ports: [17361], fetch: async url => {
+    if (String(url).includes('/rules')) return { ok: true, json: async () => ({ blockedDomains: [], blockedUrlParts: [], keywords: [], youtubeQuotaBlocked: false }) };
+    throw new Error('Unexpected request');
+  } }).check('https://youtube.com/');
+  assert.deepEqual(youtubeAllowed, { allowed: true, url: 'https://youtube.com/', reason: 'allowed' });
+
+  const youtubeUnknown = await new FocusFencePolicy({ ports: [17361], fetch: async url => {
+    if (String(url).includes('/rules')) return { ok: true, json: async () => ({ blockedDomains: [], blockedUrlParts: [], keywords: [] }) };
+    throw new Error('Unexpected request');
+  } }).check('https://youtube.com/');
+  assert.equal(youtubeUnknown.reason, 'focus_fence_unavailable', 'missing quota state must fail closed for YouTube');
 
   const policyFor = rules => new FocusFencePolicy({ ports: [17361], fetch: async url => {
     if (url.includes('/rules')) return { ok: true, json: async () => rules };

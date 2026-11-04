@@ -95,10 +95,12 @@ function matchPolicy(href, rules) {
   const youtube = /(^|\.)youtube\.com$/.test(host) || /(^|\.)youtu\.be$/.test(host);
   if (youtube) {
     const videoId = url.searchParams.get('v') || url.pathname.match(/^\/(?:shorts\/)?([\w-]{6,})/)?.[1];
-    if (videoId && (rules.blockedYoutubeVideoIds || []).some(id => String(id).toLowerCase() === videoId.toLowerCase())) return videoId;
+    const blockedVideos = [...(rules.blockedYoutubeVideoIds || []), ...(rules.blockedVideos || [])];
+    if (videoId && blockedVideos.some(id => String(id).toLowerCase() === videoId.toLowerCase())) return videoId;
     const handle = url.pathname.match(/^\/@([^/?#]+)/)?.[1];
     const channelId = url.pathname.match(/^\/channel\/(UC[\w-]+)/i)?.[1];
-    const channels = [...(rules.blockedYoutubeHandles || []), ...(rules.blockedYoutubeChannelIds || [])].map(value => String(value).replace(/^@/, '').toLowerCase());
+    const channels = [...(rules.blockedYoutubeHandles || []), ...(rules.blockedYoutubeChannelIds || []), ...(rules.blockedChannels || [])]
+      .map(value => String(value).replace(/^@/, '').toLowerCase());
     if ((handle && channels.includes(handle.toLowerCase())) || (channelId && channels.includes(channelId.toLowerCase()))) return handle ? `@${handle}` : channelId;
   }
   for (const raw of rules.keywords || []) {
@@ -201,23 +203,13 @@ class FocusFencePolicy {
     const parsed = new URL(url);
     const host = normalizeHost(parsed.hostname);
     if (!/(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(host)) return { allowed: true, url };
-    const videoId = parsed.searchParams.get('v') || parsed.pathname.match(/^\/(?:shorts\/)?([\w-]{6,})/)?.[1];
-    const isVideo = Boolean(videoId) && (host === 'youtu.be' || parsed.pathname === '/watch' || parsed.pathname.startsWith('/shorts/'));
-    const path = isVideo
-      ? `/youtube/check?v=${encodeURIComponent(videoId)}`
-      : `/youtube/channel-check?path=${encodeURIComponent(parsed.pathname + parsed.search)}`;
-    try {
-      const response = await this.fetch(`http://127.0.0.1:${snapshot.port}${path}&browser=onlychat`, {
-        cache: 'no-store', signal: AbortSignal.timeout(this.timeoutMs)
-      });
-      if (!response.ok) return { allowed: false, url, reason: 'focus_fence_check_failed' };
-      const result = await response.json();
-      return result.blocked
-        ? { allowed: false, url, reason: 'blocked', rule: result.rule || result.channelHandle || result.channelId || result.videoId || 'YouTube 규칙' }
-        : { allowed: true, url };
-    } catch (_) {
-      return { allowed: false, url, reason: 'focus_fence_check_failed' };
+    if (typeof snapshot.rules.youtubeQuotaBlocked !== 'boolean') {
+      return { allowed: false, url, reason: 'focus_fence_unavailable' };
     }
+    if (host !== 'music.youtube.com' && snapshot.rules.youtubeQuotaBlocked === true) {
+      return { allowed: false, url, reason: 'blocked', rule: 'YouTube 사용량 제한' };
+    }
+    return { allowed: true, url };
   }
 }
 
