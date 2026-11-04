@@ -59,6 +59,11 @@ class OwnershipLock {
     return {
       acquired: blockedPaths.length === 0,
       partial: acquiredPaths.length > 0 && blockedPaths.length > 0,
+      // These fields describe only this request's paths; this lock has no repository-wide state.
+      status: blockedPaths.length === 0 ? 'acquired' : acquiredPaths.length ? 'partial' : 'blocked',
+      scope: 'requested_paths',
+      repositoryWide: false,
+      requestedPaths: normalized,
       acquiredPaths,
       blockedPaths,
       blockers,
