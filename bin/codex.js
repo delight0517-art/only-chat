@@ -74,6 +74,55 @@ function parseGoalDuration(value) {
   return minutes * 60_000;
 }
 
+function redactToolMessage(value) {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/\b(bearer\s+)[\w.~+/=-]+/gi, '$1[redacted]')
+    .replace(/\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\b\s*[:=]\s*["']?[^\s,"'}]+/gi, '$1=[redacted]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]')
+    .replace(/\s+/g, ' ').trim().slice(0, 240);
+}
+
+function safeToolError(value, depth = 0) {
+  if (depth > 4 || value == null) return '';
+  if (typeof value === 'string') {
+    try { return safeToolError(JSON.parse(value), depth + 1); } catch (_) { return ''; }
+  }
+  if (typeof value !== 'string') {
+    if (Array.isArray(value)) return value.map(item => safeToolError(item, depth + 1)).find(Boolean) || '';
+    if (typeof value !== 'object') return '';
+    if (value.isError === true) return safeMcpErrorContent(value.content, depth + 1) || 'MCP tool returned an error';
+    if (value.blocked === true) return redactToolMessage(value.error) || 'blocked by policy';
+    if (typeof value.error === 'string') return redactToolMessage(value.error);
+    if (value.result !== undefined) return safeToolError(value.result, depth + 1);
+    if (Array.isArray(value.content)) {
+      for (const item of value.content) {
+        if (item?.isError === true) return safeToolError(item, depth + 1);
+        if (typeof item?.text === 'string') {
+          try {
+            const parsed = JSON.parse(item.text);
+            const detail = safeToolError(parsed, depth + 1);
+            if (detail) return detail;
+          } catch (_) {}
+        }
+      }
+    }
+    return '';
+  }
+  return '';
+}
+
+function safeMcpErrorContent(value, depth = 0) {
+  if (depth > 4 || value == null) return '';
+  if (typeof value === 'string') {
+    try { return safeMcpErrorContent(JSON.parse(value), depth + 1); } catch (_) { return redactToolMessage(value); }
+  }
+  if (Array.isArray(value)) return value.map(item => safeMcpErrorContent(item, depth + 1)).find(Boolean) || '';
+  if (typeof value !== 'object') return '';
+  if (typeof value.text === 'string') return redactToolMessage(value.text);
+  return safeMcpErrorContent(value.content ?? value.result, depth + 1);
+}
+
 async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTools = [], fetchImpl = fetch, write = text => process.stdout.write(text), signal } = {}) {
   const response = await fetchImpl(`${baseUrl}/api/turn`, {
     method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
@@ -102,6 +151,14 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           const delta = String(event.delta || ''); responseText += delta; write(delta);
         }
         if (event.type === 'tool_start') write(`\n[도구: ${event.call?.name || '알 수 없음'}]\n`);
+        if (event.type === 'tool_end') {
+          const call = event.result?.call || event.call;
+          const tool = /^[a-z][a-z0-9_]{0,63}$/i.test(String(call?.name || '')) ? call.name : '알 수 없는 도구';
+          const result = event.result?.result;
+          const detail = safeToolError(result);
+          const failed = result?.ok === false || result?.blocked === true || Boolean(detail);
+          write(`[도구 ${failed ? '실패' : '완료'}: ${tool}${detail ? ` · ${detail}` : ''}]\n`);
+        }
         if (event.type === 'tool_approval_required') {
           if (!approveTools.includes(event.name)) {
             error = { category: 'approval_required', name: event.name };
@@ -137,7 +194,12 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
   let sessionId = `session_${now()}`, iteration = 0;
   while (now() < deadline) {
     iteration++;
-    const nextPrompt = iteration === 1 ? prompt : `계속 같은 Goal을 진행하세요. 남은 시간은 약 ${Math.max(0, Math.ceil((deadline - now()) / 60_000))}분입니다. 직전 결과와 남은 작업을 확인하고, 이미 끝난 일을 반복하지 말고 다음의 가장 작은 안전한 단계를 실행하세요.${fixedDuration ? ' 사용자가 지정한 전체 시간이 끝나기 전에는 GOAL_COMPLETE를 출력하거나 완료를 선언하지 마세요. 안전하게 진행할 다른 작업이 없으면 그 사실과 근거를 기록하고, 완료된 작업을 반복하지 마세요.' : ''} 무료로 선택한 모델만 사용하고, 셸/브랜치/워크트리는 만들지 마세요. 진행이 막히면 원인과 필요한 조치를 보고하고 도구를 반복 재시도하지 마세요.`;
+    const fixedDurationRules = fixedDuration
+      ? ' 사용자가 지정한 전체 시간이 끝나기 전에는 GOAL_COMPLETE를 출력하거나 완료를 선언하지 마세요. 더 이상 안전하게 진행할 수 있는 새 작업이 없으면 정확히 GOAL_BLOCKED만 출력해 조기 종료하세요. 완료된 작업이나 이전 점검을 반복하지 마세요.'
+      : '';
+    const nextPrompt = iteration === 1
+      ? `${prompt}${fixedDurationRules}`
+      : `계속 같은 Goal을 진행하세요. 남은 시간은 약 ${Math.max(0, Math.ceil((deadline - now()) / 60_000))}분입니다. 직전 결과와 남은 작업을 확인하고, 이미 끝난 일을 반복하지 말고 다음의 가장 작은 안전한 단계를 실행하세요.${fixedDurationRules} 무료로 선택한 모델만 사용하고, 셸/브랜치/워크트리는 만들지 마세요. 진행이 막히면 원인과 필요한 조치를 보고하고 도구를 반복 재시도하지 마세요.`;
     write(`\n[Goal 반복 ${iteration} 시작 · ${sessionId}]\n`);
     const goalSignal = AbortSignal.timeout(Math.max(1, deadline - now()));
     const activeSignal = signal ? AbortSignal.any([signal, goalSignal]) : goalSignal;
@@ -152,6 +214,10 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
     if (!result.ok) {
       write(`\n[중단: ${result.category}${result.name ? ` · ${result.name}` : ''}]\n`);
       return { ...result, sessionId, iteration, deadline };
+    }
+    if (/^\s*GOAL_BLOCKED\s*$/m.test(result.response)) {
+      write('\n[중단: 안전하게 진행할 수 있는 다음 단계가 없습니다. 응답의 차단 사유를 확인하세요.]\n');
+      return { ok: false, category: 'goal_blocked', sessionId, iteration, deadline, response: result.response };
     }
     if (!fixedDuration && /^\s*GOAL_COMPLETE\s*$/m.test(result.response)) return { ok: true, sessionId, iteration, deadline, completedEarly: true };
   }
@@ -345,4 +411,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, createToolSummary, readableModelName, parseGoalDuration, parseChatCommand, streamOnlyChatTurn, runOnlyChatGoal };
+module.exports = { main, createToolSummary, readableModelName, parseGoalDuration, parseChatCommand, safeToolError, streamOnlyChatTurn, runOnlyChatGoal };
