@@ -4620,7 +4620,7 @@ async function refreshWorkbench() {
           const data = await readWorkbenchSnapshot('/api/ownership');
           const presented = presentWorkspaceOwnershipModel(data);
           state.textContent = presented.gitText;
-          detail.textContent = [priorityStatus?.sessionWorkspaceDir || priorityStatus?.workspaceDir, presented.leaseText].filter(Boolean).join(' · ');
+          detail.textContent = [priorityStatus?.sessionWorkspaceDir || priorityStatus?.workspaceDir, presented.pathLockText, presented.leaseText].filter(Boolean).join(' · ');
         } catch (_) {
           state.textContent = '작업공간 상태를 확인할 수 없습니다.';
           detail.textContent = '새로고침하거나 원본·변경 화면에서 확인하세요.';
@@ -4752,6 +4752,7 @@ function renderWorkbenchModules(slots) {
 
 async function refreshWorkspaceOwnership() {
   const liveStatus = document.getElementById('workspaceOwnershipLiveStatus');
+  const pathLockStatus = document.getElementById('workspacePathLockStatus');
   const leaseStatus = document.getElementById('workspaceLeaseStatus');
   const leaseDetail = document.getElementById('workspaceLeaseDetail');
   const gitStatus = document.getElementById('workspaceGitStatus');
@@ -4761,11 +4762,13 @@ async function refreshWorkspaceOwnership() {
     const response = await fetch('/api/ownership');
     if (!response.ok) throw new Error('status_unavailable');
     const presented = presentWorkspaceOwnershipModel(await response.json());
+    if (pathLockStatus) pathLockStatus.textContent = presented.pathLockText;
     leaseStatus.textContent = presented.leaseText;
     leaseDetail.textContent = presented.leaseDetail;
     gitStatus.textContent = presented.gitText;
-    if (liveStatus) liveStatus.textContent = `${presented.leaseText} ${presented.gitText}`;
+    if (liveStatus) liveStatus.textContent = `${presented.pathLockText} ${presented.leaseText} ${presented.gitText}`;
   } catch (_) {
+    if (pathLockStatus) pathLockStatus.textContent = '개별 파일 잠금 상태를 확인할 수 없습니다.';
     leaseStatus.textContent = '작업 상태를 알 수 없습니다.';
     leaseDetail.textContent = '';
     gitStatus.textContent = 'Git 상태를 확인할 수 없습니다.';

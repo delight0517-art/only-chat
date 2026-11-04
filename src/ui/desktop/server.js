@@ -1732,11 +1732,21 @@ class DesktopServer {
       const locks = this.engine.ownership.getActiveLocks();
       const gitStatus = this.engine.ownership.getGitStatus();
       const workspaceLease = this.engine.workspaceExecutionLease.getStatus(this.engine.workspaceDir);
+      const pathLocks = {
+        available: true,
+        scope: 'active_in_process_paths',
+        repositoryWide: false,
+        locks
+      };
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ locks, uncommitted: gitStatus.uncommitted, gitStatus: {
+      res.end(JSON.stringify({ locks, pathLocks, uncommitted: gitStatus.uncommitted, gitStatus: {
         available: gitStatus.available,
         error: gitStatus.error
-      }, workspaceLease }));
+      }, workspaceLease: {
+        ...workspaceLease,
+        scope: 'workspace_execution',
+        repositoryWide: true
+      } }));
       return;
     }
 

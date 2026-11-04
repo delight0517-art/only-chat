@@ -1,6 +1,16 @@
 'use strict';
 
 function presentWorkspaceOwnership(payload) {
+  const pathLockState = payload?.pathLocks;
+  const pathLocks = Array.isArray(pathLockState?.locks)
+    ? pathLockState.locks
+    : Array.isArray(payload?.locks) ? payload.locks : null;
+  const pathLockText = pathLocks === null
+    ? '개별 파일 잠금 상태를 확인할 수 없습니다.'
+    : pathLocks.length > 0
+      ? `현재 보유 중인 개별 경로 잠금 ${pathLocks.length}개 (저장소 전체 잠금 아님)`
+      : '현재 보유 중인 개별 경로 잠금이 없습니다. 다른 작업의 부재를 뜻하지는 않습니다.';
+
   const lease = payload?.workspaceLease;
   let leaseText = '작업 상태를 알 수 없습니다.';
   let leaseDetail = '';
@@ -25,7 +35,7 @@ function presentWorkspaceOwnership(payload) {
       : '커밋되지 않은 변경 사항이 없습니다.';
   }
 
-  return { leaseText, leaseDetail, gitText };
+  return { pathLockText, leaseText, leaseDetail, gitText };
 }
 
 function formatLeaseDetail(lease) {
