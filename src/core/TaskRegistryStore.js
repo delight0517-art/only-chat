@@ -13,6 +13,7 @@ const MAX_IDEMPOTENCY_RECORDS = 50_000;
 const MAX_MESSAGES = 5_000;
 const MAX_VERIFICATION_CACHE = 5_000;
 const MAX_MESSAGE_LENGTH = 1_200;
+const HOST_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu;
 const MAX_EXECUTOR_RESULT_LENGTH = 8_000;
 const MAX_EXECUTOR_TOOL_NAMES = 32;
 const MIN_LEASE_MS = 30_000;
@@ -216,6 +217,7 @@ class TaskRegistryStore {
     this.lease = options.lease || new WorkspaceExecutionLease({ lockRoot: path.join(this.dataDir, 'workspace-leases') });
     this.lockWaitMs = Number.isSafeInteger(options.lockWaitMs) ? Math.min(Math.max(options.lockWaitMs, 100), 10_000) : 3_000;
     this._ensureDirectories();
+    this.hostId = this._loadOrCreateHostId();
   }
 
   _ensureDirectories() {
@@ -226,6 +228,47 @@ class TaskRegistryStore {
     const storeStat = fs.lstatSync(this.storeDir);
     if (storeStat.isSymbolicLink() || !storeStat.isDirectory()) throw new Error('task registry store directory is unsafe');
     fs.chmodSync(this.storeDir, 0o700);
+  }
+
+  _loadOrCreateHostId() {
+    const filePath = path.join(this.storeDir, 'host-identity.json');
+    const read = () => {
+      const before = fs.lstatSync(filePath);
+      if (before.isSymbolicLink() || !before.isFile() || before.size > 256) throw new Error('task registry host identity is unsafe or too large');
+      const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+      try {
+        const opened = fs.fstatSync(fd);
+        if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size > 256) {
+          throw new Error('task registry host identity changed while opening');
+        }
+        if (process.platform !== 'win32' && (opened.mode & 0o077) !== 0) throw new Error('task registry host identity permissions are unsafe');
+        const record = JSON.parse(fs.readFileSync(fd, 'utf8'));
+        if (!record || record.schemaVersion !== 1 || !HOST_ID.test(record.hostId || '')) throw new Error('task registry host identity is invalid');
+        return record.hostId;
+      } finally { fs.closeSync(fd); }
+    };
+
+    try { return read(); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+
+    const tempPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    let fd;
+    try {
+      const hostId = crypto.randomUUID();
+      fd = fs.openSync(tempPath, 'wx', 0o600);
+      fs.writeFileSync(fd, JSON.stringify({ schemaVersion: 1, hostId }) + '\n', 'utf8');
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fd = undefined;
+      try { fs.linkSync(tempPath, filePath); }
+      catch (linkError) {
+        if (linkError.code !== 'EEXIST') throw linkError;
+      }
+      return read();
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+      try { fs.unlinkSync(tempPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
   }
 
   _emptyState() {
@@ -837,12 +880,17 @@ class TaskRegistryStore {
       taskKey: printableString(input.taskKey, 'taskKey', 128),
       senderChatId: printableString(input.senderChatId, 'senderChatId', 256),
       recipientChatId: input.recipientChatId ? printableString(input.recipientChatId, 'recipientChatId', 256) : null,
+      senderHostId: this.hostId,
+      recipientHostId: input.recipientHostId === undefined || input.recipientHostId === null
+        ? this.hostId
+        : printableString(input.recipientHostId, 'recipientHostId', 36),
       type,
       text: printableString(input.text, 'text', MAX_MESSAGE_LENGTH),
       inReplyToMessageId: input.inReplyToMessageId ? printableString(input.inReplyToMessageId, 'inReplyToMessageId', 64) : null,
       idempotencyKey: printableString(input.idempotencyKey, 'idempotencyKey', 160)
     };
     if (!TASK_KEY.test(normalized.taskKey)) throw new TypeError('taskKey must be a stable alphanumeric key');
+    if (!HOST_ID.test(normalized.recipientHostId)) throw new TypeError('recipientHostId must be a UUID v4 host identity');
     if (!['message', 'ack'].includes(normalized.type)) throw new TypeError('message type must be message or ack');
     if (normalized.type === 'ack' && !normalized.inReplyToMessageId) throw new TypeError('ACK must reference a message');
     const request = { ...normalized };
@@ -867,13 +915,17 @@ class TaskRegistryStore {
       if (normalized.type === 'ack') {
         const original = state.messages.find(message => message.messageId === normalized.inReplyToMessageId);
         if (!original || original.taskKey !== normalized.taskKey || original.type !== 'message') throw new Error('ACK must reference a message in this task');
+        const originalRecipientHostId = original.recipientHostId || this.hostId;
+        if (originalRecipientHostId !== this.hostId) throw new Error('only the message recipient host may acknowledge it');
         if (original.recipientChatId && original.recipientChatId !== normalized.senderChatId) throw new Error('only the message recipient may acknowledge it');
         if (normalized.recipientChatId && normalized.recipientChatId !== original.senderChatId) throw new Error('ACK recipient must be the original sender');
         normalized.recipientChatId = original.senderChatId;
+        normalized.recipientHostId = original.senderHostId || this.hostId;
       }
       const message = {
         messageId: crypto.randomUUID(), taskKey: normalized.taskKey, senderChatId: normalized.senderChatId,
-        recipientChatId: normalized.recipientChatId, type: normalized.type, text: normalized.text,
+        senderHostId: normalized.senderHostId, recipientChatId: normalized.recipientChatId,
+        recipientHostId: normalized.recipientHostId, type: normalized.type, text: normalized.text,
         inReplyToMessageId: normalized.inReplyToMessageId, createdAt: new Date(this.clock()).toISOString()
       };
       state.messages.push(message);
@@ -891,8 +943,15 @@ class TaskRegistryStore {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new RangeError('message limit must be 1–100');
     const state = this._loadState();
     if (!state.tasks.some(task => task.taskKey === taskKey)) throw new Error('task not found');
-    const visible = state.messages.filter(message => message.taskKey === taskKey
-      && (message.recipientChatId === null || message.recipientChatId === viewerChatId || message.senderChatId === viewerChatId));
+    const visible = state.messages.filter(message => {
+      if (message.taskKey !== taskKey) return false;
+      const senderHostId = message.senderHostId || this.hostId;
+      const recipientHostId = message.recipientHostId || this.hostId;
+      const isSender = senderHostId === this.hostId && message.senderChatId === viewerChatId;
+      const isRecipient = recipientHostId === this.hostId
+        && (message.recipientChatId === null || message.recipientChatId === viewerChatId);
+      return isSender || isRecipient;
+    });
     let start = 0;
     if (input.afterMessageId !== undefined && input.afterMessageId !== null) {
       const cursor = visible.findIndex(message => message.messageId === input.afterMessageId);

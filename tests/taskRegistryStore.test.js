@@ -120,6 +120,52 @@ test('creates durable tasks and replays idempotent create and claim requests', a
   });
 });
 
+test('persists a private stable host identity and refuses corrupted identity records', async () => {
+  await withFixture(async ({ root, dataDir }) => {
+    const first = new TaskRegistryStore({ dataDir });
+    const reopened = new TaskRegistryStore({ dataDir });
+    const otherHost = new TaskRegistryStore({ dataDir: path.join(root, 'other-host') });
+    assert.match(first.hostId, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu);
+    assert.equal(reopened.hostId, first.hostId);
+    assert.notEqual(otherHost.hostId, first.hostId);
+    const identityPath = path.join(dataDir, 'task-registry', 'host-identity.json');
+    if (process.platform !== 'win32') assert.equal(fs.statSync(identityPath).mode & 0o777, 0o600);
+    fs.writeFileSync(identityPath, '{"schemaVersion":1,"hostId":"invalid"}\n', { mode: 0o600 });
+    assert.throws(() => new TaskRegistryStore({ dataDir }), /host identity is invalid/);
+
+    if (process.platform !== 'win32') {
+      const linkedDataDir = path.join(root, 'linked-host');
+      fs.mkdirSync(path.join(linkedDataDir, 'task-registry'), { recursive: true, mode: 0o700 });
+      fs.symlinkSync(identityPath, path.join(linkedDataDir, 'task-registry', 'host-identity.json'));
+      assert.throws(() => new TaskRegistryStore({ dataDir: linkedDataDir }), /host identity is unsafe/);
+    }
+  });
+});
+
+test('independent processes converge on one host identity in a shared data directory', async () => {
+  await withFixture(async ({ dataDir }) => {
+    const modulePath = path.resolve(__dirname, '../src/core/TaskRegistryStore.js');
+    const workerSource = `
+      const { TaskRegistryStore } = require(${JSON.stringify(modulePath)});
+      process.stdout.write(new TaskRegistryStore({ dataDir: process.argv[1] }).hostId + '\\n');
+    `;
+    const workers = Array.from({ length: 8 }, () => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['-e', workerSource, dataDir], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.once('error', reject);
+      child.once('close', code => code === 0 ? resolve(stdout.trim()) : reject(new Error(stderr || `host identity worker exited ${code}`)));
+    }));
+    const hostIds = await Promise.all(workers);
+    assert.equal(new Set(hostIds).size, 1);
+    assert.match(hostIds[0], /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu);
+  });
+});
+
 test('persists validated executor plans and rejects overlapping plan scopes', async () => {
   await withFixture(async ({ repo, dataDir }) => {
     const store = new TaskRegistryStore({ dataDir });
@@ -395,6 +441,8 @@ test('task mailbox is durable, idempotent, recipient-scoped, and supports explic
     const sent = await store.sendMessage(input);
     assert.equal(sent.sent, true);
     assert.equal(sent.message.type, 'message');
+    assert.equal(sent.message.senderHostId, store.hostId);
+    assert.equal(sent.message.recipientHostId, store.hostId);
     const replay = await store.sendMessage(input);
     assert.equal(replay.replayed, true);
     assert.equal(replay.message.messageId, sent.message.messageId);
@@ -408,12 +456,43 @@ test('task mailbox is durable, idempotent, recipient-scoped, and supports explic
     const ack = await store.sendMessage({ taskKey: 'mail-task', senderChatId: 'session-b', type: 'ack',
       inReplyToMessageId: sent.message.messageId, text: 'Received and understood.', idempotencyKey: 'ack-1' });
     assert.equal(ack.message.type, 'ack');
+    assert.equal(ack.message.senderHostId, store.hostId);
+    assert.equal(ack.message.recipientHostId, store.hostId);
     assert.equal(ack.message.recipientChatId, 'session-a');
     assert.equal(store.listMessages({ taskKey: 'mail-task', viewerChatId: 'session-a' }).length, 2);
     assert.equal(store.listMessages({ taskKey: 'mail-task', viewerChatId: 'session-b', afterMessageId: sent.message.messageId })[0].messageId, ack.message.messageId);
 
     const reopened = new TaskRegistryStore({ dataDir });
     assert.equal(reopened.listMessages({ taskKey: 'mail-task', viewerChatId: 'session-a' }).length, 2);
+  });
+});
+
+test('host-qualified mailbox visibility and ACK reject a reused chat ID from another host', async () => {
+  await withFixture(async ({ root, repo, dataDir, store }) => {
+    await createAndClaim(store, repo, 'hosted-mail-task', 'same-chat-id');
+    const remoteHost = new TaskRegistryStore({ dataDir: path.join(root, 'remote-host') });
+    const sent = await store.sendMessage({ taskKey: 'hosted-mail-task', senderChatId: 'same-chat-id',
+      recipientChatId: 'same-chat-id', recipientHostId: remoteHost.hostId,
+      text: 'Scoped to the remote host.', idempotencyKey: 'hosted-message' });
+    assert.equal(store.listMessages({ taskKey: 'hosted-mail-task', viewerChatId: 'same-chat-id' })[0].messageId, sent.message.messageId);
+
+    fs.writeFileSync(remoteHost.filePath, JSON.stringify({ schemaVersion: 1, tasks: [store.getTask('hosted-mail-task')],
+      idempotency: [], messages: [sent.message], verificationCache: [] }), { mode: 0o600 });
+    assert.equal(remoteHost.listMessages({ taskKey: 'hosted-mail-task', viewerChatId: 'same-chat-id' })[0].messageId, sent.message.messageId);
+    assert.equal(store.listMessages({ taskKey: 'hosted-mail-task', viewerChatId: 'unrelated-chat' }).length, 0);
+
+    await assert.rejects(store.sendMessage({ taskKey: 'hosted-mail-task', senderChatId: 'same-chat-id', type: 'ack',
+      inReplyToMessageId: sent.message.messageId, text: 'Forged remote ACK', idempotencyKey: 'wrong-host-ack' }), /only the message recipient host/);
+    const acknowledged = await remoteHost.sendMessage({ taskKey: 'hosted-mail-task', senderChatId: 'same-chat-id', type: 'ack',
+      inReplyToMessageId: sent.message.messageId, text: 'Received on the addressed host.', idempotencyKey: 'remote-ack' });
+    assert.equal(acknowledged.sent, true);
+    assert.equal(acknowledged.message.senderHostId, remoteHost.hostId);
+    assert.equal(acknowledged.message.recipientHostId, store.hostId);
+
+    const unrelated = new TaskRegistryStore({ dataDir: path.join(root, 'unrelated-host') });
+    fs.writeFileSync(unrelated.filePath, JSON.stringify({ schemaVersion: 1, tasks: [store.getTask('hosted-mail-task')],
+      idempotency: [], messages: [sent.message], verificationCache: [] }), { mode: 0o600 });
+    assert.equal(unrelated.listMessages({ taskKey: 'hosted-mail-task', viewerChatId: 'same-chat-id' }).length, 0);
   });
 });
 
