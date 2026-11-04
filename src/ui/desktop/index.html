@@ -1309,7 +1309,7 @@
   <div class="modal-backdrop" id="scheduleModal" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="scheduleModalTitle">
     <section class="modal-card schedule-manager-card">
       <header class="modal-header">
-        <div><h3 class="modal-title" id="scheduleModalTitle">반복 스케줄</h3><small>예약을 저장하면 Only Chat이 정해진 시각에 실행합니다.</small></div>
+        <div><h3 class="modal-title" id="scheduleModalTitle">예약 작업</h3><small>한 번 실행하거나 정기적으로 반복할 작업을 예약합니다.</small></div>
         <button class="btn-icon" id="btnCloseSchedules" aria-label="닫기">✕</button>
       </header>
       <div class="schedule-manager-body">
@@ -1322,13 +1322,14 @@
         <form id="scheduleForm" class="schedule-editor" autocomplete="off">
           <input type="hidden" id="scheduleId">
           <label class="schedule-field">스케줄 제목<input id="scheduleTitle" maxlength="120" required placeholder="예: 월간 프로젝트 점검"></label>
-          <label class="schedule-field">요청 내용<textarea id="schedulePrompt" rows="5" maxlength="100000" required placeholder="매달 점검할 내용과 결과에 포함할 항목을 적어 주세요."></textarea></label>
+          <label class="schedule-field">요청 내용<textarea id="schedulePrompt" rows="5" maxlength="100000" required placeholder="예약 시 실행할 내용을 적어 주세요."></textarea></label>
           <label class="schedule-field">허용 도구<textarea id="scheduleAllowedTools" rows="2" required placeholder="read_file, google_drive_read"></textarea><small>쉼표로 구분해 이 스케줄이 실행할 도구 이름만 입력하세요. 비어 있으면 저장할 수 없습니다.</small></label>
           <div class="schedule-recurrence-grid">
-            <label class="schedule-field">반복<select id="scheduleFrequency"><option value="monthly">매월</option><option value="weekly">매주</option><option value="daily">매일</option></select></label>
+            <label class="schedule-field">실행<select id="scheduleFrequency"><option value="once">한 번</option><option value="monthly">매월</option><option value="weekly">매주</option><option value="daily">매일</option></select></label>
+            <label class="schedule-field" id="scheduleOnceAtWrap">실행 시각<input id="scheduleOnceAt" type="datetime-local" required></label>
             <label class="schedule-field" id="scheduleMonthDayWrap">날짜<input id="scheduleMonthDay" type="number" min="1" max="31" value="1"></label>
             <label class="schedule-field" id="scheduleWeekdayWrap">요일<select id="scheduleWeekday"><option value="1">월요일</option><option value="2">화요일</option><option value="3">수요일</option><option value="4">목요일</option><option value="5">금요일</option><option value="6">토요일</option><option value="0">일요일</option></select></label>
-            <label class="schedule-field">시각<input id="scheduleLocalTime" type="time" value="09:00" required></label>
+            <label class="schedule-field" id="scheduleLocalTimeWrap">시각<input id="scheduleLocalTime" type="time" value="09:00" required></label>
           </div>
           <label class="schedule-enabled"><input id="scheduleEnabled" type="checkbox" checked><span>이 스케줄 사용</span></label>
           <div class="schedule-attachments-head"><strong>참고 파일</strong><span>텍스트/소스 파일 · 파일당 64 KiB · 최대 5개</span></div>

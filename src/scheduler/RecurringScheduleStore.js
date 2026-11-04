@@ -58,12 +58,17 @@ function attachmentBytes(value) {
 function nextOccurrence(schedule, after = new Date()) {
   const now = after instanceof Date ? new Date(after.getTime()) : new Date(after);
   if (!Number.isFinite(now.getTime())) throw new TypeError('after must be a valid date');
+  if (schedule.frequency === 'once') {
+    const runAt = new Date(schedule.runAt);
+    if (!schedule.runAt || !Number.isFinite(runAt.getTime())) throw new TypeError('runAt must be a valid date');
+    return runAt.toISOString();
+  }
   const match = /^(\d{2}):(\d{2})$/.exec(schedule.localTime || '');
   if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) throw new TypeError('localTime must use HH:mm');
   const hour = Number(match[1]);
   const minute = Number(match[2]);
   const frequency = schedule.frequency;
-  if (!['daily', 'weekly', 'monthly'].includes(frequency)) throw new TypeError('frequency must be daily, weekly, or monthly');
+  if (!['daily', 'weekly', 'monthly'].includes(frequency)) throw new TypeError('frequency must be daily, weekly, monthly, or once');
   const candidate = (year, month, day) => new Date(year, month, day, hour, minute, 0, 0);
   if (frequency === 'daily') {
     const result = candidate(now.getFullYear(), now.getMonth(), now.getDate());
@@ -136,6 +141,7 @@ class RecurringScheduleStore {
         schedule.status = 'interrupted';
         schedule.lastStatus = 'interrupted';
         schedule.lastResult = 'Application restarted before the scheduled execution completed.';
+        if (schedule.frequency === 'once') schedule.enabled = false;
         schedule.updatedAt = new Date().toISOString();
       }
       this.schedules.set(schedule.id, schedule);
@@ -174,13 +180,15 @@ class RecurringScheduleStore {
     const frequency = input.frequency ?? existing.frequency;
     const recurrence = { frequency, localTime: input.localTime ?? existing.localTime,
       ...(input.weekday !== undefined || existing.weekday !== undefined ? { weekday: input.weekday ?? existing.weekday } : {}),
-      ...(input.monthDay !== undefined || existing.monthDay !== undefined ? { monthDay: input.monthDay ?? existing.monthDay } : {}) };
+      ...(input.monthDay !== undefined || existing.monthDay !== undefined ? { monthDay: input.monthDay ?? existing.monthDay } : {}),
+      ...(frequency === 'once' ? { runAt: input.runAt ?? existing.runAt } : { runAt: undefined }) };
     const calculatedNextRun = nextOccurrence(recurrence, new Date());
     const recurrenceChanged = !existing.nextRunAt
       || recurrence.frequency !== existing.frequency
       || recurrence.localTime !== existing.localTime
       || recurrence.weekday !== existing.weekday
-      || recurrence.monthDay !== existing.monthDay;
+      || recurrence.monthDay !== existing.monthDay
+      || recurrence.runAt !== existing.runAt;
     const nextRunAt = input.nextRunAt ?? (recurrenceChanged ? calculatedNextRun : existing.nextRunAt);
     if (!Number.isFinite(new Date(nextRunAt).getTime())) throw new TypeError('nextRunAt must be a valid date');
     return {
@@ -275,6 +283,7 @@ class RecurringScheduleStore {
       ...(fields.nextRunAt !== undefined ? { nextRunAt: new Date(fields.nextRunAt).toISOString() } : {}),
       updatedAt: new Date().toISOString()
     });
+    if (schedule.frequency === 'once' && ['completed', 'blocked', 'failed'].includes(status)) schedule.enabled = false;
     try { this._save(); } catch (error) { this.schedules.set(id, before); throw error; }
     return this.get(id);
   }

@@ -120,6 +120,46 @@ test('local daily, weekly and monthly recurrence calculations use calendar dates
   assert.equal(new Date(weekly).getTime(), new Date(2026, 3, 13, 9, 0).getTime());
   const monthly = nextOccurrence({ frequency: 'monthly', monthDay: 31, localTime: '07:15' }, new Date(2026, 3, 1, 0, 0));
   assert.equal(new Date(monthly).getTime(), new Date(2026, 3, 30, 7, 15).getTime());
+  const once = nextOccurrence({ frequency: 'once', runAt: '2026-04-02T09:00:00.000Z' }, new Date('2026-04-02T08:30:00.000Z'));
+  assert.equal(once, '2026-04-02T09:00:00.000Z');
+  assert.throws(() => nextOccurrence({ frequency: 'once' }, new Date('2026-04-02T08:30:00.000Z')), /runAt/);
+});
+
+test('one-time schedules persist their run time and never enqueue again after a terminal result', async () => {
+  const temp = temporaryDataDir();
+  try {
+    const runAt = '2026-04-01T12:00:00.000Z';
+    const store = new RecurringScheduleStore({ dataDir: temp.root });
+    const schedule = store.create(scheduleInput({ frequency: 'once', runAt }));
+    assert.equal(schedule.nextRunAt, runAt);
+    class Dispatcher extends EventEmitter {
+      constructor() { super(); this.tasks = []; }
+      enqueueTasks(tasks) { this.tasks.push(...tasks); return tasks; }
+    }
+    const dispatcher = new Dispatcher();
+    const service = new RecurringScheduleService({ store, dispatcher, clock: () => new Date(runAt) });
+    try {
+      assert.equal((await service.runDue()).length, 1);
+      dispatcher.emit('worker_completed', { task: dispatcher.tasks[0], result: { result: 'checked' } });
+      assert.equal(store.get(schedule.id).enabled, false);
+      assert.deepEqual(await service.runDue(), []);
+      assert.equal(dispatcher.tasks.length, 1);
+      const restored = new RecurringScheduleStore({ dataDir: temp.root }).get(schedule.id);
+      assert.equal(restored.enabled, false, 'terminal one-time state survives reload');
+    } finally { service.stop(); }
+  } finally { temp.cleanup(); }
+});
+
+test('an in-flight one-time schedule is not automatically replayed after restart', () => {
+  const temp = temporaryDataDir();
+  try {
+    let store = new RecurringScheduleStore({ dataDir: temp.root });
+    const schedule = store.create(scheduleInput({ frequency: 'once', runAt: '2026-04-01T12:00:00.000Z' }));
+    store.setStatus(schedule.id, 'queued', { taskId: 'task_once' });
+    store = new RecurringScheduleStore({ dataDir: temp.root });
+    assert.equal(store.get(schedule.id).status, 'interrupted');
+    assert.equal(store.get(schedule.id).enabled, false);
+  } finally { temp.cleanup(); }
 });
 
 test('JSON persistence reloads records and converts persisted in-flight work to interrupted', () => {

@@ -5153,7 +5153,13 @@ function beginScheduleEdit(schedule = null) {
   document.getElementById('scheduleAllowedTools').value = schedule
     ? (Array.isArray(schedule.allowedTools) ? schedule.allowedTools.join(', ') : '')
     : 'read_file';
-  document.getElementById('scheduleFrequency').value = schedule?.frequency || 'monthly';
+  document.getElementById('scheduleFrequency').value = schedule?.frequency || 'once';
+  const defaultRunAt = new Date(Date.now() + 30 * 60 * 1000);
+  const onceAt = schedule?.runAt ? new Date(schedule.runAt) : defaultRunAt;
+  const minRunAt = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  document.getElementById('scheduleOnceAt').min = minRunAt;
+  document.getElementById('scheduleOnceAt').value = Number.isFinite(onceAt.getTime())
+    ? new Date(onceAt.getTime() - onceAt.getTimezoneOffset() * 60_000).toISOString().slice(0, 16) : '';
   document.getElementById('scheduleMonthDay').value = String(schedule?.monthDay || 1);
   document.getElementById('scheduleWeekday').value = String(schedule?.weekday ?? 1);
   document.getElementById('scheduleLocalTime').value = schedule?.localTime || '09:00';
@@ -5163,13 +5169,18 @@ function beginScheduleEdit(schedule = null) {
   renderScheduleRecurrenceFields();
   renderScheduleAttachments();
   renderScheduleLastRun(schedule);
-  scheduleFormStatus(schedule ? '수정 중' : '새 반복 일정을 입력하세요.');
+  scheduleFormStatus(schedule ? '수정 중' : '새 예약 작업을 입력하세요.');
 }
 
 function renderScheduleRecurrenceFields() {
   const frequency = document.getElementById('scheduleFrequency')?.value;
+  const once = frequency === 'once';
+  document.getElementById('scheduleOnceAtWrap').hidden = !once;
+  document.getElementById('scheduleOnceAt').required = once;
   document.getElementById('scheduleMonthDayWrap').hidden = frequency !== 'monthly';
   document.getElementById('scheduleWeekdayWrap').hidden = frequency !== 'weekly';
+  document.getElementById('scheduleLocalTimeWrap').hidden = once;
+  document.getElementById('scheduleLocalTime').required = !once;
 }
 
 function renderScheduleLastRun(schedule) {
@@ -5277,8 +5288,10 @@ function isValidScheduleSummaries(schedules) {
     if (!schedule || typeof schedule.id !== 'string' || !schedule.id.trim() || ids.has(schedule.id)
         || typeof schedule.title !== 'string' || typeof schedule.enabled !== 'boolean'
         || !Array.isArray(schedule.allowedTools) || schedule.allowedTools.some(name => typeof name !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/i.test(name))
-        || !['daily', 'weekly', 'monthly'].includes(schedule.frequency)
-        || !/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.localTime || '')) return false;
+        || !['daily', 'weekly', 'monthly', 'once'].includes(schedule.frequency)
+        || (schedule.frequency === 'once'
+          ? typeof schedule.runAt !== 'string' || !Number.isFinite(Date.parse(schedule.runAt))
+          : !/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.localTime || ''))) return false;
     if (schedule.frequency === 'weekly' && (!Number.isInteger(Number(schedule.weekday)) || Number(schedule.weekday) < 0 || Number(schedule.weekday) > 6)) return false;
     if (schedule.frequency === 'monthly' && (!Number.isInteger(Number(schedule.monthDay)) || Number(schedule.monthDay) < 1 || Number(schedule.monthDay) > 31)) return false;
     ids.add(schedule.id);
@@ -5321,15 +5334,20 @@ function isValidScheduleDetail(schedule, expectedId) {
 }
 
 function schedulePayload() {
+  const frequency = document.getElementById('scheduleFrequency').value;
   const payload = {
     title: document.getElementById('scheduleTitle').value,
     prompt: document.getElementById('schedulePrompt').value,
     allowedTools: document.getElementById('scheduleAllowedTools').value.split(',').map(name => name.trim()).filter(Boolean),
-    frequency: document.getElementById('scheduleFrequency').value,
-    localTime: document.getElementById('scheduleLocalTime').value,
+    frequency,
     enabled: document.getElementById('scheduleEnabled').checked,
     attachments: [...retainedScheduleAttachments.map(({ id }) => ({ id })), ...addedScheduleAttachments.map(({ name, contentBase64 }) => ({ name, contentBase64 }))]
   };
+  if (frequency === 'once') {
+    const runAt = new Date(document.getElementById('scheduleOnceAt').value);
+    if (!Number.isFinite(runAt.getTime()) || runAt.getTime() <= Date.now()) throw new Error('실행 시각은 현재보다 뒤로 지정해 주세요.');
+    payload.runAt = runAt.toISOString();
+  } else payload.localTime = document.getElementById('scheduleLocalTime').value;
   if (payload.frequency === 'monthly') payload.monthDay = Number(document.getElementById('scheduleMonthDay').value);
   if (payload.frequency === 'weekly') payload.weekday = Number(document.getElementById('scheduleWeekday').value);
   return payload;

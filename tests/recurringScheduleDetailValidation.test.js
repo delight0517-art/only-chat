@@ -29,11 +29,15 @@ for (const [label, schedule] of [
   ['invalid next run date', { ...valid, nextRunAt: 'not-a-date' }],
   ['missing prompt', { ...valid, prompt: undefined }],
   ['malformed tool allowlist', { ...valid, allowedTools: ['read file'] }],
+  ['one-time schedule without runAt', { ...valid, frequency: 'once', runAt: undefined }],
   ['missing tool allowlist', { ...valid, allowedTools: undefined }],
   ['malformed attachment list', { ...valid, attachments: {} }],
   ['attachment content too large', { ...valid, attachments: [{ id: 'att_1', name: 'x.txt', size: 1, content: 'x'.repeat(65537) }] }],
   ['malformed run result', { ...valid, lastResult: {} }]
 ]) assert.equal(context.validDetail(schedule, 'sch_valid'), false, `${label} is rejected before editing`);
+
+assert.equal(context.validDetail({ ...valid, frequency: 'once', runAt: '2026-11-06T00:00:00.000Z' }, 'sch_valid'), true,
+  'valid one-time schedule details are accepted');
 
 assert.match(appSource, /if \(!isValidScheduleDetail\(data\?\.schedule, id\)\) throw new Error/);
 console.log('recurringScheduleDetailValidation passed: selected identity and detail contract are checked before editing');
