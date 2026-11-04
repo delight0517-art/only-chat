@@ -90,7 +90,7 @@ async function main() {
     const fileRead = await post(app.port, base, { jsonrpc: '2.0', id: 31, method: 'tools/call', params: { name: 'read_file', arguments: { path: 'TODO_ROADMAP.md' } } }, sessionHeaders);
     assert.equal(fileRead.body.result.structuredContent, 'line 1\nline 2');
     assert.equal(calls[0][0], 'read_file');
-    assert.equal(calls[0][1].end_line - calls[0][1].start_line, 199, 'workspace reads are bounded to 200 lines');
+    assert.equal(calls[0][1].end_line - calls[0][1].start_line, 39, 'workspace reads default to a compact 40-line range');
 
     const tooWide = await post(app.port, base, { jsonrpc: '2.0', id: 32, method: 'tools/call', params: { name: 'read_file', arguments: { path: 'TODO_ROADMAP.md', start_line: 1, end_line: 500 } } }, sessionHeaders);
     assert.equal(tooWide.body.result.isError, true, 'oversized workspace reads fail closed');
