@@ -76,6 +76,9 @@ function createCliWorkspace(bridge, workspaceOptions = null) {
       ...(workspaceTools?.writeApproved ? [
         'Before any workspace file change, call workspace_lease_status and claim the exact relative files with workspace_lease_claim. Use only workspace_file_read/edit/create and workspace_check for the selected workspace. Release the exact lease after the check. Never access paths outside that workspace.'
       ] : workspaceTools ? ['Use workspace_file_read only; do not claim leases or change files.'] : []),
+      ...(bridge ? [
+        'Use threef_browser_* tools when the user means the standalone 3F Browser app. Use embedded_3f_* only for the browser panel inside Only Chat; never treat these two views as the same page. Verify the returned active URL and page content before reporting success. Standalone navigation/actions/history require Only Chat approval and Focus Fence checks.'
+      ] : []),
       'If no tool is available, answer the user directly without taking actions.'
     ].join('\n');
     fs.writeFileSync(path.join(agentDirectory, 'agent.md'), agent, { mode: 0o600 });

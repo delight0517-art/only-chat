@@ -37,7 +37,15 @@ async function main() {
   app.engine = {
     currentSession: { sessionId: 'ses-current' },
     workspaceDir,
-    tools: { approvalPolicy: 'on-request' },
+    tools: {
+      approvalPolicy: 'on-request',
+      browserStatus: async () => ({ controlAvailable: true, activeUrl: 'https://youtube.com/watch?v=video', title: 'Video' }),
+      browserNavigate: async url => { calls.push(['threef_navigate', url]); return { ok: true, url }; },
+      browserRead: async () => ({ ok: true, stdout: 'Standalone 3F page text' }),
+      browserAria: async () => ({ ok: true, ariaTree: 'button Play' }),
+      browserAct: async action => { calls.push(['threef_act', action]); return { ok: true, stdout: 'Standalone action complete' }; },
+      browserHistory: async action => { calls.push(['threef_history', action]); return { ok: true, url: 'https://youtube.com/watch?v=video' }; }
+    },
     ownership: {
       acquireLocks: (_session, files) => { calls.push(['lock', files]); return { acquired: true }; },
       releaseLocks: (_session, files) => calls.push(['unlock', files])
@@ -81,11 +89,18 @@ async function main() {
 
     const tools = await post(app.port, base, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, sessionHeaders);
     assert.deepEqual(tools.body.result.tools.map(tool => tool.name), [
-      'read_file', 'edit_file', 'embedded_3f_status', 'embedded_3f_navigate', 'embedded_3f_read', 'embedded_3f_aria', 'embedded_3f_act', 'embedded_3f_history'
+      'read_file', 'edit_file', 'embedded_3f_status', 'embedded_3f_navigate', 'embedded_3f_read', 'embedded_3f_aria', 'embedded_3f_act', 'embedded_3f_history',
+      'threef_browser_status', 'threef_browser_navigate', 'threef_browser_read', 'threef_browser_aria', 'threef_browser_act', 'threef_browser_history'
     ]);
     const status = await post(app.port, base, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'embedded_3f_status', arguments: {} } }, sessionHeaders);
     assert.equal(status.body.result.structuredContent.activeUrl, 'https://example.org/');
     assert.equal(approvals.length, 0, 'read-only browser status does not trigger an approval');
+
+    const threefStatus = await post(app.port, base, { jsonrpc: '2.0', id: 34, method: 'tools/call', params: { name: 'threef_browser_status', arguments: {} } }, sessionHeaders);
+    assert.equal(threefStatus.body.result.structuredContent.activeUrl, 'https://youtube.com/watch?v=video', 'standalone app status is separate from embedded panel status');
+    const threefRead = await post(app.port, base, { jsonrpc: '2.0', id: 35, method: 'tools/call', params: { name: 'threef_browser_read', arguments: {} } }, sessionHeaders);
+    assert.equal(threefRead.body.result.structuredContent.stdout, 'Standalone 3F page text');
+    assert.equal(approvals.length, 0, 'standalone status and reads are read-only');
 
     const fileRead = await post(app.port, base, { jsonrpc: '2.0', id: 31, method: 'tools/call', params: { name: 'read_file', arguments: { path: 'TODO_ROADMAP.md' } } }, sessionHeaders);
     assert.equal(fileRead.body.result.structuredContent, 'line 1\nline 2');
@@ -119,6 +134,14 @@ async function main() {
     assert.equal(navigate.body.result.isError, undefined);
     assert.deepEqual(calls.filter(([name]) => name === 'navigate'), [['navigate', 'https://example.org/']]);
     assert.equal(approvals.at(-1).name, 'embedded_3f_navigate');
+
+    const threefNavigate = await post(app.port, base, { jsonrpc: '2.0', id: 41, method: 'tools/call', params: { name: 'threef_browser_navigate', arguments: { url: 'https://youtube.com/watch?v=video' } } }, sessionHeaders);
+    assert.equal(threefNavigate.body.result.structuredContent.url, 'https://youtube.com/watch?v=video');
+    assert.equal(approvals.at(-1).name, 'threef_browser_navigate', 'standalone navigation uses Only Chat approval');
+    assert.deepEqual(calls.filter(([name]) => name === 'threef_navigate'), [['threef_navigate', 'https://youtube.com/watch?v=video']]);
+    const threefAct = await post(app.port, base, { jsonrpc: '2.0', id: 42, method: 'tools/call', params: { name: 'threef_browser_act', arguments: { action: 'click ref1' } } }, sessionHeaders);
+    assert.equal(threefAct.body.result.structuredContent.stdout, 'Standalone action complete');
+    assert.equal(approvals.at(-1).name, 'threef_browser_act', 'standalone page actions use Only Chat approval');
 
     const wrongSession = await post(app.port, base, { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'embedded_3f_act', arguments: { action: 'click ref1' } } }, { ...auth, 'Mcp-Session-Id': 'wrong' });
     assert.equal(wrongSession.status, 404, 'MCP session mismatch is rejected before tool execution');

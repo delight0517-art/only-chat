@@ -119,8 +119,11 @@ async function main() {
     assert.equal(mcpConfig.mcpServers['onlychat-3f'].command, '/usr/bin/python3');
     assert.equal(mcpConfig.mcpServers['onlychat-3f'].args[0], bridge.serverPath);
     assert.deepEqual(mcpConfig.mcpServers['onlychat-3f'].enabledTools, [
-      'read_file', 'edit_file', 'embedded_3f_status', 'embedded_3f_navigate', 'embedded_3f_read', 'embedded_3f_aria', 'embedded_3f_act', 'embedded_3f_history'
+      'read_file', 'edit_file', 'embedded_3f_status', 'embedded_3f_navigate', 'embedded_3f_read', 'embedded_3f_aria', 'embedded_3f_act', 'embedded_3f_history',
+      'threef_browser_status', 'threef_browser_navigate', 'threef_browser_read', 'threef_browser_aria', 'threef_browser_act', 'threef_browser_history'
     ]);
+    assert.match(launches[3].agent, /Use threef_browser_\* tools when the user means the standalone 3F Browser app/);
+    assert.match(launches[3].agent, /never treat these two views as the same page/);
     assert.equal(mcpConfig.mcpServers['onlychat-3f'].includeTools, undefined);
     assert.equal(mcpConfig.mcpServers['onlychat-3f'].trust, undefined);
     assert.equal(mcpConfig.mcpServers['onlychat-3f'].env.ONLYCHAT_MCP_URL, bridge.url);

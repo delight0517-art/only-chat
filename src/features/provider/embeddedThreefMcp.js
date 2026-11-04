@@ -11,10 +11,19 @@ const TOOLS = [
   { name: 'embedded_3f_read', description: 'Read visible page text from the embedded 3F Browser.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'embedded_3f_aria', description: 'Read the accessible element tree from the embedded 3F Browser.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'embedded_3f_act', description: 'Perform a page action on the embedded 3F Browser after Only Chat approval and Focus Fence policy checks.', inputSchema: { type: 'object', properties: { action: { type: 'string', minLength: 1, maxLength: 1000 } }, required: ['action'], additionalProperties: false } },
-  { name: 'embedded_3f_history', description: 'Use back, forward, or reload in the embedded 3F Browser after Only Chat approval and Focus Fence policy checks.', inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['back', 'forward', 'reload'] } }, required: ['action'], additionalProperties: false } }
+  { name: 'embedded_3f_history', description: 'Use back, forward, or reload in the embedded 3F Browser after Only Chat approval and Focus Fence policy checks.', inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['back', 'forward', 'reload'] } }, required: ['action'], additionalProperties: false } },
+  { name: 'threef_browser_status', description: 'Read the authenticated standalone 3F Browser app status, active URL, and title.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'threef_browser_navigate', description: 'Navigate the standalone 3F Browser app after Only Chat approval and Focus Fence policy checks.', inputSchema: { type: 'object', properties: { url: { type: 'string', minLength: 1, maxLength: 4096 } }, required: ['url'], additionalProperties: false } },
+  { name: 'threef_browser_read', description: 'Read visible page text from the standalone 3F Browser app after verifying its active page.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'threef_browser_aria', description: 'Read the accessible element tree from the standalone 3F Browser app after verifying its active page.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'threef_browser_act', description: 'Perform a page action in the standalone 3F Browser app after Only Chat approval and Focus Fence policy checks.', inputSchema: { type: 'object', properties: { action: { type: 'string', minLength: 1, maxLength: 1000 } }, required: ['action'], additionalProperties: false } },
+  { name: 'threef_browser_history', description: 'Use back, forward, or reload in the standalone 3F Browser app after Only Chat approval and Focus Fence policy checks.', inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['back', 'forward', 'reload'] } }, required: ['action'], additionalProperties: false } }
 ];
 
-const MUTATING_TOOLS = new Set(['edit_file', 'embedded_3f_navigate', 'embedded_3f_act', 'embedded_3f_history']);
+const MUTATING_TOOLS = new Set([
+  'edit_file', 'embedded_3f_navigate', 'embedded_3f_act', 'embedded_3f_history',
+  'threef_browser_navigate', 'threef_browser_act', 'threef_browser_history'
+]);
 
 function resolveWorkspaceFile(engine, input) {
   const workspace = fs.realpathSync(engine.workspaceDir || engine.tools.workspaceDir);
@@ -35,13 +44,13 @@ async function dispatchEmbeddedThreefTool(server, context, name, args = {}) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Invalid embedded 3F tool arguments.');
   const allowedKeys = name === 'read_file' ? ['path', 'start_line', 'end_line']
     : name === 'edit_file' ? ['path', 'target', 'replacement']
-      : name === 'embedded_3f_navigate' ? ['url']
-    : name === 'embedded_3f_act' ? ['action']
-      : name === 'embedded_3f_history' ? ['action'] : [];
+      : ['embedded_3f_navigate', 'threef_browser_navigate'].includes(name) ? ['url']
+        : ['embedded_3f_act', 'threef_browser_act'].includes(name) ? ['action']
+          : ['embedded_3f_history', 'threef_browser_history'].includes(name) ? ['action'] : [];
   if (Object.keys(args).some(key => !allowedKeys.includes(key))) throw new Error('Unexpected embedded 3F tool argument.');
-  if (name === 'embedded_3f_navigate' && (typeof args.url !== 'string' || !args.url.trim() || args.url.length > 4096)) throw new Error('Invalid embedded 3F URL.');
-  if (name === 'embedded_3f_act' && (typeof args.action !== 'string' || !args.action.trim() || args.action.length > 1000)) throw new Error('Invalid embedded 3F action.');
-  if (name === 'embedded_3f_history' && !['back', 'forward', 'reload'].includes(args.action)) throw new Error('Invalid embedded 3F history action.');
+  if (['embedded_3f_navigate', 'threef_browser_navigate'].includes(name) && (typeof args.url !== 'string' || !args.url.trim() || args.url.length > 4096)) throw new Error('Invalid 3F Browser URL.');
+  if (['embedded_3f_act', 'threef_browser_act'].includes(name) && (typeof args.action !== 'string' || !args.action.trim() || args.action.length > 1000)) throw new Error('Invalid 3F Browser action.');
+  if (['embedded_3f_history', 'threef_browser_history'].includes(name) && !['back', 'forward', 'reload'].includes(args.action)) throw new Error('Invalid 3F Browser history action.');
   if (server.engine?.currentSession?.sessionId !== context.sessionId) throw new Error('Only Chat session changed; embedded 3F request expired.');
   if (name === 'read_file' || name === 'edit_file') {
     if (typeof args.path !== 'string' || !args.path.trim() || args.path.length > 512) throw new Error('Invalid workspace file path.');
@@ -95,6 +104,12 @@ async function dispatchEmbeddedThreefTool(server, context, name, args = {}) {
     case 'embedded_3f_aria': return server.embeddedBrowserPanel.getAriaTree();
     case 'embedded_3f_act': return server.embeddedBrowserPanel.act(args.action);
     case 'embedded_3f_history': return server.embeddedBrowserPanel.history(args.action);
+    case 'threef_browser_status': return server.engine.tools.browserStatus();
+    case 'threef_browser_navigate': return server.engine.tools.browserNavigate(args.url);
+    case 'threef_browser_read': return server.engine.tools.browserRead();
+    case 'threef_browser_aria': return server.engine.tools.browserAria();
+    case 'threef_browser_act': return server.engine.tools.browserAct(args.action);
+    case 'threef_browser_history': return server.engine.tools.browserHistory(args.action);
     default: throw new Error('Unknown embedded 3F tool.');
   }
 }
