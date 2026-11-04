@@ -61,7 +61,7 @@ class NativeSessionBridge {
     const brainDir = JSON.stringify(this.antigravityBrainDir);
     const streamResults = typeof options.onResult === 'function' || typeof options.onProgress === 'function';
     const pythonScript = `
-import glob, json, mmap, os, pathlib, re, sqlite3
+import glob, json, mmap, os, pathlib, re, shutil, sqlite3, subprocess
 
 query = ${searchText}
 stream_results = ${streamResults ? 'True' : 'False'}
@@ -250,10 +250,49 @@ def safe_file_size(roots, candidate):
     except (OSError, ValueError):
         return float('inf')
 
+casefold_safe = all(
+    ord(char) < 128 or (char.lower() == char.upper() == char.casefold())
+    for term in terms for char in term
+)
+
+def ripgrep_candidate_paths(roots):
+    rg = shutil.which('rg')
+    if not rg or not casefold_safe:
+        return None
+    if ascii_query:
+        return None
+    elif unicode_seed:
+        needles = [unicode_seed.decode('utf-8')]
+        for term in terms:
+            for char in term:
+                if ord(char) > 127:
+                    escaped = json.dumps(char, ensure_ascii=True)[1:-1]
+                    if escaped != char:
+                        needles.append(escaped)
+    else:
+        return None
+    existing_roots = [root for root in roots if os.path.isdir(root)]
+    if not existing_roots:
+        return None
+    args = [rg, '--files-with-matches', '--fixed-strings', '--ignore-case', '--text',
+            '--hidden', '--no-ignore', '--no-messages', '--null', '--glob', '*.jsonl']
+    for needle in dict.fromkeys(needles):
+        args.extend(['-e', needle])
+    try:
+        result = subprocess.run(args + ['--', *existing_roots], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, timeout=15, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode not in (0, 1):
+        return None
+    return {os.path.realpath(os.fsdecode(candidate)) for candidate in result.stdout.split(b'\\0') if candidate}
+
 db_path = ${dbPath}
 db_uri = pathlib.Path(db_path).resolve().as_uri() + '?mode=ro'
 codex_root = os.path.realpath(os.path.dirname(db_path))
 allowed_rollout_roots = [os.path.realpath(os.path.join(codex_root, name)) for name in ('sessions', 'archived_sessions')]
+brain_root = os.path.realpath(${brainDir})
+rg_candidate_paths = None
 if os.path.exists(db_path):
     try:
         con = sqlite3.connect(db_uri, uri=True)
@@ -278,8 +317,11 @@ if os.path.exists(db_path):
         metadata_matches.sort(key=lambda item: item['updatedAt'], reverse=True)
         for item in metadata_matches:
             add_result(item)
+        rg_candidate_paths = ripgrep_candidate_paths(allowed_rollout_roots + [brain_root])
         # Search small transcripts first so useful matches appear before a single huge rollout stalls the scan.
         rows.sort(key=lambda row: safe_file_size(allowed_rollout_roots, row[3]) if row[3] else 0)
+        if rg_candidate_paths is not None:
+            rows = [row for row in rows if row[3] and os.path.realpath(row[3]) in rg_candidate_paths]
         for thread_index, row in enumerate(rows, 1):
             raw_id, raw_title, updated_at, rollout_path = row[:4]
             emit_scan_progress(thread_index, len(rows), 'codex', 0, 0)
@@ -313,10 +355,12 @@ if os.path.exists(db_path):
     except Exception:
         pass
 
-brain_dir = os.path.realpath(${brainDir})
+brain_dir = brain_root
 if os.path.isdir(brain_dir):
     transcripts = glob.glob(os.path.join(brain_dir, '*', '.system_generated', 'logs', 'transcript.jsonl'))
     transcripts.sort(key=lambda transcript: safe_file_size([brain_dir], transcript))
+    if rg_candidate_paths is not None:
+        transcripts = [transcript for transcript in transcripts if os.path.realpath(transcript) in rg_candidate_paths]
     for transcript_index, transcript in enumerate(transcripts, 1):
         emit_scan_progress(transcript_index, len(transcripts), 'antigravity', 0, 0)
         real_path = os.path.realpath(transcript)

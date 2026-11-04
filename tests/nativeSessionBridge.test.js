@@ -189,7 +189,7 @@ try {
   });
   assert.deepStrictEqual(scanOrder, ['codex_thread-small-order', 'codex_thread-large-order'], 'smaller rollout results arrive before larger files even when their updated_at is older');
   assert.deepStrictEqual(sizeOrderedResults.map(item => item.id), ['codex_thread-large-order', 'codex_thread-small-order'], 'final results retain newest-first ordering regardless of scan order');
-  assert.ok(scanProgress.length > 2 && scanProgress.every((value, index) => value === index + 1), 'stream reports each scanned Codex transcript rather than stalling in 25-session steps');
+  assert.ok(scanProgress.length >= 2 && scanProgress.every((value, index) => value === index + 1), 'stream progress advances for each candidate Codex transcript');
   const brainScanOrder = [];
   const brainProgress = [];
   const brainOrderResults = await bridge.searchSessions('agyorderneedle', {
