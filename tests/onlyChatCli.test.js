@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { parseGoalDuration, parseChatCommand, safeToolError, loadOnlyChatWorkspaceContext, streamOnlyChatTurn, runOnlyChatGoal } = require('../bin/codex.js');
+const { parseGoalDuration, parseChatCommand, safeToolError, loadOnlyChatWorkspaceContext, formatLockEvidenceSummary, streamOnlyChatTurn, runOnlyChatGoal } = require('../bin/codex.js');
 
 async function main() {
   assert.equal(parseGoalDuration('3h'), 10_800_000);
@@ -21,6 +21,19 @@ async function main() {
   assert.equal(safeToolError({ isError: true, content: [{ type: 'text', text: 'File unavailable; access_token=hidden' }] }),
     'File unavailable; access_token=[redacted]');
   assert.equal(safeToolError('const error = "file not found";'), '', 'successful tool text must never be printed as an error');
+
+  const mixedLockSummary = formatLockEvidenceSummary({
+    repositoryWideLockConclusion: 'unknown',
+    repositoryLeaseInventory: { available: true, records: [{ mode: 'edit', leaseId: 'lease-1', owner: 'task-a', paths: [{ path: 'lib/owned.dart' }] }] },
+    inProcessPathLocks: { available: true, locks: [] },
+    workspaceExecution: { available: true, state: 'free' },
+    integrationGuard: { available: true, leasesClear: false },
+    applicationRuntimeOrFeatureLock: { available: false, state: 'unknown' }
+  });
+  assert.match(mixedLockSummary, /저장소 전체 편집 잠금: unknown/);
+  assert.match(mixedLockSummary, /현재 저장소의 agent-coord lease: edit lease lease-1 \(task-a; lib\/owned\.dart\)/);
+  assert.match(mixedLockSummary, /통합 준비 상태: 대기 필요 .*저장소 전체 편집 잠금이 아님/);
+  assert.match(mixedLockSummary, /앱 실행\/기능 잠금: 알 수 없음/);
 
   const contextCommands = [];
   const liveContext = await loadOnlyChatWorkspaceContext({
