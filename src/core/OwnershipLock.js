@@ -25,33 +25,49 @@ class OwnershipLock {
     return path.normalize(path.resolve(this.workspaceDir, filePath));
   }
 
-  /**
-   * Acquire exclusive lock for a set of files for a specific task
-   */
+  /** Acquire conflict-free paths; overlapping paths remain available to their current owner. */
   acquireLocks(taskId, filePaths = []) {
-    const normalized = filePaths.map(f => this.normalizePath(f));
+    const normalized = [...new Set(filePaths.map(f => this.normalizePath(f)))];
+    const acquiredPaths = [];
+    const blockedPaths = [];
+    const blockers = [];
 
-    // Check if any file is already locked by a different task
-    for (const f of normalized) {
-      if (this.locks.has(f)) {
-        const holder = this.locks.get(f);
-        if (holder.taskId !== taskId) {
-          return {
-            acquired: false,
-            blockedByFile: f,
-            holderTaskId: holder.taskId,
-            reason: `파일 '${path.basename(f)}' 은 현재 작업 '${holder.taskId}' 에 의해 수정 중입니다. 병렬 충돌 방지를 위해 직렬화 대기합니다.`
-          };
+    for (const requested of normalized) {
+      const conflicts = [...this.locks.entries()].filter(([locked, holder]) =>
+        holder.taskId !== taskId && pathsOverlap(requested, locked));
+      if (conflicts.length) {
+        blockedPaths.push(requested);
+        for (const [file, holder] of conflicts) {
+          blockers.push({ requestedPath: requested, file, taskId: holder.taskId });
         }
+      } else {
+        acquiredPaths.push(requested);
       }
     }
 
-    // Grant locks
-    for (const f of normalized) {
+    // Keep independent files usable when another task owns only part of a batch.
+    for (const f of acquiredPaths) {
       this.locks.set(f, { taskId, acquiredAt: Date.now() });
     }
 
-    return { acquired: true };
+    const firstBlocker = blockers[0];
+    const firstRequested = firstBlocker?.requestedPath;
+    const firstHolder = firstBlocker?.taskId;
+    const reason = firstBlocker
+      ? `파일 '${path.basename(firstRequested)}' 은 현재 작업 '${firstHolder}' 에 의해 수정 중입니다. 겹치는 경로만 대기하고 나머지 파일은 계속 처리할 수 있습니다.`
+      : null;
+    return {
+      acquired: blockedPaths.length === 0,
+      partial: acquiredPaths.length > 0 && blockedPaths.length > 0,
+      acquiredPaths,
+      blockedPaths,
+      blockers,
+      ...(firstBlocker ? {
+        blockedByFile: firstBlocker.file,
+        holderTaskId: firstHolder,
+        reason
+      } : {})
+    };
   }
 
   /**
@@ -119,6 +135,16 @@ class OwnershipLock {
       acquiredAt: holder.acquiredAt
     }));
   }
+}
+
+function pathsOverlap(left, right) {
+  return isSameOrWithin(left, right) || isSameOrWithin(right, left);
+}
+
+function isSameOrWithin(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 module.exports = { OwnershipLock };
