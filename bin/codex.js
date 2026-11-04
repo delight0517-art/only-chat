@@ -140,7 +140,12 @@ function groundTodoSectionAnswer(prompt, answer, readFileResults = []) {
     const match = /^\s*-\s+\[[ xX]\]\s+\*\*(TODO-[A-Za-z0-9_-]+)\./i.exec(line);
     return match?.[1].toUpperCase() === requestedId.toUpperCase();
   });
-  if (start < 0) return `Only Chat read_file 결과에 요청한 ${requestedId} 원문이 없어 요구사항을 검증하지 못했습니다.`;
+  if (start < 0) {
+    if (/\[Only Chat read_file bounded output: omitted \d+ middle lines/i.test(evidence)) {
+      return `Only Chat read_file 응답에서 중간 내용이 생략되어 ${requestedId} 원문을 확인하지 못했습니다. 해당 항목의 줄 범위를 지정해 다시 읽어야 합니다.`;
+    }
+    return `Only Chat read_file 결과에 요청한 ${requestedId} 원문이 없어 요구사항을 검증하지 못했습니다.`;
+  }
   const section = [lines[start]];
   for (const line of lines.slice(start + 1)) {
     if (line.trim() && !/^\s/.test(line)) break;
@@ -211,6 +216,12 @@ function groundEmbeddedThreefHistoryAnswer(results = []) {
     return `Only Chat embedded_3f_history 실패 또는 미검증: ${error}`;
   }
   return `Only Chat embedded_3f_history 성공: ${action} 완료, 현재 주소 ${current}.`;
+}
+
+function groundToolFailureAnswer(results = []) {
+  if (!results.length) return null;
+  const failures = results.map(({ name, detail }) => `${name}: ${detail || '도구가 실패했지만 상세 오류를 반환하지 않았습니다.'}`);
+  return `Only Chat 도구 실행 실패 (${failures.length}건):\n${failures.join('\n')}`;
 }
 
 function isTaskRegistryListRequest(prompt) {
@@ -548,6 +559,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const taskRegistryReadRequest = isTaskRegistryReadRequest(prompt);
   const evidenceGroundedRequest = todoEvidenceRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || embeddedThreefNavigateRequest || embeddedThreefHistoryRequest || taskRegistryListRequest || taskRegistryReadRequest;
   const readFileResults = [];
+  const toolFailureResults = [];
   const embeddedThreefStatusResults = [];
   const embeddedThreefReadResults = [];
   const embeddedThreefNavigateResults = [];
@@ -606,6 +618,10 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           const failed = result?.ok === false || result?.blocked === true || Boolean(detail);
           if (failed) failedTools++;
           else successfulTools++;
+          if (failed) toolFailureResults.push({
+            name: tool,
+            detail: detail || redactToolMessage(result?.stderr || result?.error || result?.message || '')
+          });
           if (!failed && call?.name === 'read_file') readFileResults.push(result);
           if (!failed && call?.name === 'embedded_3f_status') embeddedThreefStatusResults.push(result);
           if (call?.name === 'embedded_3f_read') embeddedThreefReadResults.push(result);
@@ -662,6 +678,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
         ?? (embeddedThreefHistoryRequest ? groundEmbeddedThreefHistoryAnswer(embeddedThreefHistoryResults) : null)
         ?? (taskRegistryListRequest ? groundTaskRegistryListAnswer(taskRegistryListResults) : null)
         ?? (taskRegistryReadRequest ? groundTaskRegistryReadAnswer(prompt, taskRegistryReadResults) : null)
+        ?? (evidenceGroundedRequest && successfulTools === 0 ? groundToolFailureAnswer(toolFailureResults) : null)
         ?? groundTodoStatusAnswer(prompt, responseText, readFileResults)
       : responseText;
     if (recoveredResponse !== responseText && completed === false) {
@@ -678,6 +695,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
     ?? (embeddedThreefHistoryRequest ? groundEmbeddedThreefHistoryAnswer(embeddedThreefHistoryResults) : null)
     ?? (taskRegistryListRequest ? groundTaskRegistryListAnswer(taskRegistryListResults) : null)
     ?? (taskRegistryReadRequest ? groundTaskRegistryReadAnswer(prompt, taskRegistryReadResults) : null)
+    ?? (evidenceGroundedRequest && successfulTools === 0 ? groundToolFailureAnswer(toolFailureResults) : null)
     ?? groundTodoStatusAnswer(prompt, responseText, readFileResults);
   if (evidenceGroundedRequest && groundedResponse !== responseText && completed) write(groundedResponse);
   else if (evidenceGroundedRequest && completed && responseText.trim()) write(responseText);

@@ -453,6 +453,22 @@ async function main() {
   assert.match(mismatchedTodoSectionTurn.response, /TODO-3FBROWSER-01 원문이 없어 요구사항을 검증하지 못했습니다/);
   assert.doesNotMatch(mismatchedTodoSectionTurn.response, /is complete/);
 
+  const truncatedTodoSectionTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_section_truncated',
+    prompt: 'TODO-202 exact requirements and acceptance-criteria from the source.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'todo-read', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'todo-read', name: 'read_file' }, result: 'File head\n[Only Chat read_file bounded output: omitted 120 middle lines (6000 characters). Call read_file again with start_line and end_line for a specific section.]\nFile tail' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'TODO-202 is not in the file.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(truncatedTodoSectionTurn.ok, true);
+  assert.match(truncatedTodoSectionTurn.response, /중간 내용이 생략되어 TODO-202 원문을 확인하지 못했습니다/);
+  assert.doesNotMatch(truncatedTodoSectionTurn.response, /TODO-202 is not in the file/);
+
   const embeddedStatusOutput = [];
   const embeddedStatusTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_embedded_3f_status_grounding',
@@ -567,6 +583,24 @@ async function main() {
   });
   assert.match(failedEmbeddedReadTurn.response, /embedded_3f_read 실패: Focus Fence policy is unavailable/);
   assert.doesNotMatch(failedEmbeddedReadTurn.response, /read worked/);
+
+  const failedReadOutput = [];
+  const failedReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_read_failure_grounding',
+    prompt: 'Call read_file for TODO_ROADMAP.md and return the exact TODO-202 acceptance criteria.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'roadmap-read', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'roadmap-read', name: 'read_file' }, result: { error: 'The path argument must be a string. access_token=hidden' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '{}' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '</tool_call>' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => failedReadOutput.push(text)
+  });
+  assert.equal(failedReadTurn.ok, true, 'a grounded tool failure can be delivered as a completed CLI response');
+  assert.match(failedReadTurn.response, /Only Chat 도구 실행 실패 \(1건\):\nread_file: The path argument must be a string/);
+  assert.doesNotMatch(failedReadTurn.response, /TODO-202 .*완료|access_token=hidden/);
+  assert.ok(!failedReadOutput.join('').includes('{}'), 'malformed output is suppressed while the tool failure is recovered');
 
   const registryListOutput = [];
   const registryListTurn = await streamOnlyChatTurn({
