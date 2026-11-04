@@ -34,6 +34,7 @@ const { EvolutionInbox } = require('../../sync/EvolutionInbox.js');
 const { RecurringScheduleStore } = require('../../scheduler/RecurringScheduleStore.js');
 const { RecurringScheduleService } = require('../../scheduler/RecurringScheduleService.js');
 const { TaskRegistryStore } = require('../../core/TaskRegistryStore.js');
+const { TaskMailboxDriveAdapter } = require('../../core/TaskMailboxDriveAdapter.js');
 const { MacWindowsDevelopment } = require('../../core/MacWindowsDevelopment.js');
 const { ForAiFeedbackInbox } = require('../../connectors/ForAiFeedbackInbox.js');
 
@@ -162,6 +163,7 @@ class DesktopServer {
     this.forAiInbox = this.isolated ? null : new ForAiFeedbackInbox({ dataDir: this.dataDir, dispatcher: this.engine.dispatcher });
     this.engine.forAiTaskGuard = task => this.forAiInbox?.isTaskAuthorized(task) === true;
     this.taskRegistryStore = this.isolated ? null : new TaskRegistryStore({ dataDir: this.dataDir });
+    this.taskMailboxConfigFile = path.join(this.dataDir, 'task-mailbox.json');
     this.scheduleStore = options.scheduleStore || new RecurringScheduleStore({ dataDir: this.dataDir });
     this.modelSwitchScheduleStore = options.modelSwitchScheduleStore || new ModelSwitchScheduleStore({ dataDir: this.dataDir, clock: options.modelSwitchClock });
     this.scheduleService = options.scheduleService || new RecurringScheduleService({
@@ -305,6 +307,32 @@ class DesktopServer {
     }
   }
 
+  _getTaskMailboxAdapter() {
+    if (!this.taskRegistryStore) return null;
+    try {
+      const config = JSON.parse(fs.readFileSync(this.taskMailboxConfigFile, 'utf8'));
+      if (config?.schemaVersion !== 1) return null;
+      return new TaskMailboxDriveAdapter({
+        connector: this.engine.tools.google,
+        store: this.taskRegistryStore,
+        folderId: config.folderId,
+        expectedAccountIdentityHash: config.expectedAccountIdentityHash,
+        peerHostId: config.peerHostId
+      });
+    } catch (_) { return null; }
+  }
+
+  _saveTaskMailboxConfig(config) {
+    fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
+    const tempPath = `${this.taskMailboxConfigFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify({ schemaVersion: 1, ...config }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      fs.renameSync(tempPath, this.taskMailboxConfigFile);
+    } finally {
+      try { fs.unlinkSync(tempPath); } catch (_) {}
+    }
+  }
+
   getPriorityStatus() {
     const status = this.engine.priorityChain.getStatus();
     status.tiers = status.tiers.map(tier => ({
@@ -412,6 +440,81 @@ class DesktopServer {
       res.writeHead(200, headers);
       res.end(JSON.stringify(response));
       return;
+    }
+
+    if (pathname === '/api/task-registry/mailbox' && req.method === 'GET') {
+      let config = null;
+      try { config = JSON.parse(fs.readFileSync(this.taskMailboxConfigFile, 'utf8')); } catch (_) {}
+      const google = this.engine.tools.google;
+      return this._respondJson(res, {
+        configured: Boolean(config?.schemaVersion === 1 && config.folderId && config.peerHostId && config.expectedAccountIdentityHash),
+        connected: typeof google?.isConnected === 'function' && google.isConnected(),
+        localHostId: this.taskRegistryStore?.hostId || null,
+        peerHostId: config?.peerHostId || null,
+        folderId: config?.folderId || null
+      });
+    }
+
+    if (pathname === '/api/task-registry/mailbox/config' && req.method === 'POST') {
+      if (!this.taskRegistryStore) return this._respondJson(res, { error: 'task_registry_unavailable' }, 503);
+      const body = await this._readLimitedBody(req, 4096);
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || typeof body.folderId !== 'string' || typeof body.peerHostId !== 'string'
+        || !body.peerHostId.trim() || body.peerHostId.trim().length > 256
+        || body.peerHostId.trim() === this.taskRegistryStore.hostId) {
+        return this._respondJson(res, { error: 'task_mailbox_config_invalid' }, 400);
+      }
+      try {
+        const google = this.engine.tools.google;
+        const expectedAccountIdentityHash = await google.driveGetAccountIdentityHash();
+        const folder = await google.driveVerifyMailboxFolder(body.folderId.trim());
+        if (folder.folderId !== body.folderId.trim() || folder.canListChildren !== true || folder.canAddChildren !== true) {
+          throw new Error('Google Drive mailbox folder is not verified for read and write');
+        }
+        const config = {
+          folderId: folder.folderId,
+          expectedAccountIdentityHash,
+          peerHostId: body.peerHostId.trim()
+        };
+        new TaskMailboxDriveAdapter({ connector: google, store: this.taskRegistryStore, ...config });
+        this._saveTaskMailboxConfig(config);
+        return this._respondJson(res, { configured: true, folderId: config.folderId, peerHostId: config.peerHostId });
+      } catch (error) { return this._respondJson(res, { error: error.message || 'task_mailbox_config_failed' }, 400); }
+    }
+
+    if (pathname === '/api/task-registry/mailbox/sync' && req.method === 'POST') {
+      const adapter = this._getTaskMailboxAdapter();
+      if (!adapter) return this._respondJson(res, { error: 'task_mailbox_not_configured' }, 409);
+      try { return this._respondJson(res, { sync: await adapter.syncIncoming() }); }
+      catch (error) { return this._respondJson(res, { error: error.message || 'task_mailbox_sync_failed' }, 502); }
+    }
+
+    const mailboxPublishMatch = /^\/api\/task-registry\/tasks\/([^/]+)\/mailbox-publish$/.exec(pathname);
+    if (mailboxPublishMatch && req.method === 'POST') {
+      if (!this.taskRegistryStore) return this._respondJson(res, { error: 'task_registry_unavailable' }, 503);
+      const adapter = this._getTaskMailboxAdapter();
+      if (!adapter) return this._respondJson(res, { error: 'task_mailbox_not_configured' }, 409);
+      let taskKey;
+      try { taskKey = decodeURIComponent(mailboxPublishMatch[1]); }
+      catch (_) { return this._respondJson(res, { error: 'task_key_invalid' }, 400); }
+      const body = await this._readLimitedBody(req, 4096);
+      if (!body || typeof body.viewerChatId !== 'string' || !body.viewerChatId.trim()) {
+        return this._respondJson(res, { error: 'task_mailbox_viewer_chat_required' }, 400);
+      }
+      try {
+        const task = this.taskRegistryStore.getTask(taskKey);
+        if (!task) return this._respondJson(res, { error: 'task_not_found' }, 404);
+        const taskReceipt = await adapter.publishTask(taskKey);
+        const messages = this.taskRegistryStore.listMessages({ taskKey, viewerChatId: body.viewerChatId.trim(),
+          afterMessageId: body.afterMessageId || undefined, limit: body.limit === undefined ? 100 : body.limit });
+        const messageReceipts = [];
+        for (const message of messages) {
+          if ((message.senderHostId || this.taskRegistryStore.hostId) !== this.taskRegistryStore.hostId
+            || message.recipientHostId !== adapter.peerHostId) continue;
+          messageReceipts.push({ messageId: message.messageId, ...(await adapter.publishMessage(message)) });
+        }
+        return this._respondJson(res, { task: taskReceipt, messages: messageReceipts, nextAfterMessageId: messages.at(-1)?.messageId || body.afterMessageId || null });
+      } catch (error) { return this._respondJson(res, { error: error.message || 'task_mailbox_publish_failed' }, 502); }
     }
 
     if (pathname === '/api/task-registry/tasks' && req.method === 'GET') {
