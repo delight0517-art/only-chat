@@ -131,13 +131,13 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   return { ok: completed && Boolean(responseText.trim()), sessionId: resolvedSessionId, response: responseText };
 }
 
-async function runOnlyChatGoal({ baseUrl, prompt, durationMs, model = 'gemini-3.8-flash-medium', approveTools = [], fetchImpl = fetch, write = text => process.stdout.write(text), now = Date.now, signal } = {}) {
+async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = false, model = 'gemini-3.8-flash-medium', approveTools = [], fetchImpl = fetch, write = text => process.stdout.write(text), now = Date.now, signal } = {}) {
   if (!/^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/.test(baseUrl || '')) throw new Error('Only Chat은 이 Mac의 loopback 주소로만 연결할 수 있습니다.');
   const deadline = now() + durationMs;
   let sessionId = `session_${now()}`, iteration = 0;
   while (now() < deadline) {
     iteration++;
-    const nextPrompt = iteration === 1 ? prompt : `계속 같은 Goal을 진행하세요. 남은 시간은 약 ${Math.max(0, Math.ceil((deadline - now()) / 60_000))}분입니다. 직전 결과와 남은 작업을 확인하고, 이미 끝난 일을 반복하지 말고 다음의 가장 작은 안전한 단계를 실행하세요. 무료로 선택한 모델만 사용하고, 셸/브랜치/워크트리는 만들지 마세요. 진행이 막히면 원인과 필요한 조치를 보고하고 도구를 반복 재시도하지 마세요.`;
+    const nextPrompt = iteration === 1 ? prompt : `계속 같은 Goal을 진행하세요. 남은 시간은 약 ${Math.max(0, Math.ceil((deadline - now()) / 60_000))}분입니다. 직전 결과와 남은 작업을 확인하고, 이미 끝난 일을 반복하지 말고 다음의 가장 작은 안전한 단계를 실행하세요.${fixedDuration ? ' 사용자가 지정한 전체 시간이 끝나기 전에는 GOAL_COMPLETE를 출력하거나 완료를 선언하지 마세요. 안전하게 진행할 다른 작업이 없으면 그 사실과 근거를 기록하고, 완료된 작업을 반복하지 마세요.' : ''} 무료로 선택한 모델만 사용하고, 셸/브랜치/워크트리는 만들지 마세요. 진행이 막히면 원인과 필요한 조치를 보고하고 도구를 반복 재시도하지 마세요.`;
     write(`\n[Goal 반복 ${iteration} 시작 · ${sessionId}]\n`);
     const goalSignal = AbortSignal.timeout(Math.max(1, deadline - now()));
     const activeSignal = signal ? AbortSignal.any([signal, goalSignal]) : goalSignal;
@@ -153,7 +153,7 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, model = 'gemini-3.
       write(`\n[중단: ${result.category}${result.name ? ` · ${result.name}` : ''}]\n`);
       return { ...result, sessionId, iteration, deadline };
     }
-    if (/^\s*GOAL_COMPLETE\s*$/m.test(result.response)) return { ok: true, sessionId, iteration, deadline, completedEarly: true };
+    if (!fixedDuration && /^\s*GOAL_COMPLETE\s*$/m.test(result.response)) return { ok: true, sessionId, iteration, deadline, completedEarly: true };
   }
   write(`\n[정해진 시간이 끝났습니다 · 반복 ${iteration}회 · 세션 ${sessionId}]\n`);
   return { ok: true, sessionId, iteration, deadline, completedEarly: false };
@@ -166,6 +166,7 @@ function parseChatCommand(commandArgs) {
     const arg = commandArgs[i];
     if (arg === '--model') options.model = commandArgs[++i] || '';
     else if (arg === '--duration') options.durationMs = parseGoalDuration(commandArgs[++i]);
+    else if (arg === '--fixed-duration') options.fixedDuration = true;
     else if (arg === '--approve-tool') options.approveTools.push(commandArgs[++i] || '');
     else positional.push(arg);
   }
@@ -321,7 +322,7 @@ Author: Rogan Kim (GeunHu Kim)
   my-codex login add <...>     새로운 Google / ChatGPT 계정 등록
   my-codex exec "<프롬프트>"   비대화형 1회성 명령/에이전트 실행
   my-codex chat "<프롬프트>"   실행 중인 Only Chat에 요청하고 텍스트 응답 읽기
-  my-codex goal --duration 3h "<Goal>"  Only Chat에서 순차 반복 Goal 실행
+  my-codex goal --duration 3h [--fixed-duration] "<Goal>"  Only Chat에서 순차 반복 Goal 실행
     --approve-tool edit_file   이 세션에서 제한된 파일 편집 승인
   my-codex app-server          Codex 호환 JSON-RPC 2.0 stdio 서버 실행
       `);

@@ -3938,6 +3938,7 @@ async function refreshThreefControlStatus() {
     if (surface) surface.textContent = status.controlAvailable
       ? `독립 3F Browser 연결됨${status.title ? ` · ${status.title}` : ''}${status.activeUrl ? `\n${status.activeUrl}` : ''}`
       : `${status.statusText || '3F Browser 연결 상태를 알 수 없습니다.'}\n이동·읽기·페이지 조작은 연결이 확인된 뒤 사용할 수 있습니다.`;
+    window.setTimeout(pollEmbeddedThreefCommands, 0);
   } catch (error) {
     threefControlAllowed = false;
     setThreefControlUi(false);

@@ -3,26 +3,57 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { parseReasoningEffort } = require('../core/ReasoningEffort.js');
 const { withResponseGuidance } = require('./responseGuidance.js');
 const { TOOLS: EMBEDDED_THREEF_TOOLS } = require('../features/provider/embeddedThreefMcp.js');
 
 function embeddedThreefSettings(bridge) {
-  if (!bridge || typeof bridge.url !== 'string' || typeof bridge.serverPath !== 'string') return null;
-  return JSON.stringify({
-    tools: { core: [] },
-    mcp: { allowed: ['onlychat-3f'] },
+  if (!bridge || typeof bridge.url !== 'string' || typeof bridge.token !== 'string' || typeof bridge.serverPath !== 'string') return null;
+  return {
     mcpServers: {
       'onlychat-3f': {
         command: bridge.pythonPath || '/usr/bin/python3',
         args: [bridge.serverPath],
-        env: { ONLYCHAT_MCP_URL: '$ONLYCHAT_MCP_URL', ONLYCHAT_MCP_TOKEN: '$ONLYCHAT_MCP_TOKEN' },
-        trust: true,
-        includeTools: EMBEDDED_THREEF_TOOLS.map(tool => tool.name)
+        env: { ONLYCHAT_MCP_URL: bridge.url, ONLYCHAT_MCP_TOKEN: bridge.token },
+        enabledTools: EMBEDDED_THREEF_TOOLS.map(tool => tool.name)
       }
     }
-  });
+  };
+}
+
+function createCliWorkspace(bridge) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-antigravity-'));
+  try {
+    fs.chmodSync(directory, 0o700);
+    const agentsDirectory = path.join(directory, '.agents', 'agents');
+    fs.mkdirSync(agentsDirectory, { recursive: true, mode: 0o700 });
+    const name = `onlychat-${crypto.randomBytes(6).toString('hex')}`;
+    const agentDirectory = path.join(agentsDirectory, name);
+    fs.mkdirSync(agentDirectory, { mode: 0o700 });
+    const agent = [
+      '---',
+      `name: ${name}`,
+      'description: Only Chat response agent with its approved session tools only.',
+      'mainAgent: true',
+      'subagent: false',
+      'commandExecutionPolicy: off',
+      '---',
+      'Use only the tools explicitly provided to this Only Chat session. Do not use shell, built-in file, web, or other tools.',
+      'If no tool is available, answer the user directly without taking actions.'
+    ].join('\n');
+    fs.writeFileSync(path.join(agentDirectory, 'agent.md'), agent, { mode: 0o600 });
+    const settings = embeddedThreefSettings(bridge);
+    if (settings) {
+      fs.mkdirSync(path.join(directory, '.agents'), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(directory, '.agents', 'mcp_config.json'), JSON.stringify(settings), { mode: 0o600 });
+    }
+    return { directory, agentName: name };
+  } catch (error) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function formatHistory(history = []) {
@@ -147,37 +178,43 @@ class AntigravityCliAdapter {
     if (!prompt.trim()) throw new Error('Antigravity에 보낼 대화 내용이 없습니다.');
 
     const sessionId = context.sessionId;
+    const reasoningEffort = parseReasoningEffort(context.reasoningEffort);
+    if (!reasoningEffort) throw new Error('지원하지 않는 추론 강도입니다.');
+    const resolvedModel = resolveModelEffort(tier?.model, reasoningEffort);
+    const cliWorkspace = createCliWorkspace(context.embeddedThreefMcp);
     const args = [
+      '--agent', cliWorkspace.agentName,
+      '--settings', JSON.stringify({
+        toolPermission: 'request-review',
+        permissions: {
+          allow: context.embeddedThreefMcp ? ['mcp(onlychat-3f/*)'] : [],
+          deny: ['command(*)', 'read_file(*)', 'write_file(*)', 'read_url(*)', 'execute_url(*)']
+        }
+      }),
       '--print', prompt,
       '--output-format', 'stream-json',
       '--print-timeout', `${Math.ceil(this.timeoutMs / 1000)}s`
     ];
-    const reasoningEffort = parseReasoningEffort(context.reasoningEffort);
-    if (!reasoningEffort) throw new Error('지원하지 않는 추론 강도입니다.');
-    const resolvedModel = resolveModelEffort(tier?.model, reasoningEffort);
     if (resolvedModel.model) args.push('--model', resolvedModel.model);
     if (resolvedModel.passEffort) args.push('--effort', reasoningEffort);
-    const embeddedSettings = embeddedThreefSettings(context.embeddedThreefMcp);
-    const extraEnv = {};
-    if (embeddedSettings) {
-      args.push('--settings', embeddedSettings);
-      extraEnv.ONLYCHAT_MCP_URL = context.embeddedThreefMcp.url;
-      extraEnv.ONLYCHAT_MCP_TOKEN = context.embeddedThreefMcp.token;
-    }
     if (saved?.provider === 'antigravity-cli' && saved.model === (tier?.model || '')) {
       args.push('--conversation', saved.conversationId);
     }
 
-    const result = await this._run(args, context.workspaceDir, hooks, extraEnv);
-    if (result.conversationId && sessionId) {
-      this.conversations[sessionId] = {
-        provider: 'antigravity-cli',
-        model: tier?.model || '',
-        conversationId: result.conversationId
-      };
-      this._saveConversations();
+    try {
+      const result = await this._run(args, cliWorkspace.directory, hooks);
+      if (result.conversationId && sessionId) {
+        this.conversations[sessionId] = {
+          provider: 'antigravity-cli',
+          model: tier?.model || '',
+          conversationId: result.conversationId
+        };
+        this._saveConversations();
+      }
+      return { content: result.response, toolCalls: [] };
+    } finally {
+      fs.rmSync(cliWorkspace.directory, { recursive: true, force: true });
     }
-    return { content: result.response, toolCalls: [] };
   }
 
   _run(args, cwd, hooks, extraEnv = {}) {
@@ -295,4 +332,4 @@ class AntigravityCliAdapter {
   }
 }
 
-module.exports = { AntigravityCliAdapter, formatHistory, parseUsageForTier, resolveModelEffort, embeddedThreefSettings };
+module.exports = { AntigravityCliAdapter, formatHistory, parseUsageForTier, resolveModelEffort, embeddedThreefSettings, createCliWorkspace };

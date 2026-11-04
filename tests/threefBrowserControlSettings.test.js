@@ -42,6 +42,9 @@ async function main() {
       'the selected browser width survives reopening the app');
     assert.match(desktopApp, /btnToggleBrowser\?\.addEventListener\('click', \(\) => \{[\s\S]*?if \(opening\) void refreshThreefControlStatus\(\);/,
       'opening the 3F panel refreshes connection state instead of leaving a stale unavailable banner');
+    const refreshThreefStatus = desktopApp.match(/async function refreshThreefControlStatus\(\) \{[\s\S]*?\n\}/)?.[0];
+    assert.match(refreshThreefStatus, /window\.setTimeout\(pollEmbeddedThreefCommands, 0\)/,
+      'an already-enabled 3F panel starts the native command poller after status refresh');
     const navBrowser = desktopApp.match(/async function navBrowser\(url\) \{[\s\S]*?\n\}/)?.[0];
     assert.ok(navBrowser, 'navigation action stays in one auditable function');
     assert.match(navBrowser, /postNativeBrowserPanelAction\('navigate'/,

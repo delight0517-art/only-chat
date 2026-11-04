@@ -8,7 +8,17 @@ const { withResponseGuidance } = require('../src/providers/responseGuidance.js')
 
 function fakeSpawn(results, launches) {
   return (command, args, options) => {
-    launches.push({ command, args, cwd: options.cwd, env: options.env });
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const mcpConfigPath = path.join(options.cwd, '.agents', 'mcp_config.json');
+    const agentDir = path.join(options.cwd, '.agents', 'agents');
+    const agentPath = fs.existsSync(agentDir)
+      ? path.join(agentDir, fs.readdirSync(agentDir)[0], 'agent.md') : '';
+    launches.push({ command, args, cwd: options.cwd, env: options.env,
+      mcpConfig: fs.existsSync(mcpConfigPath) ? JSON.parse(fs.readFileSync(mcpConfigPath, 'utf8')) : null,
+      mcpConfigMode: fs.existsSync(mcpConfigPath) ? fs.statSync(mcpConfigPath).mode & 0o777 : null,
+      agent: agentPath ? fs.readFileSync(agentPath, 'utf8') : '',
+      workspaceMode: fs.statSync(options.cwd).mode & 0o777 });
     const child = new EventEmitter();
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
@@ -17,8 +27,8 @@ function fakeSpawn(results, launches) {
       const result = results.shift();
       if (result.error) child.stderr.write(result.error);
       else {
-        child.stdout.write(JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'agy-conv-1', step_index: 2, state: 'ACTIVE', step_type: 'tool', tool_name: 'run_command', tool_info: { parameters: { CommandLine: 'pwd' } } } }) + '\n');
-        child.stdout.write(JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'agy-conv-1', step_index: 2, state: 'DONE', step_type: 'tool', tool_name: 'run_command', tool_info: { name: 'run_command', parameters: { CommandLine: 'pwd' }, output: '/workspace/a' } } }) + '\n');
+        child.stdout.write(JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'agy-conv-1', step_index: 2, state: 'ACTIVE', step_type: 'tool', tool_name: 'call_mcp_tool', tool_info: { parameters: { serverName: 'onlychat-3f', toolName: 'embedded_3f_status', arguments: {} } } } }) + '\n');
+        child.stdout.write(JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'agy-conv-1', step_index: 2, state: 'DONE', step_type: 'tool', tool_name: 'call_mcp_tool', tool_info: { name: 'call_mcp_tool', parameters: { serverName: 'onlychat-3f', toolName: 'embedded_3f_status', arguments: {} }, output: '{"available":true}' } } }) + '\n');
         child.stdout.write(JSON.stringify({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'Hello' } }) + '\n');
         child.stdout.write(JSON.stringify({ event: 'result', result: result.value }) + '\n');
       }
@@ -58,11 +68,15 @@ async function main() {
       onToolEnd: value => tools.push(['end', value.call.name])
     }, { sessionId: 'session-a', workspaceDir: '/workspace/a', reasoningEffort: 'high' });
     assert.equal(first.content, 'Hello');
-    assert.equal(launches[0].cwd, '/workspace/a');
+    assert.notEqual(launches[0].cwd, '/workspace/a');
+    assert.equal(launches[0].workspaceMode, 0o700);
+    assert.doesNotMatch(launches[0].agent, /call_mcp_tool/, 'do not allowlist a tool name Antigravity does not register');
+    assert.match(launches[0].agent, /commandExecutionPolicy: off/);
+    assert.equal(fs.existsSync(launches[0].cwd), false, 'per-turn agent workspace must be removed after completion');
     assert.ok(launches[0].args.includes('--model'));
     assert.deepEqual(launches[0].args.slice(launches[0].args.indexOf('--effort'), launches[0].args.indexOf('--effort') + 2), ['--effort', 'high']);
     assert.deepEqual(hooks, ['Hello']);
-    assert.deepEqual(tools, [['start', 'run_command'], ['output', '/workspace/a'], ['end', 'run_command']]);
+    assert.deepEqual(tools, [['start', 'call_mcp_tool'], ['output', '{"available":true}'], ['end', 'call_mcp_tool']]);
 
     const resumed = await adapter.call(tier, [
       { role: 'user', content: 'hi' },
@@ -72,8 +86,9 @@ async function main() {
     assert.equal(resumed.content, 'Follow up');
     assert.ok(launches[1].args.includes('--conversation'));
     assert.deepEqual(launches[1].args.slice(launches[1].args.indexOf('--effort'), launches[1].args.indexOf('--effort') + 2), ['--effort', 'medium']);
-    assert.match(launches[1].args[1], /USER\nnext/);
-    assert.doesNotMatch(launches[1].args[1], /Hello/);
+    const resumedPrompt = launches[1].args[launches[1].args.indexOf('--print') + 1];
+    assert.match(resumedPrompt, /USER\nnext/);
+    assert.doesNotMatch(resumedPrompt, /Hello/);
     assert.equal(new AntigravityCliAdapter({ stateFile }).conversations['session-a'].conversationId, 'agy-conv-1');
 
     const effortMatched = await adapter.call(
@@ -91,21 +106,26 @@ async function main() {
     });
     assert.equal(mcpTurn.content, 'MCP configured');
     const settingsArg = launches[3].args[launches[3].args.indexOf('--settings') + 1];
-    const mcpSettings = JSON.parse(settingsArg);
-    assert.deepEqual(mcpSettings.tools, { core: [] }, 'Antigravity turns must not use built-in tools outside Only Chat approval and ownership controls');
-    assert.deepEqual(mcpSettings.mcp, { allowed: ['onlychat-3f'] }, 'only the session-scoped Only Chat MCP bridge may be connected');
-    assert.equal(mcpSettings.mcpServers['onlychat-3f'].httpUrl, undefined);
-    assert.equal(mcpSettings.mcpServers['onlychat-3f'].command, '/usr/bin/python3');
-    assert.equal(mcpSettings.mcpServers['onlychat-3f'].args[0], bridge.serverPath);
-    assert.deepEqual(mcpSettings.mcpServers['onlychat-3f'].includeTools, [
+    const cliSettings = JSON.parse(settingsArg);
+    assert.deepEqual(cliSettings.permissions.allow, ['mcp(onlychat-3f/*)']);
+    assert.deepEqual(cliSettings.permissions.deny, ['command(*)', 'read_file(*)', 'write_file(*)', 'read_url(*)', 'execute_url(*)']);
+    assert.equal(cliSettings.mcp, undefined, 'MCP configuration must not be placed in Antigravity settings');
+    assert.equal(cliSettings.mcpServers, undefined);
+    assert.equal(launches[3].mcpConfigMode, 0o600, 'the ephemeral MCP config must be owner-only');
+    const mcpConfig = launches[3].mcpConfig;
+    assert.equal(mcpConfig.mcpServers['onlychat-3f'].command, '/usr/bin/python3');
+    assert.equal(mcpConfig.mcpServers['onlychat-3f'].args[0], bridge.serverPath);
+    assert.deepEqual(mcpConfig.mcpServers['onlychat-3f'].enabledTools, [
       'read_file', 'edit_file', 'embedded_3f_status', 'embedded_3f_navigate', 'embedded_3f_read', 'embedded_3f_aria', 'embedded_3f_act', 'embedded_3f_history'
     ]);
-    assert.equal(mcpSettings.mcpServers['onlychat-3f'].trust, true,
-      'the app MCP is trusted only because mutation approval is enforced by the authenticated Only Chat endpoint');
+    assert.equal(mcpConfig.mcpServers['onlychat-3f'].includeTools, undefined);
+    assert.equal(mcpConfig.mcpServers['onlychat-3f'].trust, undefined);
+    assert.equal(mcpConfig.mcpServers['onlychat-3f'].env.ONLYCHAT_MCP_URL, bridge.url);
+    assert.equal(mcpConfig.mcpServers['onlychat-3f'].env.ONLYCHAT_MCP_TOKEN, 'turn-secret');
     assert.doesNotMatch(settingsArg, /turn-secret/, 'the per-turn capability must not be placed on the process command line');
-    assert.equal(launches[3].env.ONLYCHAT_MCP_TOKEN, 'turn-secret');
-    assert.equal(launches[3].env.ONLYCHAT_MCP_URL, bridge.url);
+    assert.equal(JSON.stringify(launches[3].args).includes('turn-secret'), false, 'the per-turn capability must not be placed on the process command line');
     assert.equal(embeddedThreefSettings(null), null, 'turns without an active 3F panel must not receive embedded 3F tools');
+    assert.equal(fs.existsSync(launches[3].cwd), false, 'ephemeral MCP configuration and token must be removed after completion');
     await assert.rejects(adapter.call(
       { provider: 'antigravity-cli', model: 'gpt-oss-120b-medium' },
       [{ role: 'user', content: 'unsupported' }], {},
@@ -114,6 +134,7 @@ async function main() {
     assert.equal(launches.length, 4, 'unsupported model/effort pairs must fail before launching the CLI');
 
     await assert.rejects(adapter.call(tier, [{ role: 'user', content: 'again' }]), /authentication required/);
+    assert.equal(fs.existsSync(launches.at(-1).cwd), false, 'ephemeral configuration must be removed after provider failure');
   } finally {
     try { fs.unlinkSync(stateFile); } catch (_) {}
   }
