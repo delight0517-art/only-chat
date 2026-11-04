@@ -716,6 +716,7 @@ class AgentEngine {
           onToolEnd
         }, {
           reasoningEffort,
+          signal: callbacks.signal,
           approvalPolicy: this.tools.approvalPolicy,
           fullAccess: callbacks.fullAccess === true,
           embeddedThreefMcp: callbacks.embeddedThreefMcp || null,
@@ -920,6 +921,7 @@ class AgentEngine {
         return response;
 
       } catch (err) {
+        if (callbacks.signal?.aborted) throw err;
         const category = providerFailureCategory(err);
         const model = safeProviderModel(activeTier.model);
         console.warn(`[AgentEngine] Turn attempt failed: category=${category} model=${model || 'unknown'} tier=${safeProviderTier(activeTier)}`);
@@ -1140,7 +1142,8 @@ class AgentEngine {
       approvalPolicy: options.approvalPolicy,
       fullAccess: options.fullAccess === true,
       embeddedThreefMcp: options.embeddedThreefMcp || null,
-      requestWorkspaceWriteApproval: options.requestWorkspaceWriteApproval
+      requestWorkspaceWriteApproval: options.requestWorkspaceWriteApproval,
+      signal: options.signal
     });
   }
 

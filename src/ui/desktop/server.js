@@ -1959,6 +1959,10 @@ class DesktopServer {
       const effectiveReasoningEffort = modelSwitchResolution.apply?.effort || reasoningEffort;
 
       this.activeTurns += 1;
+      const turnController = new AbortController();
+      res.once('close', () => {
+        if (!res.writableEnded) turnController.abort(new Error('Only Chat client disconnected.'));
+      });
 
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
@@ -2016,6 +2020,7 @@ class DesktopServer {
         }
 
         await this.engine.executeTurn(prompt, {
+          signal: turnController.signal,
           reasoningEffort: effectiveReasoningEffort,
           fullAccess: body.fullAccess === true,
           modelSelection: effectiveModelSelection,
@@ -2037,6 +2042,7 @@ class DesktopServer {
         res.write('data: [DONE]\n\n');
         res.end();
       } catch (err) {
+        if (turnController.signal.aborted) return;
         const allowedFailureCategories = new Set([
           'quota_rate_limit', 'authentication', 'model_unavailable',
           'sandbox_permission_blocked', 'approval_required', 'approval_denied', 'network_unavailable', 'provider_failure'

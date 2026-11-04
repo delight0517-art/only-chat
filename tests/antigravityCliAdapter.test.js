@@ -172,6 +172,22 @@ async function main() {
 
     await assert.rejects(adapter.call(tier, [{ role: 'user', content: 'again' }]), /authentication required/);
     assert.equal(fs.existsSync(launches.at(-1).cwd), false, 'ephemeral configuration must be removed after provider failure');
+
+    let killedSignal = null;
+    const stalledChild = new EventEmitter();
+    stalledChild.stdout = new PassThrough();
+    stalledChild.stderr = new PassThrough();
+    stalledChild.kill = value => { killedSignal = value; };
+    const cancellableAdapter = new AntigravityCliAdapter({
+      stateFile: path.join(__dirname, `.onlychat-cancel-${process.pid}.json`),
+      spawn: () => stalledChild,
+      timeoutMs: 10_000
+    });
+    const controller = new AbortController();
+    const pending = cancellableAdapter._run([], '/workspace/a', {}, {}, controller.signal);
+    controller.abort();
+    await assert.rejects(pending, error => error.name === 'AbortError');
+    assert.equal(killedSignal, 'SIGTERM', 'client disconnect must stop the provider child');
   } finally {
     try { fs.unlinkSync(stateFile); } catch (_) {}
   }

@@ -255,7 +255,7 @@ class AntigravityCliAdapter {
     }
 
     try {
-      const result = await this._run(args, cliWorkspace.directory, hooks);
+      const result = await this._run(args, cliWorkspace.directory, hooks, {}, context.signal);
       if (result.conversationId && sessionId) {
         this.conversations[sessionId] = {
           provider: 'antigravity-cli',
@@ -270,7 +270,7 @@ class AntigravityCliAdapter {
     }
   }
 
-  _run(args, cwd, hooks, extraEnv = {}) {
+  _run(args, cwd, hooks, extraEnv = {}, signal = null) {
     return new Promise((resolve, reject) => {
       let child;
       try {
@@ -290,6 +290,7 @@ class AntigravityCliAdapter {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         if (error) {
           for (const call of activeTools.values()) hooks.onToolEnd?.({ call, result: { error: error.message } });
           activeTools.clear();
@@ -301,6 +302,14 @@ class AntigravityCliAdapter {
         child.kill('SIGTERM');
         finish(new Error('Antigravity CLI 응답 시간이 초과됐습니다.'));
       }, this.timeoutMs);
+      const onAbort = () => {
+        child.kill('SIGTERM');
+        const error = new Error('Only Chat client disconnected.');
+        error.name = 'AbortError';
+        finish(error);
+      };
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener('abort', onAbort, { once: true });
 
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', chunk => {
