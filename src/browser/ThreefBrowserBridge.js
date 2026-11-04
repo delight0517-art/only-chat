@@ -274,7 +274,15 @@ class ThreefBrowserBridge {
       return { ok: false, stdout: '', stderr: result.data?.error || '3F Browser 제어 서비스에 연결할 수 없습니다.' };
     }
     if (result.data?.ok !== true) return { ok: false, stdout: '', stderr: result.data?.error || result.data?.result || '브라우저 동작 실패' };
-    const verifiedPage = await this._verifyReturnedPage(result.data);
+    let responseData = result.data;
+    if (typeof responseData.url !== 'string') {
+      const currentPage = await this._request('GET', '/v1/status');
+      if (currentPage.unavailable || currentPage.status < 200 || currentPage.status >= 300) {
+        return { ok: false, stdout: '', stderr: currentPage.data?.error || '3F Browser 동작 후 현재 페이지를 확인하지 못했습니다.' };
+      }
+      responseData = currentPage.data;
+    }
+    const verifiedPage = await this._verifyReturnedPage(responseData);
     if (!verifiedPage.ok) return { ok: false, stdout: '', stderr: verifiedPage.stderr, blocked: verifiedPage.blocked === true };
     return { ok: true, stdout: result.data?.result || '', stderr: '' };
   }

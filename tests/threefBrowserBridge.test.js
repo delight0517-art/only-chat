@@ -81,7 +81,7 @@ async function main() {
         : new URL(url).pathname === '/v1/aria' ? { ok: true, url: 'https://example.com', ariaTree: 'button [oc-agent-1] Submit' }
           : new URL(url).pathname === '/v1/read' ? { ok: true, url: 'https://example.com', text: 'page content' }
             : new URL(url).pathname === '/v1/history' ? { ok: true, url: 'https://example.com/previous' }
-              : new URL(url).pathname === '/v1/act' ? { ok: true, url: 'https://example.com/', result: 'clicked' }
+              : new URL(url).pathname === '/v1/act' ? { ok: true, result: 'clicked' }
                 : { ok: true, result: 'clicked' };
       return { status: 200, json: async () => payload };
     }
@@ -94,7 +94,11 @@ async function main() {
   assert.equal(controlledAria.ok, true);
   assert.match(controlledAria.ariaTree, /oc-agent-1/);
   assert.equal((await controlled.readText()).stdout, 'page content');
-  assert.equal((await controlled.act('click [oc-agent-1]')).stdout, 'clicked');
+  const controlledAction = await controlled.act('click [oc-agent-1]');
+  assert.equal(controlledAction.ok, true, 'verify the live page after a successful 3F action response that omits its URL');
+  assert.equal(controlledAction.stdout, 'clicked');
+  assert.equal(requests.filter(request => request.path === '/v1/status').length >= 3, true,
+    'a missing action URL must be resolved with the actual current-page status');
   assert.equal((await controlled.history('back')).ok, true);
   assert.equal((await controlled.history('reload')).ok, true);
   assert.equal((await controlled.history('forward')).ok, false);
@@ -267,9 +271,8 @@ async function main() {
       : { ok: true, result: 'unverified action output' } })
   });
   const missingActionUrlResult = await missingActionUrl.act('read [oc-agent-1]');
-  assert.equal(missingActionUrlResult.ok, false, 'an action result without a verifiable response URL is rejected');
-  assert.equal(missingActionUrlResult.stdout, '', 'action output is withheld when the response URL is missing');
-  assert.match(missingActionUrlResult.stderr, /주소를 확인할 수 없어/);
+  assert.equal(missingActionUrlResult.ok, true, 'a successful action without a URL is verified against the selected tab status');
+  assert.equal(missingActionUrlResult.stdout, 'unverified action output');
 
   let unsafeFetches = 0;
   const unsafeDescriptor = new ThreefBrowserBridge({

@@ -23,7 +23,38 @@ function embeddedThreefSettings(bridge) {
   };
 }
 
-function createCliWorkspace(bridge) {
+function workspaceMcpSettings({ workspaceDir, sessionId, writeApproved, serverRoot } = {}) {
+  if (typeof workspaceDir !== 'string' || !path.isAbsolute(workspaceDir)
+    || typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(sessionId)) return null;
+  const workspaceServer = path.join(serverRoot, 'src/connectors/OnlyChatWorkspaceMcpServer.js');
+  const servers = {
+    'onlychat-workspace': {
+      command: process.execPath,
+      args: [workspaceServer],
+      env: {
+        ONLY_CHAT_WORKSPACE_DIR: workspaceDir,
+        ONLY_CHAT_SESSION_ID: sessionId,
+        ONLY_CHAT_WRITE_APPROVED: writeApproved === true ? '1' : '0'
+      },
+      enabledTools: writeApproved === true
+        ? ['workspace_file_read', 'workspace_file_edit', 'workspace_file_create', 'workspace_check']
+        : ['workspace_file_read']
+    }
+  };
+  const allowed = ['mcp(onlychat-workspace/*)'];
+  if (writeApproved === true) {
+    servers['onlychat-workspace-coordination'] = {
+      command: process.execPath,
+      args: [path.join(serverRoot, 'src/connectors/WorkspaceCoordinationMcpServer.js')],
+      env: { ONLY_CHAT_WORKSPACE_DIR: workspaceDir, ONLY_CHAT_SESSION_ID: sessionId },
+      enabledTools: ['workspace_lease_status', 'workspace_lease_claim', 'workspace_lease_release']
+    };
+    allowed.push('mcp(onlychat-workspace-coordination/*)');
+  }
+  return { settings: { mcpServers: servers }, allowed, writeApproved: writeApproved === true };
+}
+
+function createCliWorkspace(bridge, workspaceOptions = null) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-antigravity-'));
   try {
     fs.chmodSync(directory, 0o700);
@@ -32,6 +63,7 @@ function createCliWorkspace(bridge) {
     const name = `onlychat-${crypto.randomBytes(6).toString('hex')}`;
     const agentDirectory = path.join(agentsDirectory, name);
     fs.mkdirSync(agentDirectory, { mode: 0o700 });
+    const workspaceTools = workspaceMcpSettings(workspaceOptions || {});
     const agent = [
       '---',
       `name: ${name}`,
@@ -41,15 +73,20 @@ function createCliWorkspace(bridge) {
       'commandExecutionPolicy: off',
       '---',
       'Use only the tools explicitly provided to this Only Chat session. Do not use shell, built-in file, web, or other tools.',
+      ...(workspaceTools?.writeApproved ? [
+        'Before any workspace file change, call workspace_lease_status and claim the exact relative files with workspace_lease_claim. Use only workspace_file_read/edit/create and workspace_check for the selected workspace. Release the exact lease after the check. Never access paths outside that workspace.'
+      ] : workspaceTools ? ['Use workspace_file_read only; do not claim leases or change files.'] : []),
       'If no tool is available, answer the user directly without taking actions.'
     ].join('\n');
     fs.writeFileSync(path.join(agentDirectory, 'agent.md'), agent, { mode: 0o600 });
-    const settings = embeddedThreefSettings(bridge);
+    const browser = embeddedThreefSettings(bridge);
+    const mcpServers = { ...(browser?.mcpServers || {}), ...(workspaceTools?.settings.mcpServers || {}) };
+    const settings = Object.keys(mcpServers).length ? { mcpServers } : null;
     if (settings) {
       fs.mkdirSync(path.join(directory, '.agents'), { recursive: true, mode: 0o700 });
       fs.writeFileSync(path.join(directory, '.agents', 'mcp_config.json'), JSON.stringify(settings), { mode: 0o600 });
     }
-    return { directory, agentName: name };
+    return { directory, agentName: name, workspaceTools };
   } catch (error) {
     fs.rmSync(directory, { recursive: true, force: true });
     throw error;
@@ -110,6 +147,7 @@ function resolveModelEffort(model, effort) {
 class AntigravityCliAdapter {
   constructor(options = {}) {
     this.command = options.command || path.join(os.homedir(), '.local/bin/agy');
+    this.projectRoot = path.resolve(options.projectRoot || path.join(__dirname, '../..'));
     this.spawn = options.spawn || spawn;
     this.stateFile = options.stateFile || path.join(options.dataDir || path.join(os.homedir(), '.my-codex'), 'provider-conversations.json');
     this.timeoutMs = options.timeoutMs || 10 * 60 * 1000;
@@ -181,13 +219,28 @@ class AntigravityCliAdapter {
     const reasoningEffort = parseReasoningEffort(context.reasoningEffort);
     if (!reasoningEffort) throw new Error('지원하지 않는 추론 강도입니다.');
     const resolvedModel = resolveModelEffort(tier?.model, reasoningEffort);
-    const cliWorkspace = createCliWorkspace(context.embeddedThreefMcp);
+    const workspaceDir = typeof context.workspaceDir === 'string' && path.isAbsolute(context.workspaceDir)
+      ? path.resolve(context.workspaceDir)
+      : null;
+    let workspaceWriteApproved = false;
+    if (workspaceDir && context.approvalPolicy !== 'read-only' && context.approvalPolicy !== 'never') {
+      const approveWorkspaceWrite = context.requestWorkspaceWriteApproval;
+      if (typeof approveWorkspaceWrite === 'function') {
+        workspaceWriteApproved = await approveWorkspaceWrite({
+          directory: workspaceDir,
+          reason: 'Antigravity 작업 에이전트에 선택 작업공간의 파일 도구를 연결합니다. 편집 도구는 Only Chat 승인과 파일별 lease가 모두 있어야 동작합니다.'
+        }) === true;
+      }
+    }
+    const cliWorkspace = createCliWorkspace(context.embeddedThreefMcp, {
+      workspaceDir, sessionId, writeApproved: workspaceWriteApproved, serverRoot: this.projectRoot
+    });
     const args = [
       '--agent', cliWorkspace.agentName,
       '--settings', JSON.stringify({
         toolPermission: 'request-review',
         permissions: {
-          allow: context.embeddedThreefMcp ? ['mcp(onlychat-3f/*)'] : [],
+          allow: [...(context.embeddedThreefMcp ? ['mcp(onlychat-3f/*)'] : []), ...(cliWorkspace.workspaceTools?.allowed || [])],
           deny: ['command(*)', 'read_file(*)', 'write_file(*)', 'read_url(*)', 'execute_url(*)']
         }
       }),
@@ -332,4 +385,4 @@ class AntigravityCliAdapter {
   }
 }
 
-module.exports = { AntigravityCliAdapter, formatHistory, parseUsageForTier, resolveModelEffort, embeddedThreefSettings, createCliWorkspace };
+module.exports = { AntigravityCliAdapter, formatHistory, parseUsageForTier, resolveModelEffort, embeddedThreefSettings, workspaceMcpSettings, createCliWorkspace };

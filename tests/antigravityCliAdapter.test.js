@@ -1,9 +1,10 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
-const { AntigravityCliAdapter, formatHistory, embeddedThreefSettings } = require('../src/providers/AntigravityCliAdapter.js');
+const { AntigravityCliAdapter, formatHistory, embeddedThreefSettings, workspaceMcpSettings } = require('../src/providers/AntigravityCliAdapter.js');
 const { withResponseGuidance } = require('../src/providers/responseGuidance.js');
 
 function fakeSpawn(results, launches) {
@@ -53,6 +54,8 @@ async function main() {
     { value: { status: 'SUCCESS', response: 'Follow up', conversation_id: 'agy-conv-1' } },
     { value: { status: 'SUCCESS', response: 'Effort matched', conversation_id: 'agy-conv-2' } },
     { value: { status: 'SUCCESS', response: 'MCP configured', conversation_id: 'agy-conv-3' } },
+    { value: { status: 'SUCCESS', response: 'Workspace MCP configured', conversation_id: 'agy-conv-4' } },
+    { value: { status: 'SUCCESS', response: 'Read-only workspace MCP configured', conversation_id: 'agy-conv-5' } },
     { value: { status: 'ERROR', response: '', error: 'authentication required' }, code: 1 }
   ];
   try {
@@ -126,12 +129,46 @@ async function main() {
     assert.equal(JSON.stringify(launches[3].args).includes('turn-secret'), false, 'the per-turn capability must not be placed on the process command line');
     assert.equal(embeddedThreefSettings(null), null, 'turns without an active 3F panel must not receive embedded 3F tools');
     assert.equal(fs.existsSync(launches[3].cwd), false, 'ephemeral MCP configuration and token must be removed after completion');
+
+    let writeApproval;
+    const workspaceTurn = await adapter.call(tier, [{ role: 'user', content: 'inspect and improve a workspace TODO' }], {}, {
+      sessionId: 'session-workspace-123', workspaceDir: '/workspace/a', reasoningEffort: 'low', approvalPolicy: 'on-request',
+      requestWorkspaceWriteApproval: async request => { writeApproval = request; return true; }
+    });
+    assert.equal(workspaceTurn.content, 'Workspace MCP configured');
+    assert.deepEqual(writeApproval, {
+      directory: '/workspace/a',
+      reason: 'Antigravity 작업 에이전트에 선택 작업공간의 파일 도구를 연결합니다. 편집 도구는 Only Chat 승인과 파일별 lease가 모두 있어야 동작합니다.'
+    });
+    const workspaceSettingsArg = launches[4].args[launches[4].args.indexOf('--settings') + 1];
+    const workspaceSettings = JSON.parse(workspaceSettingsArg);
+    assert.deepEqual(workspaceSettings.permissions.allow, ['mcp(onlychat-workspace/*)', 'mcp(onlychat-workspace-coordination/*)']);
+    const workspaceMcp = launches[4].mcpConfig.mcpServers['onlychat-workspace'];
+    assert.equal(workspaceMcp.args[0], path.join(__dirname, '../src/connectors/OnlyChatWorkspaceMcpServer.js'));
+    assert.deepEqual(workspaceMcp.enabledTools, ['workspace_file_read', 'workspace_file_edit', 'workspace_file_create', 'workspace_check']);
+    assert.deepEqual(workspaceMcp.env, {
+      ONLY_CHAT_WORKSPACE_DIR: '/workspace/a', ONLY_CHAT_SESSION_ID: 'session-workspace-123', ONLY_CHAT_WRITE_APPROVED: '1'
+    });
+    assert.deepEqual(launches[4].mcpConfig.mcpServers['onlychat-workspace-coordination'].enabledTools,
+      ['workspace_lease_status', 'workspace_lease_claim', 'workspace_lease_release']);
+    assert.match(launches[4].agent, /claim the exact relative files/);
+    assert.equal(fs.existsSync(launches[4].cwd), false, 'workspace MCP config is removed after the provider turn');
+
+    const readOnlyTurn = await adapter.call(tier, [{ role: 'user', content: 'read a workspace source file' }], {}, {
+      sessionId: 'session-workspace-readonly', workspaceDir: '/workspace/a', reasoningEffort: 'low', approvalPolicy: 'read-only'
+    });
+    assert.equal(readOnlyTurn.content, 'Read-only workspace MCP configured');
+    assert.deepEqual(launches[5].mcpConfig.mcpServers['onlychat-workspace'].enabledTools, ['workspace_file_read']);
+    assert.equal(launches[5].mcpConfig.mcpServers['onlychat-workspace-coordination'], undefined);
+    assert.equal(workspaceMcpSettings({ workspaceDir: '/workspace/a', sessionId: 'short' }), null,
+      'workspace MCP must fail closed when the Only Chat session identity is unavailable');
+    assert.equal(fs.existsSync(launches[5].cwd), false);
     await assert.rejects(adapter.call(
       { provider: 'antigravity-cli', model: 'gpt-oss-120b-medium' },
       [{ role: 'user', content: 'unsupported' }], {},
       { sessionId: 'session-c', reasoningEffort: 'high' }
     ), /does not support the high reasoning level/);
-    assert.equal(launches.length, 4, 'unsupported model/effort pairs must fail before launching the CLI');
+    assert.equal(launches.length, 6, 'unsupported model/effort pairs must fail before launching the CLI');
 
     await assert.rejects(adapter.call(tier, [{ role: 'user', content: 'again' }]), /authentication required/);
     assert.equal(fs.existsSync(launches.at(-1).cwd), false, 'ephemeral configuration must be removed after provider failure');
