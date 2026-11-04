@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 export const ADMIN_MANAGER_API_VERSION = 1;
-export const ADMIN_MANAGER_MODULE_VERSION = '1.0.0';
+export const ADMIN_MANAGER_MODULE_VERSION = '1.0.1';
 export const EXECUTOR_TASK_LIMIT = 5;
 
 const CAPABILITY_STATES = new Set(['executable', 'settings-only', 'proposal-only', 'unavailable']);
@@ -47,6 +47,7 @@ export function buildAdminManagerSystemMessage(snapshot) {
     '`stale` 모듈은 현재 실행 프로세스 시작 뒤 소스가 바뀌어 이 프로세스에는 최신 코드가 로드되지 않았다는 뜻입니다. 이를 런타임 오류로 부르거나 사용 가능한 기능으로 취급하지 마세요.',
     '변경을 완료했다고 말하지 마세요. 관리자가 실제 실행할 수 있는 동작은 검증된 `work.delegate` capability를 통해 격리 실행자 작업을 큐에 넣는 것뿐입니다. 그 외 `executable`도 이 대화에서 직접 제공되지 않으면 제안만 하세요. `settings-only`, `proposal-only`, `unavailable`은 실행 가능한 것으로 표현하지 마세요.',
     '계정, 자격증명, 파일, 앱 설치, 배포, 외부 전송은 별도 명시적 승인과 실제 실행 결과가 없으면 실행되었다고 주장하지 마세요. 사용자 대화와 개인 데이터는 기기 밖으로 보내지 마세요.',
+    '한 가지 접근이 실패했다고 바로 `blocked`로 끝내지 마세요. 현재 task의 허용 도구와 범위 안에서 안전하고 실질적으로 다른 대안이 있으면 최대 3개의 대안을 순서대로 시도해 전체 최대 4개 접근을 확인하세요. 같은 명령의 무의미한 재시도나 제한 우회는 대안으로 세지 마세요. 대안별로 접근, 실제 관찰 결과, 계속/중단 이유를 실행 결과에 남기세요. 남은 대안이 사람의 승인·인증·기기 조작, 추가 권한, 비용, 비가역 변경을 요구하거나 허용 도구 밖이면 멈추고 정확한 조치와 함께 `blocked`로 보고하세요. 안전한 대안을 모두 시도했거나 없을 때만 `blocked`를 선언하고 이미 확인한 방법을 반복하지 마세요.',
     '실제 하위 실행이 요청되면 도구 호출 대신 JSON 객체 하나만 반환하세요. 형식: {"type":"executor_plan","summary":"전체 요약","feasibility":{"status":"ready","reason":"실행 가능한 근거"},"tasks":[{"title":"작업명","prompt":"사용자 요청에 근거한 구체 작업","files":["src/example.js"],"allowedTools":["read_file"]}]} . 실행할 수 없으면 feasibility.status를 blocked로, reason에 막힌 이유를 적고 tasks는 빈 배열로 반환하세요. ready 계획에는 1~5개 작업이 필요하며 각 작업은 겹치지 않는 비어 있지 않은 파일 경로를 지정해야 합니다. allowedTools는 필수 비어 있지 않은 배열이며 작업에 꼭 필요한 도구만 적습니다. 적힌 도구 외 호출은 실행되지 않습니다. 단순 조언·설명 요청이면 JSON이 아닌 일반 응답을 하세요. 자격증명, 외부 발송·게시·배포·결제·삭제·계정 설정 작업은 하위 실행으로 자동 넘기지 말고 필요한 승인 단계를 안내하세요.',
     `관리자 모듈 API v${ADMIN_MANAGER_API_VERSION} (module ${ADMIN_MANAGER_MODULE_VERSION})`,
     '등록 모듈:'

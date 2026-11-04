@@ -27,6 +27,9 @@ async function main() {
   assert.match(prepared[0].content, /현재 실행 프로세스 시작 뒤 소스가 바뀌어/);
   assert.match(prepared[0].content, /qa\.external: 외부 앱 QA; state=unavailable/);
   assert.match(prepared[0].content, /변경을 완료했다고 말하지 마세요/);
+  assert.match(prepared[0].content, /최대 3개의 대안.*최대 4개 접근/);
+  assert.match(prepared[0].content, /같은 명령의 무의미한 재시도나 제한 우회는 대안으로 세지 마세요/);
+  assert.match(prepared[0].content, /사람의 승인·인증·기기 조작/);
   assert.match(prepared[0].content, /executor_plan/);
   assert.deepEqual(history, [{ role: 'user', content: '질문' }]);
   assert.throws(() => buildAdminManagerSystemMessage({ modules: [], capabilities: [{ id: 'x', name: 'x', state: 'executable', moduleId: 'missing' }] }), /unregistered module/);
