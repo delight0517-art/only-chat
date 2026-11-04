@@ -522,6 +522,16 @@ test('exports repository-free conversation tasks and imports a remote shell idem
   });
 });
 
+test('fails closed when a persisted task origin host ID is malformed', async () => {
+  await withFixture(async ({ repo, store }) => {
+    await store.createTask(taskInput(repo, { taskKey: 'invalid-origin-host', idempotencyKey: 'create-invalid-origin-host' }));
+    const document = JSON.parse(fs.readFileSync(store.filePath, 'utf8'));
+    document.tasks[0].sourceHostId = 'not-a-host-id';
+    fs.writeFileSync(store.filePath, JSON.stringify(document), { mode: 0o600 });
+    assert.throws(() => store.getTask('invalid-origin-host'), /invalid task registry record/);
+  });
+});
+
 test('imports remote messages by recipient host, deduplicates, and verifies durable ACK round trips', async () => {
   await withFixture(async ({ root, repo, dataDir, store }) => {
     await store.createTask(taskInput(repo, { taskKey: 'remote-mailbox', idempotencyKey: 'create-remote-mailbox' }));

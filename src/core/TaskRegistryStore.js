@@ -378,6 +378,7 @@ class TaskRegistryStore {
       if (!task || typeof task.taskKey !== 'string' || !TASK_KEY.test(task.taskKey)
         || taskKeys.has(task.taskKey) || !TASK_STATUSES.has(task.status)
         || !Number.isSafeInteger(task.revision) || task.revision < 1
+        || (task.sourceHostId !== undefined && !HOST_ID.test(task.sourceHostId))
         || !Array.isArray(task.paths)
         || (conversationOnly
           ? task.repositoryPath !== null || task.baseSha !== null || task.paths.length !== 0
