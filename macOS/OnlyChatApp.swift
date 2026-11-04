@@ -408,8 +408,7 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 self.authorizeBrowserNavigation(url, completion: completion)
             },
             onWebView: { model, view in ThreeFEmbeddedBrowserSession.shared.attach(model: model, webView: view) },
-            onPageStateChange: { [weak self] url in self?.sendBrowserNavigateResult(url) },
-            onBlockedNavigation: { [weak self] url in self?.showBrowserNotice("Focus Fence에서 탐색을 차단했습니다.", url: url) }
+            onPageStateChange: { [weak self] url in self?.sendBrowserNavigateResult(url) }
         ).environmentObject(ThreeFURLRouter.shared)
         let hostingView = NSHostingView(rootView: AnyView(browser))
         hostingView.autoresizingMask = [.width, .height]
@@ -462,7 +461,12 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 decision = .unavailable
             }
             DispatchQueue.main.async {
-                if !decision.isAllowed { self.showBrowserNotice("Focus Fence 정책에서 허용하지 않았거나 정책 서비스에 연결할 수 없습니다.", url: url) }
+                if !decision.isAllowed {
+                    let message = decision == .unavailable
+                        ? "Focus Fence 정책 서비스에 연결할 수 없습니다."
+                        : "Focus Fence 정책에서 탐색을 차단했습니다."
+                    self.showBrowserNotice(message, url: url)
+                }
                 completion(decision)
             }
         }.resume()

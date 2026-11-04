@@ -150,7 +150,8 @@ class DesktopServer {
       isolated: this.isolated,
       dataDir: this.dataDir,
       workspaceDir: this.workspaceDir,
-      browser: this.isolated ? null : engineOptions.browser
+      browser: this.isolated ? null : engineOptions.browser,
+      embeddedBrowserPanel: this.isolated ? null : this.embeddedBrowserPanel
     });
     this.macWindowsDevelopment = this.isolated ? null : new MacWindowsDevelopment({ dataDir: this.dataDir });
     engineOptions.macWindowsDevelopment = this.macWindowsDevelopment;

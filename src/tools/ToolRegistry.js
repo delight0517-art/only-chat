@@ -157,6 +157,7 @@ class ToolRegistry {
 
     // Desktop hosts may inject their own embedded browser; CLI keeps Aside.
     this.browser = options.browserEnabled === false ? null : (options.browser || new AsideBrowser());
+    this.embeddedThreef = options.embeddedBrowserPanel || null;
     this.notionRea = options.browserEnabled === false ? null : (options.notionReaBrowser || new NotionReaBrowser());
 
     // Secure Passkey & Credential Vault
@@ -604,6 +605,39 @@ class ToolRegistry {
   async browserStatus() {
     if (!this.browser) return { enabled: false };
     return this.browser.getStatus();
+  }
+
+  async embeddedThreefStatus() {
+    if (!this.embeddedThreef) return { available: false, controlAvailable: false, statusText: 'Only Chat 내장 3F 패널을 사용할 수 없습니다.' };
+    return this.embeddedThreef.getStatus();
+  }
+
+  async embeddedThreefNavigate(url) {
+    this._assertMutationAllowed('embedded_3f_navigate');
+    if (!this.embeddedThreef) throw new Error('Only Chat 내장 3F 패널을 사용할 수 없습니다.');
+    return this.embeddedThreef.navigate(url);
+  }
+
+  async embeddedThreefRead() {
+    if (!this.embeddedThreef) throw new Error('Only Chat 내장 3F 패널을 사용할 수 없습니다.');
+    return this.embeddedThreef.readText();
+  }
+
+  async embeddedThreefAria() {
+    if (!this.embeddedThreef) throw new Error('Only Chat 내장 3F 패널을 사용할 수 없습니다.');
+    return this.embeddedThreef.getAriaTree();
+  }
+
+  async embeddedThreefAct(action) {
+    this._assertMutationAllowed('embedded_3f_act');
+    if (!this.embeddedThreef) throw new Error('Only Chat 내장 3F 패널을 사용할 수 없습니다.');
+    return this.embeddedThreef.act(action);
+  }
+
+  async embeddedThreefHistory(action) {
+    this._assertMutationAllowed('embedded_3f_history');
+    if (!this.embeddedThreef) throw new Error('Only Chat 내장 3F 패널을 사용할 수 없습니다.');
+    return this.embeddedThreef.history(action);
   }
 
   // =========================================================================

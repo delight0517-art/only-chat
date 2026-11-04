@@ -24,8 +24,22 @@ class EmbeddedThreefBrowserBridge {
     }
     try {
       const result = await this.dispatch({ action: 'navigate', url });
-      this.lastUrl = url; this.lastError = '';
-      return { ok: true, stdout: `Only Chat 안의 3F Browser에서 열었습니다: ${url}`, stderr: '', url, result };
+      const status = await this.dispatch({ action: 'status' }).catch(() => null);
+      if (status?.available && typeof status.url === 'string') this.lastUrl = status.url;
+      this.lastError = '';
+      const addressMatchesRequested = status?.available === true && status.url === url;
+      return {
+        ok: true,
+        requested: true,
+        addressMatchesRequested,
+        stdout: addressMatchesRequested
+          ? `Only Chat 안의 3F Browser 주소를 확인했습니다: ${status.url}`
+          : `Only Chat 안의 3F Browser로 이동 요청을 보냈습니다. 현재 주소: ${this.lastUrl}`,
+        stderr: '',
+        requestedUrl: url,
+        url: this.lastUrl,
+        result
+      };
     } catch (error) { return this._fail(error.message || '3F Browser 탐색을 완료하지 못했습니다.', url); }
   }
 

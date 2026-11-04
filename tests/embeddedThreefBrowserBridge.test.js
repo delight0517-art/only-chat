@@ -1,19 +1,45 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { AgentEngine } = require('../src/core/AgentEngine.js');
 const { EmbeddedThreefBrowserBridge } = require('../src/browser/EmbeddedThreefBrowserBridge.js');
 
 async function main() {
+  const { toolDefinitions, parseToolCalls } = await import('../src/features/provider/v1.mjs');
+  const serverSource = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/ui/desktop/server.js'), 'utf8');
+  assert.match(serverSource, /embeddedBrowserPanel:\s*this\.isolated\s*\?\s*null\s*:\s*this\.embeddedBrowserPanel/,
+    'native embedded panel bridge is injected into the Only Chat agent');
+  const definitions = toolDefinitions();
+  const names = ['embedded_3f_status', 'embedded_3f_navigate', 'embedded_3f_read', 'embedded_3f_aria', 'embedded_3f_act', 'embedded_3f_history'];
+  for (const name of names) assert.ok(definitions.some(tool => tool.function.name === name), `${name} is exposed to the Only Chat agent`);
+  const readOnlyNames = toolDefinitions('read-only').map(tool => tool.function.name);
+  for (const name of ['embedded_3f_status', 'embedded_3f_read', 'embedded_3f_aria']) assert.ok(readOnlyNames.includes(name));
+  for (const name of ['embedded_3f_navigate', 'embedded_3f_act', 'embedded_3f_history']) assert.ok(!readOnlyNames.includes(name));
+  assert.equal(parseToolCalls([{ id: 'panel', function: { name: 'embedded_3f_read', arguments: '{}' } }])[0].name, 'embedded_3f_read');
+
+  const routed = Object.create(AgentEngine.prototype);
+  const calls = [];
+  const routeNames = {
+    embedded_3f_status: 'embeddedThreefStatus', embedded_3f_navigate: 'embeddedThreefNavigate',
+    embedded_3f_read: 'embeddedThreefRead', embedded_3f_aria: 'embeddedThreefAria',
+    embedded_3f_act: 'embeddedThreefAct', embedded_3f_history: 'embeddedThreefHistory'
+  };
+  routed.tools = Object.fromEntries(Object.values(routeNames).map(method => [method, async value => { calls.push([method, value]); return method; }]));
+  const routeArgs = { embedded_3f_navigate: { url: 'https://allowed.test' }, embedded_3f_act: { action: 'click oc-agent-1' }, embedded_3f_history: { action: 'back' } };
+  for (const name of names) await routed._executeToolCall({ name, args: routeArgs[name] || {} });
+  assert.deepEqual(calls.map(([method]) => method), names.map(name => routeNames[name]), 'agent calls reach the embedded 3F bridge routes');
+
   const commands = [];
   const bridge = new EmbeddedThreefBrowserBridge({
     policy: { check: async url => url.includes('blocked.test')
       ? { allowed: false, reason: 'blocked', rule: 'blocked.test' }
       : { allowed: true, reason: 'allowed' } },
-    dispatch: async command => { commands.push(command); return { available: true, url: command.url || 'https://allowed.test' }; }
+    dispatch: async command => { commands.push(command); return { available: true, url: command.action === 'status' ? 'https://allowed.test/' : (command.url || 'https://allowed.test/') }; }
   });
   const opened = await bridge.launch('https://allowed.test');
   assert.equal(opened.ok, true);
   assert.deepEqual(commands[0], { action: 'navigate', url: 'https://allowed.test/' });
+  assert.equal(opened.addressMatchesRequested, true);
   assert.equal((await bridge.navigate('https://blocked.test')).blocked, true);
   assert.equal((await bridge.navigate('https://user:secret@allowed.test')).ok, false);
   assert.equal((await bridge.getStatus()).controlAvailable, true);
@@ -45,6 +71,17 @@ async function main() {
   const blankStatus = await connectedBlank.getStatus();
   assert.equal(blankStatus.controlAvailable, true);
   assert.match(blankStatus.statusText, /열린 페이지 없음/);
+
+  const notYetNavigated = new EmbeddedThreefBrowserBridge({
+    policy: { check: async () => ({ allowed: true }) },
+    dispatch: async command => command.action === 'status'
+      ? { available: true, url: 'about:blank' }
+      : { accepted: true }
+  });
+  const pendingNavigation = await notYetNavigated.navigate('https://allowed.test');
+  assert.equal(pendingNavigation.requested, true);
+  assert.equal(pendingNavigation.addressMatchesRequested, false);
+  assert.equal(pendingNavigation.url, 'about:blank', 'accepted command must not be reported as a completed navigation');
 
   const waitingPanel = new EmbeddedThreefBrowserBridge({
     policy: { check: async () => ({ allowed: true }) },

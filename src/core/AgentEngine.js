@@ -46,6 +46,7 @@ const MUTATION_TOOL_NAMES = new Set([
   'notion_mcp_call_tool',
   'notion_rea_open', 'notion_rea_navigate', 'notion_rea_act',
   'browser_open', 'browser_navigate', 'browser_act', 'browser_recipe', 'browser_history',
+  'embedded_3f_navigate', 'embedded_3f_act', 'embedded_3f_history',
   'vault_get_credential',
   'browser_workspace_snapshot', 'browser_workspace_restore', 'browser_workspace_focus', 'browser_workspace_open',
   'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_send', 'task_registry_ack', 'task_registry_record_check', 'joint_development_create'
@@ -96,6 +97,7 @@ class AgentEngine {
       commandRunner: options.commandRunner,
       approvalPolicy: options.approvalPolicy || 'on-request',
       browser: options.browser,
+      embeddedBrowserPanel: options.embeddedBrowserPanel,
       notionReaBrowser: options.notionReaBrowser,
       browserEnabled: !this.isolated,
       providerConnectionsEnabled: !this.isolated,
@@ -403,7 +405,7 @@ class AgentEngine {
     const notionMcpRead = this.tools.isNotionMcpReadOnlyCall(call);
     if (this.tools.approvalPolicy === 'read-only') return isMutationToolName(call?.name) && !notionMcpRead;
     if (this.tools.approvalPolicy === 'never') return false;
-    return !notionMcpRead && !['read_file', 'list_files', 'search_files', 'gmail_list', 'gmail_read', 'google_drive_list', 'google_drive_read', 'notion_search', 'notion_query', 'notion_api_read', 'notion_mcp_list_tools', 'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status', 'browser_aria', 'browser_read', 'browser_status', 'spacekeeper_session_report', 'spacekeeper_capacity_status', 'task_registry_list', 'task_registry_read', 'task_registry_messages', 'joint_development_list', 'joint_development_read', 'joint_development_assess'].includes(call?.name);
+    return !notionMcpRead && !['read_file', 'list_files', 'search_files', 'gmail_list', 'gmail_read', 'google_drive_list', 'google_drive_read', 'notion_search', 'notion_query', 'notion_api_read', 'notion_mcp_list_tools', 'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status', 'browser_aria', 'browser_read', 'browser_status', 'embedded_3f_status', 'embedded_3f_read', 'embedded_3f_aria', 'spacekeeper_session_report', 'spacekeeper_capacity_status', 'task_registry_list', 'task_registry_read', 'task_registry_messages', 'joint_development_list', 'joint_development_read', 'joint_development_assess'].includes(call?.name);
   }
 
   async _getAccountRouterAdapter() {
@@ -1078,6 +1080,18 @@ class AgentEngine {
           return await this.tools.browserRecipe(args.name || args.recipe, args.tabId);
         case 'browser_status':
           return await this.tools.browserStatus();
+        case 'embedded_3f_status':
+          return await this.tools.embeddedThreefStatus();
+        case 'embedded_3f_navigate':
+          return await this.tools.embeddedThreefNavigate(args.url);
+        case 'embedded_3f_read':
+          return await this.tools.embeddedThreefRead();
+        case 'embedded_3f_aria':
+          return await this.tools.embeddedThreefAria();
+        case 'embedded_3f_act':
+          return await this.tools.embeddedThreefAct(args.action);
+        case 'embedded_3f_history':
+          return await this.tools.embeddedThreefHistory(args.action);
 
         // Passkey & Credential Vault Tool
         case 'vault_get_credential':

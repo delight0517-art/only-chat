@@ -46,6 +46,12 @@ async function main() {
     assert.equal(engine._requiresToolApproval({ name: 'read_file' }), false);
     assert.equal(engine._requiresToolApproval({ name: 'google_drive_create' }), true);
     assert.equal(engine._requiresToolApproval({ name: 'browser_navigate' }), true);
+    for (const name of ['embedded_3f_navigate', 'embedded_3f_act', 'embedded_3f_history']) {
+      assert.equal(engine._requiresToolApproval({ name }), true, `${name} requires approval`);
+    }
+    for (const name of ['embedded_3f_status', 'embedded_3f_read', 'embedded_3f_aria']) {
+      assert.equal(engine._requiresToolApproval({ name }), false, `${name} is read-only`);
+    }
     engine.tools.approvalPolicy = 'read-only';
     assert.equal(engine._requiresToolApproval({ name: 'browser_workspace_snapshot' }), true, 'persisting a browser snapshot is classified as a mutation');
     engine.tools.approvalPolicy = 'never';
@@ -148,6 +154,7 @@ async function main() {
       'google_drive_create', 'google_drive_update', 'gmail_send',
       'notion_create_page', 'notion_update_page', 'notion_append_blocks',
       'browser_open', 'browser_navigate', 'browser_act', 'browser_history', 'browser_recipe',
+      'embedded_3f_navigate', 'embedded_3f_act', 'embedded_3f_history',
       'browser_workspace_snapshot', 'browser_workspace_restore', 'browser_workspace_focus', 'browser_workspace_open'
     ]) {
       const routeEngine = makeEngine('read-only', { id: `blocked-${name}`, name, args: {} });

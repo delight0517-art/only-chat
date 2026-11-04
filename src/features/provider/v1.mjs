@@ -8,6 +8,7 @@ const TOOL_NAMES = Object.freeze([
   'notion_rea_open', 'notion_rea_navigate', 'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_act', 'notion_rea_status',
   'spacekeeper_session_report', 'spacekeeper_capacity_status', 'browser_open', 'browser_navigate',
   'browser_aria', 'browser_act', 'browser_read', 'browser_recipe', 'browser_status',
+  'embedded_3f_status', 'embedded_3f_navigate', 'embedded_3f_read', 'embedded_3f_aria', 'embedded_3f_act', 'embedded_3f_history',
   'task_registry_list', 'task_registry_read', 'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint',
   'task_registry_messages', 'task_registry_send', 'task_registry_ack', 'task_registry_check', 'task_registry_record_check',
   'joint_development_list', 'joint_development_read', 'joint_development_assess', 'joint_development_create'
@@ -17,7 +18,7 @@ const READ_ONLY_TOOL_NAMES = new Set([
   'notion_search', 'notion_query', 'notion_api_read', 'spacekeeper_session_report', 'spacekeeper_capacity_status',
   'notion_mcp_list_tools', 'notion_mcp_call_tool',
   'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status',
-  'browser_aria', 'browser_read', 'browser_status', 'task_registry_list', 'task_registry_read', 'task_registry_messages', 'task_registry_check',
+  'browser_aria', 'browser_read', 'browser_status', 'embedded_3f_status', 'embedded_3f_read', 'embedded_3f_aria', 'task_registry_list', 'task_registry_read', 'task_registry_messages', 'task_registry_check',
   'joint_development_list', 'joint_development_read', 'joint_development_assess'
 ]);
 
@@ -76,6 +77,8 @@ function toolDefinitions(approvalPolicy = 'on-request') {
               ? 'Call one Notion MCP tool returned by notion_mcp_list_tools, passing its exact name and arguments. Use only the tools and options Notion exposes to this account; when notion-get-tool-access is available, consult it for plan limits and quotas. Free-plan access is supported, but premium features or exhausted allowances can be restricted. Never claim unavailable tools worked. Only Chat asks approval for non-read-only calls.'
               : ['notion_search', 'notion_query', 'notion_create_page', 'notion_update_page', 'notion_append_blocks'].includes(name)
                 ? `Legacy Notion REST helper (${name}) for integration-token connections. For personal OAuth login, use notion_mcp_list_tools and invoke the matching granted Notion MCP tool through notion_mcp_call_tool.`
+          : name.startsWith('embedded_3f_')
+            ? 'Operate only the 3F Browser panel embedded in the current Only Chat window. Use embedded_3f_status first; use embedded_3f_aria/read for observation. For page actions, use the current ARIA refs, e.g. "click oc-agent-1" or "type oc-agent-2 search words". Navigation, history changes and page actions require Only Chat approval and still pass Focus Fence policy.'
           : name.startsWith('notion_rea_')
             ? `Use Aside/REA for the user's free-plan Notion workspace. Open or navigate only HTTPS notion.so, notion.com, or notion.site URLs; use notion_rea_search to search workspace pages/content for the user's query, inspect returned result links, click the matching result with notion_rea_act, and read it with notion_rea_read. Use notion_rea_aria for current actionable refs. Edits use notion_rea_act under Only Chat approval, then verify with notion_rea_read. The user signs into Notion directly in Aside; never request, read, or enter passwords, passkeys, MFA codes, or recovery secrets. ${name}`
             : `Use Only Chat's ${name} capability when the user requests it.`,
@@ -117,7 +120,15 @@ function toolDefinitions(approvalPolicy = 'on-request') {
             ? { type: 'object', properties: { tool_name: { type: 'string' }, arguments: { type: 'object', additionalProperties: true } }, required: ['tool_name'], additionalProperties: false }
             : name === 'notion_mcp_list_tools'
               ? { type: 'object', properties: {}, additionalProperties: false }
-          : { type: 'object', properties: {}, additionalProperties: true }
+          : name === 'embedded_3f_navigate'
+            ? { type: 'object', properties: { url: { type: 'string', minLength: 1, maxLength: 2048 } }, required: ['url'], additionalProperties: false }
+            : name === 'embedded_3f_act'
+              ? { type: 'object', properties: { action: { type: 'string', minLength: 1, maxLength: 1200 } }, required: ['action'], additionalProperties: false }
+              : name === 'embedded_3f_history'
+                ? { type: 'object', properties: { action: { type: 'string', enum: ['back', 'forward', 'reload'] } }, required: ['action'], additionalProperties: false }
+                : ['embedded_3f_status', 'embedded_3f_read', 'embedded_3f_aria'].includes(name)
+                  ? { type: 'object', properties: {}, additionalProperties: false }
+                  : { type: 'object', properties: {}, additionalProperties: true }
     }
   }));
 }

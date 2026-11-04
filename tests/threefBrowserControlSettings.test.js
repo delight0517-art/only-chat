@@ -62,6 +62,23 @@ async function main() {
       'switching to a blank tab clears the outer address bar');
     assert.match(desktopApp, /독립 3F Browser 연결됨/);
 
+    const onlyChatAppSource = fs.readFileSync(path.join(__dirname, '..', 'macOS', 'OnlyChatApp.swift'), 'utf8');
+    assert.match(
+      onlyChatAppSource,
+      /decision == \.unavailable\s*\?\s*"Focus Fence 정책 서비스에 연결할 수 없습니다\."\s*:\s*"Focus Fence 정책에서 탐색을 차단했습니다\."/,
+      'embedded 3F browser failure message distinguishes policy denial vs Focus Fence service unavailable'
+    );
+    assert.doesNotMatch(
+      onlyChatAppSource,
+      /Focus Fence 정책에서 허용하지 않았거나 정책 서비스에 연결할 수 없습니다/,
+      'ambiguous Focus Fence blocked/unavailable message is replaced'
+    );
+    assert.doesNotMatch(
+      onlyChatAppSource,
+      /onBlockedNavigation:\s*\{[^}]*showBrowserNotice\(\"Focus Fence에서 탐색을 차단했습니다/,
+      'a generic blocked callback must not overwrite the specific authorization result message'
+    );
+
     const { DesktopServer } = require('../src/ui/desktop/server.js');
     const server = Object.create(DesktopServer.prototype);
     server.isolated = false;
