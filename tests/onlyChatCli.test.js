@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { parseGoalDuration, parseChatCommand, streamOnlyChatTurn } = require('../bin/codex.js');
+const { parseGoalDuration, parseChatCommand, streamOnlyChatTurn, runOnlyChatGoal } = require('../bin/codex.js');
 
 async function main() {
   assert.equal(parseGoalDuration('3h'), 10_800_000);
@@ -42,6 +42,28 @@ async function main() {
   assert.equal(approvals.length, 1);
   assert.equal(approvals[0].decision, 'allow_tool');
   assert.ok(writes.some(text => text.includes('[Only Chat 승인 범위: edit_file]')));
+
+  let now = 1_000;
+  const goalRequests = [];
+  const goalFetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    goalRequests.push(body);
+    now += goalRequests.length === 1 ? 400 : 700;
+    return new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_0123456789abcdef' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'step complete' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const goal = await runOnlyChatGoal({
+    baseUrl: 'http://127.0.0.1:8899', prompt: 'start goal', durationMs: 1_000,
+    fetchImpl: goalFetch, now: () => now, write: () => {}
+  });
+  assert.equal(goal.ok, true);
+  assert.equal(goal.iteration, 2, 'the Goal performs sequential turns until its deadline');
+  assert.match(goalRequests[1].prompt, /같은 Goal/);
+  assert.equal(goalRequests[1].sessionId, 'ses_0123456789abcdef', 'continuation stays in the same Only Chat session');
 
   console.log('Only Chat CLI duration, scoped approval, and SSE response checks passed');
 }
