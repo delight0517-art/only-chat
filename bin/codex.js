@@ -168,6 +168,10 @@ function isEmbeddedThreefStatusRequest(prompt) {
   return /\bembedded_3f_status\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:status|상태|연결|페이지)|3F Browser.{0,32}(?:상태|연결|페이지)/i.test(String(prompt || ''));
 }
 
+function isEmbeddedThreefReadRequest(prompt) {
+  return /\bembedded_3f_read\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:read|읽기|본문)|3F Browser.{0,32}(?:read|읽기|본문)/i.test(String(prompt || ''));
+}
+
 function groundEmbeddedThreefStatusAnswer(results = []) {
   const result = results.at(-1);
   if (!result || typeof result !== 'object' || result.error || result.blocked || result.isError) return null;
@@ -176,7 +180,24 @@ function groundEmbeddedThreefStatusAnswer(results = []) {
   const url = typeof result.activeUrl === 'string' ? result.activeUrl.trim() : '';
   const blankPage = !url || url.toLowerCase() === 'about:blank';
   const page = blankPage ? '웹사이트 페이지 없음 (about:blank)' : '웹사이트 페이지 열림';
-  return `Only Chat embedded_3f_status 도구 결과: ${control}, ${panel}, ${page}.`;
+  const statusText = typeof result.statusText === 'string' ? result.statusText.trim() : '';
+  const standardStatus = ['Only Chat 안의 3F Browser 연결됨', '3F Browser 제어 연결됨 · 열린 페이지 없음'];
+  const statusDetail = statusText && !standardStatus.includes(statusText) ? ` 상태 안내: ${redactToolMessage(statusText)}.` : '';
+  return `Only Chat embedded_3f_status 도구 결과: ${control}, ${panel}, ${page}.${statusDetail}`;
+}
+
+function groundEmbeddedThreefReadAnswer(results = []) {
+  const result = results.at(-1);
+  if (!result || typeof result !== 'object') return 'Only Chat embedded_3f_read 도구 결과가 없어 페이지 읽기를 검증하지 못했습니다.';
+  const error = redactToolMessage(result.stderr || result.error || '');
+  if (result.blocked === true || error || result.ok === false) {
+    return `Only Chat embedded_3f_read 실패: ${error || '도구가 읽기 실패를 보고했지만 상세 오류는 비어 있습니다.'}`;
+  }
+  const pageText = typeof result.stdout === 'string' ? result.stdout : '';
+  if (!pageText.trim()) return 'Only Chat embedded_3f_read는 성공 상태를 반환했지만 페이지 텍스트와 오류가 모두 비어 있어 읽기 성공을 검증하지 못했습니다.';
+  const excerpt = pageText.trim().slice(0, 1200);
+  const truncated = pageText.trim().length > excerpt.length ? ' (첫 1200자만 표시)' : '';
+  return `Only Chat embedded_3f_read 페이지 텍스트 (${pageText.trim().length}자${truncated}):\n${excerpt}`;
 }
 
 function safeMcpErrorContent(value, depth = 0) {
@@ -444,9 +465,11 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   let buffer = '', resolvedSessionId = null, responseText = '', pendingToolMarker = '', error = null, completed = false, toolCalls = 0, successfulTools = 0, failedTools = 0;
   const todoEvidenceRequest = isTodoEvidenceRequest(prompt);
   const embeddedThreefStatusRequest = isEmbeddedThreefStatusRequest(prompt);
-  const evidenceGroundedRequest = todoEvidenceRequest || embeddedThreefStatusRequest;
+  const embeddedThreefReadRequest = isEmbeddedThreefReadRequest(prompt);
+  const evidenceGroundedRequest = todoEvidenceRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest;
   const readFileResults = [];
   const embeddedThreefStatusResults = [];
+  const embeddedThreefReadResults = [];
   try {
     while (true) {
       const { value, done } = await reader.read();
@@ -501,6 +524,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           else successfulTools++;
           if (!failed && call?.name === 'read_file') readFileResults.push(result);
           if (!failed && call?.name === 'embedded_3f_status') embeddedThreefStatusResults.push(result);
+          if (call?.name === 'embedded_3f_read') embeddedThreefReadResults.push(result);
           write(`[도구 ${failed ? '실패' : '완료'}: ${tool}${detail ? ` · ${detail}` : ''}]\n`);
         }
         if (event.type === 'tool_approval_required') {
@@ -545,6 +569,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
     const recoveredResponse = error.category === 'invalid_provider_output'
       ? groundTodoSectionAnswer(prompt, responseText, readFileResults)
         ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
+        ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
         ?? groundTodoStatusAnswer(prompt, responseText, readFileResults)
       : responseText;
     if (recoveredResponse !== responseText && completed === false) {
@@ -556,6 +581,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   }
   const groundedResponse = groundTodoSectionAnswer(prompt, responseText, readFileResults)
     ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
+    ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
     ?? groundTodoStatusAnswer(prompt, responseText, readFileResults);
   if (evidenceGroundedRequest && groundedResponse !== responseText && completed) write(groundedResponse);
   else if (evidenceGroundedRequest && completed && responseText.trim()) write(responseText);

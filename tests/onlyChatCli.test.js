@@ -473,6 +473,50 @@ async function main() {
   assert.match(embeddedStatusTurn.response, /웹사이트 페이지 없음/);
   assert.ok(!embeddedStatusOutput.join('').includes('{}'), 'the malformed empty model response is withheld from the CLI user');
 
+  const fencedStatusTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_embedded_3f_fence_status',
+    prompt: 'Use embedded_3f_status and report the exact status.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'threef-status', name: 'embedded_3f_status' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'threef-status', name: 'embedded_3f_status' }, result: { available: true, isOpen: true, activeUrl: 'about:blank', controlAvailable: true, statusText: 'Focus Fence 정책을 확인할 수 없어 브라우저 접근을 중단했습니다.' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '{}' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.match(fencedStatusTurn.response, /Focus Fence 정책을 확인할 수 없어 브라우저 접근을 중단했습니다/);
+
+  const emptyEmbeddedReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_embedded_3f_empty_read',
+    prompt: 'Call embedded_3f_read and report whether page text was returned.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'threef-read', name: 'embedded_3f_read' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'threef-read', name: 'embedded_3f_read' }, result: { ok: true, stdout: '', stderr: '' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The page was read successfully.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.match(emptyEmbeddedReadTurn.response, /페이지 텍스트와 오류가 모두 비어 있어 읽기 성공을 검증하지 못했습니다/);
+  assert.doesNotMatch(emptyEmbeddedReadTurn.response, /read successfully/);
+
+  const failedEmbeddedReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_embedded_3f_failed_read',
+    prompt: 'Call embedded_3f_read and report the error.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'threef-read', name: 'embedded_3f_read' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'threef-read', name: 'embedded_3f_read' }, result: { ok: false, stdout: '', stderr: 'Focus Fence policy is unavailable.' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The read worked.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.match(failedEmbeddedReadTurn.response, /embedded_3f_read 실패: Focus Fence policy is unavailable/);
+  assert.doesNotMatch(failedEmbeddedReadTurn.response, /read worked/);
+
   now = 1_000;
   const interruptedGoalRequests = [];
   const interruptedGoal = await runOnlyChatGoal({
