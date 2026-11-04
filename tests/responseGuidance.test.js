@@ -32,6 +32,15 @@ test('requires lock claims to name their measured scope and lock kind', () => {
   assert.match(RESPONSE_GUIDANCE, /런타임 증거가 없으면 동작 성공 여부만 미검증으로 남기며/);
   assert.match(RESPONSE_GUIDANCE, /앞선 답에서 섞인 측정값과 잘못된 추론을 명시/);
   assert.match(RESPONSE_GUIDANCE, /기능 재현이 없다는 이유로 수정 요청을 무시하지 않는다/);
+  assert.match(RESPONSE_GUIDANCE, /오류 유형\(측정 범위 혼동\), 잘못 귀속한 값, 그 값이 실제로 측정한 범위를 각각 명시/);
+  assert.match(RESPONSE_GUIDANCE, /대상 저장소와 앱 기능 상태를 각각 다시 조회/);
+  assert.match(RESPONSE_GUIDANCE, /소스에 잠금 해제 코드가 있다는 사실만으로 실제 기능이 정상이라고 결론내리지 않는다/);
+});
+
+test('prevents cross-repository integration state from becoming a feature-lock diagnosis', () => {
+  assert.match(RESPONSE_GUIDANCE, /다른 저장소의 통합\/편집 상태를 앱 기능 잠금으로 연결했다면/);
+  assert.match(RESPONSE_GUIDANCE, /같은 저장소의 상세 조회가 없으면 원인을 추측하지 말고 unknown/);
+  assert.match(RESPONSE_GUIDANCE, /근거표.*최종 주장 대상과 일치/);
 });
 
 test('separates source edits, reload eligibility, loaded revision, and visible behavior', () => {
