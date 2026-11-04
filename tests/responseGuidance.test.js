@@ -27,6 +27,11 @@ test('requires lock claims to name their measured scope and lock kind', () => {
   assert.match(RESPONSE_GUIDANCE, /관련 없는 저장소 lease나 통합 경고를 이유로 기능 결함 판단·수정을 보류하지 않는다/);
   assert.match(RESPONSE_GUIDANCE, /런타임을 확인할 수 없으면 수정 결과와 런타임 미검증을 분리해 보고한다/);
   assert.match(RESPONSE_GUIDANCE, /재현하지 않은 원인까지 사실로 단정하지 않는다/);
+  assert.match(RESPONSE_GUIDANCE, /“고장이라고 단정할 수 없다”는 말로 조사를 끝내지 않는다/);
+  assert.match(RESPONSE_GUIDANCE, /대상 구현, 잠금 해제\/해제 조건, 데이터 저장 경로와 호출자를 추적/);
+  assert.match(RESPONSE_GUIDANCE, /런타임 증거가 없으면 동작 성공 여부만 미검증으로 남기며/);
+  assert.match(RESPONSE_GUIDANCE, /앞선 답에서 섞인 측정값과 잘못된 추론을 명시/);
+  assert.match(RESPONSE_GUIDANCE, /기능 재현이 없다는 이유로 수정 요청을 무시하지 않는다/);
 });
 
 test('separates source edits, reload eligibility, loaded revision, and visible behavior', () => {
