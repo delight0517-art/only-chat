@@ -161,6 +161,21 @@ function groundTodoStatusAnswer(prompt, answer, readFileResults = []) {
   return `원문 체크박스 기준: - [${marker}] **${id}. ${title}** — ${marker.trim() ? '완료 표시' : '미완료'}.`;
 }
 
+function isEmbeddedThreefStatusRequest(prompt) {
+  return /\bembedded_3f_status\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:status|상태|연결|페이지)|3F Browser.{0,32}(?:상태|연결|페이지)/i.test(String(prompt || ''));
+}
+
+function groundEmbeddedThreefStatusAnswer(results = []) {
+  const result = results.at(-1);
+  if (!result || typeof result !== 'object' || result.error || result.blocked || result.isError) return null;
+  const control = result.controlAvailable === true ? '제어 연결됨' : result.controlAvailable === false ? '제어 연결 안 됨' : '제어 연결 상태 알 수 없음';
+  const panel = result.isOpen === true ? '패널 열림' : result.isOpen === false ? '패널 닫힘' : '패널 상태 알 수 없음';
+  const url = typeof result.activeUrl === 'string' ? result.activeUrl.trim() : '';
+  const blankPage = !url || url.toLowerCase() === 'about:blank';
+  const page = blankPage ? '웹사이트 페이지 없음 (about:blank)' : '웹사이트 페이지 열림';
+  return `Only Chat embedded_3f_status 도구 결과: ${control}, ${panel}, ${page}.`;
+}
+
 function safeMcpErrorContent(value, depth = 0) {
   if (depth > 4 || value == null) return '';
   if (typeof value === 'string') {
@@ -425,7 +440,10 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const decoder = new TextDecoder();
   let buffer = '', resolvedSessionId = null, responseText = '', pendingToolMarker = '', error = null, completed = false, toolCalls = 0, successfulTools = 0, failedTools = 0;
   const todoEvidenceRequest = isTodoEvidenceRequest(prompt);
+  const embeddedThreefStatusRequest = isEmbeddedThreefStatusRequest(prompt);
+  const evidenceGroundedRequest = todoEvidenceRequest || embeddedThreefStatusRequest;
   const readFileResults = [];
+  const embeddedThreefStatusResults = [];
   try {
     while (true) {
       const { value, done } = await reader.read();
@@ -459,7 +477,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           const safeDelta = pendingLength ? nextResponseText.slice(0, -pendingLength) : nextResponseText;
           pendingToolMarker = pendingLength ? nextResponseText.slice(-pendingLength) : '';
           responseText += safeDelta;
-          if (safeDelta && !todoEvidenceRequest) write(safeDelta);
+          if (safeDelta && !evidenceGroundedRequest) write(safeDelta);
         }
         if (event.type === 'tool_start') {
           toolCalls++;
@@ -479,6 +497,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           if (failed) failedTools++;
           else successfulTools++;
           if (!failed && call?.name === 'read_file') readFileResults.push(result);
+          if (!failed && call?.name === 'embedded_3f_status') embeddedThreefStatusResults.push(result);
           write(`[도구 ${failed ? '실패' : '완료'}: ${tool}${detail ? ` · ${detail}` : ''}]\n`);
         }
         if (event.type === 'tool_approval_required') {
@@ -521,18 +540,22 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const execution = { toolCalls, successfulTools, failedTools };
   if (error) {
     const recoveredResponse = error.category === 'invalid_provider_output'
-      ? groundTodoSectionAnswer(prompt, responseText, readFileResults) ?? groundTodoStatusAnswer(prompt, responseText, readFileResults)
+      ? groundTodoSectionAnswer(prompt, responseText, readFileResults)
+        ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
+        ?? groundTodoStatusAnswer(prompt, responseText, readFileResults)
       : responseText;
     if (recoveredResponse !== responseText && completed === false) {
-      write('[Only Chat 모델 출력 형식 오류 · 성공한 read_file 근거로 상태 응답 복구]\n');
+      write('[Only Chat 모델 출력 형식 오류 · 성공한 읽기 전용 도구 결과로 응답 복구]\n');
       write(recoveredResponse);
       return { ok: true, category: 'provider_output_recovered', recoveredFrom: error.category, sessionId: resolvedSessionId, response: recoveredResponse, execution };
     }
     return { ok: false, ...error, sessionId: resolvedSessionId, response: responseText, execution };
   }
-  const groundedResponse = groundTodoSectionAnswer(prompt, responseText, readFileResults) ?? groundTodoStatusAnswer(prompt, responseText, readFileResults);
-  if (todoEvidenceRequest && groundedResponse !== responseText && completed) write(groundedResponse);
-  else if (todoEvidenceRequest && completed && responseText.trim()) write(responseText);
+  const groundedResponse = groundTodoSectionAnswer(prompt, responseText, readFileResults)
+    ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
+    ?? groundTodoStatusAnswer(prompt, responseText, readFileResults);
+  if (evidenceGroundedRequest && groundedResponse !== responseText && completed) write(groundedResponse);
+  else if (evidenceGroundedRequest && completed && responseText.trim()) write(responseText);
   return { ok: completed && Boolean(groundedResponse.trim()), sessionId: resolvedSessionId, response: groundedResponse, execution };
 }
 

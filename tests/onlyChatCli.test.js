@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { parseGoalDuration, parseChatCommand, safeToolError, loadOnlyChatWorkspaceContext, formatLockEvidenceSummary, streamOnlyChatTurn, runOnlyChatGoal } = require('../bin/codex.js');
+const { parseGoalDuration, parseChatCommand, safeToolError, loadOnlyChatWorkspaceContext, formatLockEvidenceSummary, formatOnlyChatWorkspaceContext, streamOnlyChatTurn, runOnlyChatGoal } = require('../bin/codex.js');
 
 async function main() {
   assert.equal(parseGoalDuration('3h'), 10_800_000);
@@ -10,12 +10,18 @@ async function main() {
   const args = parseChatCommand(['--duration', '2h', '--fixed-duration', '--approve-tool', 'edit_file', '이 목표를 계속 진행']);
   assert.equal(args.durationMs, 7_200_000);
   assert.equal(args.fixedDuration, true);
-  assert.equal(args.model, 'gemini-3.8-flash-medium');
+  assert.equal(args.model, 'auto');
   const scopedArgs = parseChatCommand(['--model', 'gpt-6-luna', '--approve-workspace-write', '/workspace/only-chat', '한 번 진행']);
   assert.equal(scopedArgs.approveWorkspaceWrite, '/workspace/only-chat');
   assert.equal(scopedArgs.model, 'gpt-6-luna');
   assert.throws(() => parseChatCommand(['--approve-workspace-write', 'relative/path', 'unsafe']), /절대 경로/);
   assert.throws(() => parseChatCommand(['--approve-tool', 'exec_command', 'unsafe']), /승인 가능 도구/);
+  const compactToolArgs = parseChatCommand(['--model', 'qwen2.5:3b', '--tool-profile', 'file-edit', '--approve-tool', 'edit_file', '파일 TODO 처리']);
+  assert.equal(compactToolArgs.toolProfile, 'file-edit');
+  const readOnlyToolArgs = parseChatCommand(['--model', 'qwen2.5:3b', '--tool-profile', 'file-read', 'TODO 상태 읽기']);
+  assert.equal(readOnlyToolArgs.toolProfile, 'file-read');
+  assert.throws(() => parseChatCommand(['--tool-profile', 'file-read', '--approve-tool', 'edit_file', '읽기만']), /file-read 프로필/);
+  assert.throws(() => parseChatCommand(['--tool-profile', 'all', 'unsafe']), /tool-profile/);
   assert.equal(safeToolError({ error: 'MCP bridge failed Bearer abc.def; access_token=secret user@example.com' }),
     'MCP bridge failed Bearer [redacted]; access_token=[redacted] [redacted-email]');
   assert.equal(safeToolError({ isError: true, content: [{ type: 'text', text: 'File unavailable; access_token=hidden' }] }),
@@ -41,7 +47,7 @@ async function main() {
     fetchImpl: async (url, options) => {
       assert.equal(url, 'http://127.0.0.1:8899/api/status');
       assert.equal(options.headers.Host, '127.0.0.1:8899');
-      return new Response(JSON.stringify({ sessionWorkspaceDir: '/workspace/only-chat' }), { status: 200 });
+      return new Response(JSON.stringify({ sessionWorkspaceDir: '/workspace/only-chat-runtime' }), { status: 200 });
     },
     execFileSyncImpl: (command, args) => {
       contextCommands.push({ command, args });
@@ -57,18 +63,48 @@ async function main() {
     }
   });
   assert.equal(liveContext.workspaceRoot, '/workspace/only-chat');
+  assert.equal(liveContext.serverDefaultWorkspaceRoot, '/workspace/only-chat-runtime', 'an explicit workspace selection may differ from the server launch default');
   assert.equal(liveContext.gitHead, '0123456789abcdef');
   assert.equal(liveContext.integrationBranch, 'main');
   assert.equal(liveContext.leases, 'No active leases.');
   assert.equal(liveContext.integrationGuard.leasesClear, true);
   assert.equal(liveContext.activeBacklog.length, 1, 'completed integration backlog rows are excluded');
   assert.equal(liveContext.activeBacklog[0].blocker, 'Bearer [redacted]; [redacted-email]');
+  const compactContext = formatOnlyChatWorkspaceContext(liveContext);
+  assert.ok(compactContext.length < 2500, `compact workspace context should fit local-model context (got ${compactContext.length} chars)`);
+  assert.match(compactContext, /not a repository-wide edit lock/);
+  assert.match(compactContext, /Tool paths are relative to the Workspace root/);
+  assert.match(compactContext, /do not invent prefixes such as src\/_tools/);
+  assert.match(compactContext, /todo_1 recorded: Open Only Chat TODO/);
   assert.equal(contextCommands.length, 5, 'the CLI calls only fixed read-only status commands for the approved repository');
-  await assert.rejects(loadOnlyChatWorkspaceContext({
+  const defaultContext = await loadOnlyChatWorkspaceContext({
+    baseUrl: 'http://127.0.0.1:8899',
+    fetchImpl: async url => new Response(JSON.stringify(url.endsWith('/api/ownership') ? {} : {
+      sessionWorkspaceDir: '/workspace/only-chat-runtime'
+    }), { status: 200 }),
+    execFileSyncImpl: (command, args) => {
+      if (command.endsWith('/agent-coord')) return 'No active leases.\n';
+      if (command.endsWith('/app-integration-guard')) return JSON.stringify({ ok: true, leases_clear: true, current_branch: 'main', current_status: { entries: 0, untracked: 0 } });
+      if (command.endsWith('/integration-backlog')) return '[]';
+      if (args.includes('rev-parse')) return '0123456789abcdef';
+      if (args.includes('--show-current')) return 'main';
+      throw new Error(`unexpected command ${command}`);
+    }
+  });
+  assert.equal(defaultContext.workspaceRoot, '/workspace/only-chat-runtime', 'file-edit chats without an explicit write root use the verified active workspace');
+  const selectedWorkspaceContext = await loadOnlyChatWorkspaceContext({
     baseUrl: 'http://127.0.0.1:8899', workspaceRoot: '/workspace/other',
-    fetchImpl: async () => new Response(JSON.stringify({ sessionWorkspaceDir: '/workspace/only-chat' }), { status: 200 }),
-    execFileSyncImpl: () => { throw new Error('must not inspect a mismatched root'); }
-  }), /경로와 일치하지 않습니다/);
+    fetchImpl: async () => new Response(JSON.stringify({ sessionWorkspaceDir: '/workspace/only-chat-runtime' }), { status: 200 }),
+    execFileSyncImpl: (command, args) => {
+      if (command.endsWith('/agent-coord')) return 'No active leases.\n';
+      if (command.endsWith('/app-integration-guard')) return JSON.stringify({ ok: true, leases_clear: true, current_branch: 'main', current_status: { entries: 0, untracked: 0 } });
+      if (command.endsWith('/integration-backlog')) return '[]';
+      if (args.includes('rev-parse')) return '0123456789abcdef';
+      if (args.includes('--show-current')) return 'main';
+      throw new Error(`unexpected command ${command}`);
+    }
+  });
+  assert.equal(selectedWorkspaceContext.workspaceRoot, '/workspace/other', 'the user-selected root is inspected even when it differs from the Only Chat launch root');
 
   const writes = [];
   const approvals = [];
@@ -91,11 +127,12 @@ async function main() {
     assert.equal(payload.managerMode, false);
     assert.equal(payload.modelSelection, 'gemini-3.8-flash-medium');
     assert.equal(payload.reasoningEffort, 'medium');
+    assert.equal(payload.toolProfile, 'file-edit');
     return new Response(events, { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   const result = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_1793780000000', prompt: 'test',
-    model: 'gemini-3.8-flash-medium', approveTools: ['edit_file'], fetchImpl, write: text => writes.push(text)
+    model: 'gemini-3.8-flash-medium', approveTools: ['edit_file'], toolProfile: 'file-edit', fetchImpl, write: text => writes.push(text)
   });
   assert.equal(result.ok, true);
   assert.equal(result.sessionId, 'ses_0123456789abcdef');
@@ -123,6 +160,7 @@ async function main() {
   assert.equal(leakedToolCallTurn.category, 'invalid_provider_output');
   assert.equal(leakedToolCallTurn.response, 'I will inspect the file. ');
   assert.ok(!leakedOutput.join('').includes('tool_call'));
+
   const workspaceScopeEvent = {
     type: 'tool_approval_required', requestId: 'req-workspace', sessionId: 'ses_0123456789abcdef',
     name: 'codex_cli_workspace_write_scope', scopeRequiresExplicit: false,
@@ -135,6 +173,7 @@ async function main() {
     { type: 'turn_complete' }
   ].map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n';
   const workspaceApprovals = [];
+  let approvedWorkspacePayload;
   const workspaceWrites = [];
   const workspaceTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_1793780000000', prompt: 'scoped approval',
@@ -144,6 +183,7 @@ async function main() {
         workspaceApprovals.push(JSON.parse(options.body));
         return new Response('{"ok":true}', { status: 200 });
       }
+      approvedWorkspacePayload = JSON.parse(options.body);
       return new Response(workspaceEvents, { status: 200, headers: { 'content-type': 'text/event-stream' } });
     },
     write: text => workspaceWrites.push(text)
@@ -151,6 +191,8 @@ async function main() {
   assert.equal(workspaceTurn.ok, true, 'an exact, explicit workspace path can approve one bounded Codex request');
   assert.equal(workspaceApprovals.length, 1);
   assert.equal(workspaceApprovals[0].decision, 'approve', 'workspace approval does not persist as a session tool grant');
+  assert.equal(approvedWorkspacePayload.workspaceDir, '/workspace/only-chat', 'CLI routes the selected root into the new Only Chat session');
+  assert.equal(approvedWorkspacePayload.workspaceWriteApproval, true, 'workspace routing carries the explicit one-run approval');
   assert.ok(workspaceWrites.some(text => text.includes('[Only Chat 작업공간 쓰기 승인: /workspace/only-chat]')));
 
   let mismatchedScopeApprovalCount = 0;
@@ -249,6 +291,13 @@ async function main() {
   assert.equal(timedTurn.ok, false);
   assert.equal(timedTurn.category, 'turn_timeout', 'CLI reports a bounded provider-turn timeout');
 
+  const busyTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_busy', prompt: 'must not overlap',
+    fetchImpl: async () => new Response('{"error":"Only Chat busy"}', { status: 409 }), write: () => {}
+  });
+  assert.equal(busyTurn.ok, false);
+  assert.equal(busyTurn.category, 'turn_busy', 'an active Only Chat turn is reported as a recoverable busy state');
+
   let now = 1_000;
   const goalRequests = [];
   const goalFetch = async (url, options) => {
@@ -295,6 +344,102 @@ async function main() {
   assert.match(fixedRequests[1].prompt, /전체 시간이 끝나기 전에는 GOAL_COMPLETE/);
 
   now = 1_000;
+  let repeatedCompletionCalls = 0;
+  const repeatedCompletionGoal = await runOnlyChatGoal({
+    baseUrl: 'http://127.0.0.1:8899', prompt: 'make real progress', durationMs: 10_000, fixedDuration: true,
+    fetchImpl: async () => {
+      repeatedCompletionCalls++;
+      now += 100;
+      return new Response([
+        `data: ${JSON.stringify({ type: 'message_delta', delta: repeatedCompletionCalls === 1
+          ? 'There are no remaining actionable tasks. Goal complete.'
+          : 'Everything is done; nothing left to do.' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+        'data: [DONE]\n\n'
+      ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    now: () => now, write: () => {}
+  });
+  assert.equal(repeatedCompletionCalls, 2, 'fixed Goal stops when consecutive text-only turns repeat the completion claim in different words');
+  assert.equal(repeatedCompletionGoal.ok, false);
+  assert.equal(repeatedCompletionGoal.category, 'goal_no_progress');
+
+  let countedToolsNow = 1_000;
+  const countedTools = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_tools', prompt: 'read one item',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-1', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { name: 'read_file' }, result: { ok: true } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'Read complete.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(countedTools.execution.toolCalls, 1);
+  assert.equal(countedTools.execution.successfulTools, 1);
+  assert.equal(countedTools.execution.failedTools, 0);
+
+  const groundedTodoOutput = [];
+  const groundedTodoTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_grounding',
+    prompt: 'TODO-PRIO-01 완료 여부와 제목을 알려주세요.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'todo-read', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'todo-read', name: 'read_file' }, result: '- [ ] **TODO-PRIO-01. 우선순위 모델 검증**:\\n  - 상세 내용' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'TODO-PRIO-01 is complete and all model checks passed.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '</tool_call>' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => groundedTodoOutput.push(text)
+  });
+  assert.equal(groundedTodoTurn.ok, true);
+  assert.equal(groundedTodoTurn.recoveredFrom, 'invalid_provider_output');
+  assert.match(groundedTodoTurn.response, /\[ \].*미완료/);
+  assert.match(groundedTodoTurn.response, /TODO-PRIO-01\. 우선순위 모델 검증/);
+  assert.ok(!groundedTodoOutput.join('').includes('all model checks passed'), 'unverified model claims are withheld for TODO status prompts');
+  assert.match(groundedTodoOutput.join(''), /\[ \].*미완료/);
+
+  const checkboxLineOutput = [];
+  const checkboxLineTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_checkbox_line',
+    prompt: 'TODO-PRIO-01 체크박스 한 줄만 보여주세요.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'todo-read', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'todo-read', name: 'read_file' }, result: '- [ ] **TODO-PRIO-01. 우선순위별 실제 모델·계정·현재 선택 상태 검증**:' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'TODO-PRIO-01 is done.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '</tool_call>' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => checkboxLineOutput.push(text)
+  });
+  assert.equal(checkboxLineTurn.ok, true, 'checkbox-line wording should recover from malformed model output using the read_file evidence');
+  assert.equal(checkboxLineTurn.recoveredFrom, 'invalid_provider_output');
+  assert.match(checkboxLineTurn.response, /\[ \].*미완료/);
+  assert.ok(!checkboxLineOutput.join('').includes('is done'), 'unverified completion claims are withheld for checkbox-line requests');
+  assert.match(checkboxLineOutput.join(''), /\[ \].*미완료/);
+
+  const embeddedStatusOutput = [];
+  const embeddedStatusTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_embedded_3f_status_grounding',
+    prompt: 'Use embedded_3f_status to report whether the panel is connected and a site page is open.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'threef-status', name: 'embedded_3f_status' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'threef-status', name: 'embedded_3f_status' }, result: { available: true, isOpen: true, activeUrl: 'about:blank', title: '', controlAvailable: true, statusText: '3F Browser 제어 연결됨 · 열린 페이지 없음' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '{}' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '</tool_call>' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => embeddedStatusOutput.push(text)
+  });
+  assert.equal(embeddedStatusTurn.ok, true, 'a successful embedded 3F status tool result must recover a malformed model follow-up');
+  assert.equal(embeddedStatusTurn.recoveredFrom, 'invalid_provider_output');
+  assert.match(embeddedStatusTurn.response, /제어 연결됨/);
+  assert.match(embeddedStatusTurn.response, /패널 열림/);
+  assert.match(embeddedStatusTurn.response, /웹사이트 페이지 없음/);
+  assert.ok(!embeddedStatusOutput.join('').includes('{}'), 'the malformed empty model response is withheld from the CLI user');
+
+  now = 1_000;
   const interruptedGoalRequests = [];
   const interruptedGoal = await runOnlyChatGoal({
     baseUrl: 'http://127.0.0.1:8899', prompt: 'continue after a bounded turn', durationMs: 1_000, fixedDuration: true,
@@ -306,7 +451,7 @@ async function main() {
       if (interruptedGoalRequests.length === 1) {
         const limitEvents = [
           { type: 'session_started', sessionId: 'ses_0123456789abcdef' },
-          ...Array.from({ length: 12 }, (_, index) => ({ type: 'tool_start', call: { id: `bounded-${index}`, name: 'call_mcp_tool' } }))
+        ...Array.from({ length: 25 }, (_, index) => ({ type: 'tool_start', call: { id: `bounded-${index}`, name: 'call_mcp_tool' } }))
         ];
         return new Response(limitEvents.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
       }
@@ -358,14 +503,14 @@ async function main() {
   const repeatedLimitGoal = await runOnlyChatGoal({
     baseUrl: 'http://127.0.0.1:8899', prompt: 'continue after tool limits and one blocked task', durationMs: 10_000, fixedDuration: true,
     fetchImpl: async (_url, options) => {
-      repeatedLimitNow += repeatedLimitTurn === 5 ? 20_000 : 100;
+      repeatedLimitNow += repeatedLimitTurn === 6 ? 20_000 : 100;
       const body = JSON.parse(options.body);
       repeatedLimitRequests.push(body);
       repeatedLimitTurn++;
-      const response = repeatedLimitTurn <= 4
+      const response = repeatedLimitTurn <= 5
         ? repeatedLimitStream
         : [
-          `data: ${JSON.stringify({ type: 'message_delta', delta: repeatedLimitTurn === 5 ? 'GOAL_STEP_BLOCKED: YouTube quota gate.' : 'next unrelated Only Chat task advanced' })}\n\n`,
+          `data: ${JSON.stringify({ type: 'message_delta', delta: repeatedLimitTurn === 6 ? 'GOAL_STEP_BLOCKED: YouTube quota gate.' : 'next unrelated Only Chat task advanced' })}\n\n`,
           `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
           'data: [DONE]\n\n'
         ].join('');
@@ -373,10 +518,11 @@ async function main() {
     },
     now: () => repeatedLimitNow, write: text => repeatedLimitOutput.push(text)
   });
-  assert.equal(repeatedLimitGoal.iteration, 6, 'tool-limit interruptions do not count as blocked subtasks');
-  assert.equal(repeatedLimitTurn, 6, 'one blocked task after four limited turns still advances to another task');
+  assert.equal(repeatedLimitGoal.iteration, 7, 'five limited turns block only the current subtask and the fixed Goal continues');
+  assert.equal(repeatedLimitTurn, 7, 'after one budget-blocked task and one policy-blocked task, another task starts');
   assert.match(repeatedLimitRequests[4].prompt, /tool_call_limit/);
-  assert.match(repeatedLimitRequests[5].prompt, /YouTube quota gate/);
+  assert.match(repeatedLimitRequests[5].prompt, /도구\/시간 제한 5회 연속/);
+  assert.match(repeatedLimitRequests[6].prompt, /YouTube quota gate/);
   assert.doesNotMatch(repeatedLimitOutput.join(''), /서로 다른 하위 작업 5개가 연속으로 막혀/);
 
   now = 1_000;
@@ -400,4 +546,8 @@ async function main() {
   console.log('Only Chat CLI duration, scoped approval, and SSE response checks passed');
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+const testWatchdog = setTimeout(() => {
+  console.error('Only Chat CLI test timed out before completing.');
+  process.exitCode = 1;
+}, 30_000);
+main().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => clearTimeout(testWatchdog));
