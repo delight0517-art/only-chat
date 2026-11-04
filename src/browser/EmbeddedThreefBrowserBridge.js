@@ -26,15 +26,29 @@ class EmbeddedThreefBrowserBridge {
       const result = await this.dispatch({ action: 'navigate', url });
       const status = await this.dispatch({ action: 'status' }).catch(() => null);
       if (status?.available && typeof status.url === 'string') this.lastUrl = status.url;
-      this.lastError = '';
       const addressMatchesRequested = status?.available === true && status.url === url;
+      if (!addressMatchesRequested) {
+        const reason = status?.available === true
+          ? `3F Browser가 요청한 주소로 이동했는지 확인되지 않았습니다. 요청: ${url} · 현재: ${this.lastUrl}`
+          : '3F Browser가 탐색 명령을 받았지만 열린 페이지 주소를 확인할 수 없습니다.';
+        this.lastError = reason;
+        return {
+          ok: false,
+          requested: true,
+          addressMatchesRequested: false,
+          stdout: '',
+          stderr: reason,
+          requestedUrl: url,
+          url: this.lastUrl,
+          result
+        };
+      }
+      this.lastError = '';
       return {
         ok: true,
         requested: true,
-        addressMatchesRequested,
-        stdout: addressMatchesRequested
-          ? `Only Chat 안의 3F Browser 주소를 확인했습니다: ${status.url}`
-          : `Only Chat 안의 3F Browser로 이동 요청을 보냈습니다. 현재 주소: ${this.lastUrl}`,
+        addressMatchesRequested: true,
+        stdout: `Only Chat 안의 3F Browser 주소를 확인했습니다: ${status.url}`,
         stderr: '',
         requestedUrl: url,
         url: this.lastUrl,
