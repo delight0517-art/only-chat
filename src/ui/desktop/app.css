@@ -1246,22 +1246,52 @@ body {
   flex-direction: column;
 }
 
-/* Keep embedded browser work beside the conversation instead of covering it. */
-#drawerBrowser {
-  right: 12px;
-  top: 12px;
-  bottom: 12px;
-  width: clamp(420px, 42vw, 760px) !important;
-  max-width: calc(100% - 24px);
-  height: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: 14px;
+/* The embedded browser is a real sibling of chat, with a draggable divider. */
+.app-layout.browser-split #drawerBrowser {
+  position: relative;
+  inset: auto;
+  z-index: 1;
+  flex: 0 0 var(--browser-panel-width, 42vw);
+  width: var(--browser-panel-width, 42vw) !important;
+  min-width: 360px;
+  max-width: 72%;
+  height: 100%;
+  right: auto;
+  border: 0;
+  border-left: 1px solid var(--border-subtle);
+  border-radius: 0;
+  box-shadow: none;
   overflow: hidden;
+  transition: flex-basis 0.22s ease, width 0.22s ease;
 }
 
-.app-layout:has(#drawerBrowser.open) .chat-stage {
-  margin-right: clamp(420px, 42vw, 760px);
-  transition: margin-right 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+.app-layout.browser-split #drawerBrowser.open { right: auto; }
+.app-layout.browser-split .chat-stage { min-width: 320px; margin-right: 0; }
+.browser-split-handle {
+  display: none;
+  flex: 0 0 8px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 2;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  position: relative;
+}
+.browser-split-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  background: var(--border-subtle);
+  transition: background .15s ease;
+}
+.browser-split-handle:hover::after,
+.browser-split-handle:focus-visible::after,
+.browser-split-handle.dragging::after { background: var(--accent-orange); }
+.app-layout.browser-split .browser-split-handle { display: block; }
+@media (max-width: 820px) {
+  .app-layout.browser-split #drawerBrowser { min-width: 300px; }
+  .app-layout.browser-split .chat-stage { min-width: 240px; }
 }
 
 /* Settings remains a focused workspace panel with the conversation visible around it. */

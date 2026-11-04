@@ -29,6 +29,17 @@ async function main() {
     assert.match(desktopHtml, /<label for="threefControlEnabled"><input id="threefControlEnabled" type="checkbox"/);
     assert.match(desktopHtml, /id="btnThreefRefresh"/);
     assert.match(desktopApp, /function setThreefControlUi\(enabled\)/);
+    assert.match(desktopApp, /layout\.insertBefore\(drawerBrowser, chat\.nextSibling\)/,
+      'the browser panel must become a real sibling of chat inside the app layout');
+    assert.match(desktopApp, /classList\.toggle\('browser-split'/,
+      'opening the browser switches to a split layout instead of covering chat');
+    assert.match(desktopApp, /className = 'browser-split-handle'/);
+    assert.match(desktopApp, /handle\.setPointerCapture\(event\.pointerId\)/,
+      'the divider remains draggable while the pointer crosses it');
+    assert.match(desktopApp, /handle\.addEventListener\('keydown'/,
+      'the splitter can also be adjusted from the keyboard');
+    assert.match(desktopApp, /onlyChat\.browserPanelWidth/,
+      'the selected browser width survives reopening the app');
     assert.match(desktopApp, /btnToggleBrowser\?\.addEventListener\('click', \(\) => \{[\s\S]*?if \(opening\) void refreshThreefControlStatus\(\);/,
       'opening the 3F panel refreshes connection state instead of leaving a stale unavailable banner');
     const navBrowser = desktopApp.match(/async function navBrowser\(url\) \{[\s\S]*?\n\}/)?.[0];

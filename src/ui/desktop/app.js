@@ -756,6 +756,7 @@ function setupEventListeners() {
   for (const button of document.querySelectorAll('[data-browser-action]')) {
     button.addEventListener('click', () => sendBrowserPanelAction(button.dataset.browserAction));
   }
+  initializeBrowserSplitLayout();
   window.addEventListener('resize', syncNativeBrowserPanel);
   window.addEventListener('scroll', syncNativeBrowserPanel, true);
   drawerBrowser.addEventListener('transitionend', syncNativeBrowserPanel);
@@ -4050,6 +4051,64 @@ function syncNativeBrowserPanel() {
     : '3F Browser 패널');
 }
 
+function initializeBrowserSplitLayout() {
+  const layout = document.querySelector('.app-layout');
+  const chat = document.querySelector('.chat-stage');
+  if (!layout || !chat || !drawerBrowser) return;
+  // Keep the native WKWebView aligned to a true layout sibling, not an overlay.
+  layout.insertBefore(drawerBrowser, chat.nextSibling);
+  const handle = document.createElement('button');
+  handle.type = 'button';
+  handle.className = 'browser-split-handle';
+  handle.setAttribute('role', 'separator');
+  handle.setAttribute('aria-orientation', 'vertical');
+  handle.setAttribute('aria-label', '채팅과 3F Browser 크기 조절');
+  handle.setAttribute('aria-valuemin', '360');
+  handle.setAttribute('aria-valuemax', '900');
+  handle.setAttribute('aria-valuenow', '520');
+  handle.tabIndex = 0;
+  layout.insertBefore(handle, drawerBrowser);
+  let saved = Number(localStorage.getItem('onlyChat.browserPanelWidth'));
+  if (!Number.isFinite(saved) || saved < 300) saved = Math.min(520, Math.round(layout.clientWidth * 0.42));
+  const setWidth = width => {
+    const max = Math.max(300, Math.min(900, layout.clientWidth - 360));
+    const value = Math.round(Math.max(300, Math.min(max, width)));
+    layout.style.setProperty('--browser-panel-width', `${value}px`);
+    handle.setAttribute('aria-valuenow', String(value));
+    try { localStorage.setItem('onlyChat.browserPanelWidth', String(value)); } catch {}
+    syncNativeBrowserPanel();
+  };
+  setWidth(saved);
+  let dragStart = null;
+  handle.addEventListener('pointerdown', event => {
+    event.preventDefault();
+    dragStart = { x: event.clientX, width: drawerBrowser.getBoundingClientRect().width };
+    drawerBrowser.style.transition = 'none';
+    handle.classList.add('dragging');
+    handle.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener('pointermove', event => {
+    if (!dragStart) return;
+    setWidth(dragStart.width - (event.clientX - dragStart.x));
+  });
+  const stopDrag = () => {
+    dragStart = null;
+    drawerBrowser.style.removeProperty('transition');
+    handle.classList.remove('dragging');
+  };
+  handle.addEventListener('pointerup', stopDrag);
+  handle.addEventListener('pointercancel', stopDrag);
+  handle.addEventListener('keydown', event => {
+    const delta = event.shiftKey ? 64 : 24;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      event.preventDefault();
+      const current = drawerBrowser.getBoundingClientRect().width;
+      setWidth(current + (event.key === 'ArrowLeft' ? delta : -delta));
+    }
+  });
+  window.addEventListener('resize', () => setWidth(drawerBrowser.getBoundingClientRect().width || saved));
+}
+
 function setBrowserPanelOpen(open) {
   setExclusiveDrawerOpen(drawerBrowser, open);
 }
@@ -4064,6 +4123,7 @@ function setExclusiveDrawerOpen(activeDrawer, open) {
     drawer.inert = !isOpen;
     drawer.setAttribute('aria-hidden', String(!isOpen));
   });
+  document.querySelector('.app-layout')?.classList.toggle('browser-split', Boolean(open && activeDrawer === drawerBrowser));
   if (open) {
     usageQuotaPopup.classList.remove('open');
     modelSelectorPopup.classList.remove('open');
