@@ -198,6 +198,11 @@ class ThreefBrowserBridge {
   async getStatus() {
     if (this._disabled()) return { enabled: false, available: false, isOpen: false, controlAvailable: false, activeUrl: '', statusText: '3F Browser 제어가 꺼져 있습니다.' };
     const controlResult = await this._request('GET', '/v1/status');
+    // Older 3F builds report this while the selected tab is a blank new tab.
+    // The authenticated response proves the control service is alive; only the page is not ready.
+    if (!controlResult.unavailable && controlResult.status === 503 && controlResult.data?.error === 'browser view not ready') {
+      return { enabled: true, available: true, isOpen: false, activeUrl: '', controlAvailable: true, statusText: '3F Browser 제어 서비스 연결됨 · 열린 페이지 없음' };
+    }
     if (!controlResult.unavailable && controlResult.status >= 200 && controlResult.status < 300) {
       const activeUrl = safeWebUrl(controlResult.data.url);
       const pageOpen = Boolean(activeUrl);

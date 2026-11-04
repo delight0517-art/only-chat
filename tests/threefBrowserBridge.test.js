@@ -55,6 +55,17 @@ async function main() {
   assert.equal((await bridge.readText()).ok, false);
   assert.match((await bridge.getAriaTree()).ariaTree, /제어 서비스/);
 
+  const connectedBlankTab = new ThreefBrowserBridge({
+    descriptorPath: '/not-used-in-test',
+    readDescriptor: () => ({ schemaVersion: 1, host: '127.0.0.1', port: 43120, token: 'a'.repeat(96) }),
+    fetchImpl: async () => ({ status: 503, json: async () => ({ ok: false, error: 'browser view not ready' }) })
+  });
+  const blankTabStatus = await connectedBlankTab.getStatus();
+  assert.equal(blankTabStatus.controlAvailable, true, 'authenticated blank-tab response proves the control service is connected');
+  assert.equal(blankTabStatus.isOpen, false, 'a connected service with a blank tab has no open page');
+  assert.equal(blankTabStatus.activeUrl, '');
+  assert.match(blankTabStatus.statusText, /연결됨 · 열린 페이지 없음/);
+
   const token = 'a'.repeat(96);
   const requests = [];
   opened = null;
