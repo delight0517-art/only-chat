@@ -71,6 +71,14 @@ async function main() {
   const blankStatus = await connectedBlank.getStatus();
   assert.equal(blankStatus.controlAvailable, true);
   assert.match(blankStatus.statusText, /열린 페이지 없음/);
+  const blankRead = await new EmbeddedThreefBrowserBridge({
+    policy: { check: async () => ({ allowed: true }) },
+    dispatch: async command => command.action === 'status'
+      ? { available: true, url: 'about:blank' }
+      : { text: '' }
+  }).readText();
+  assert.equal(blankRead.ok, false, 'an empty page read must not be reported as verified success');
+  assert.match(blankRead.stderr, /읽을 수 있는 텍스트가 없어 페이지 읽기를 확인하지 못했습니다/);
 
   const notYetNavigated = new EmbeddedThreefBrowserBridge({
     policy: { check: async () => ({ allowed: true }) },

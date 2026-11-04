@@ -90,7 +90,11 @@ class EmbeddedThreefBrowserBridge {
 
   async readText() {
     const result = await this._pageAction('read');
-    return { ok: !result.error, stdout: result.text || '', stderr: result.error || '' };
+    const error = result.error || result.stderr || '';
+    const stdout = typeof result.text === 'string' ? result.text : '';
+    if (error) return { ok: false, stdout: '', stderr: error };
+    if (!stdout.trim()) return { ok: false, stdout: '', stderr: '3F Browser 페이지에서 읽을 수 있는 텍스트가 없어 페이지 읽기를 확인하지 못했습니다.' };
+    return { ok: true, stdout, stderr: '' };
   }
 
   async act(action) {
