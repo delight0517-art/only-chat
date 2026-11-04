@@ -21,6 +21,8 @@ const path = require('node:path');
 
 const args = process.argv.slice(2);
 const command = args[0] || '';
+const GOAL_TURN_TOOL_LIMIT = 24;
+const GOAL_TURN_TIMEOUT_MS = 240_000;
 
 function readableModelName(modelId) {
   const names = {
@@ -342,7 +344,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
         if (event.type === 'tool_start') {
           toolCalls++;
           write(`\n[도구: ${event.call?.name || '알 수 없음'}]\n`);
-          if (toolCalls >= maxToolCalls) {
+          if (toolCalls > maxToolCalls) {
             error = { category: 'tool_call_limit', limit: maxToolCalls };
             try { await reader.cancel(); } catch (_) {}
             break;
@@ -426,7 +428,7 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
           ? '통합 가드: 충돌 없음' : '통합 가드: 통합 대기';
         write(`[Only Chat 상태 확인: ${workspaceContext.activeBacklog.length}개 미완료 backlog · ${leaseSummary} · ${integrationSummary}]\n`);
       }
-      result = await streamOnlyChatTurn({ baseUrl, sessionId, prompt: nextPrompt, model, approveTools, approveWorkspaceWrite, workspaceContext, fetchImpl, write, signal: activeSignal });
+      result = await streamOnlyChatTurn({ baseUrl, sessionId, prompt: nextPrompt, model, approveTools, approveWorkspaceWrite, workspaceContext, fetchImpl, write, signal: activeSignal, maxToolCalls: GOAL_TURN_TOOL_LIMIT, timeoutMs: GOAL_TURN_TIMEOUT_MS });
     } catch (error) {
       if (now() >= deadline) break;
       throw error;
@@ -642,7 +644,7 @@ Author: Rogan Kim (GeunHu Kim)
   my-codex login add <...>     새로운 Google / ChatGPT 계정 등록
   my-codex exec "<프롬프트>"   비대화형 1회성 명령/에이전트 실행
   my-codex chat [--model MODEL] [--approve-workspace-write ABSOLUTE_PATH] "<프롬프트>"   Only Chat에 요청하고 텍스트 응답 읽기 (턴당 도구 12회 상한, 2분 제한)
-  my-codex goal --duration 3h [--fixed-duration] [--model MODEL] [--approve-workspace-write ABSOLUTE_PATH] "<Goal>"  Only Chat에서 순차 반복 Goal 실행 (회차당 도구 12회 상한, 2분 제한)
+  my-codex goal --duration 3h [--fixed-duration] [--model MODEL] [--approve-workspace-write ABSOLUTE_PATH] "<Goal>"  Only Chat에서 순차 반복 Goal 실행 (회차당 도구 24회 상한, 4분 제한)
     --approve-tool edit_file   이 세션에서 제한된 파일 편집 승인
     --approve-workspace-write는 지정한 정확한 폴더에서만 Codex CLI 셸/파일 쓰기를 해당 실행 동안 승인합니다. Full Access는 승인하지 않습니다.
     이 옵션을 쓰면 각 실행/Goal 회차 전에 Only Chat의 현재 작업공간, agent-coord lease, integration guard, backlog를 읽습니다. 상태 확인에 실패하면 요청을 보내지 않습니다.

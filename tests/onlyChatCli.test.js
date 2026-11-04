@@ -182,6 +182,26 @@ async function main() {
   assert.equal(goalWorkspaceApprovals.length, 2, 'each Goal turn rechecks the exact workspace scope');
   assert.ok(goalWorkspaceApprovals.every(approval => approval.decision === 'approve'));
 
+  let boundedGoalNow = 10_000;
+  let boundedGoalOutput = '';
+  const boundedGoalToolEvents = Array.from({ length: 13 }, (_, index) => ({
+    type: 'tool_start', call: { id: `goal-tool-${index}`, name: 'call_mcp_tool' }
+  })).map(event => `data: ${JSON.stringify(event)}\n\n`).join('')
+    + `data: ${JSON.stringify({ type: 'message_delta', delta: 'GOAL_STEP_BLOCKED: narrow test stop' })}\n\n`
+    + `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`
+    + 'data: [DONE]\n\n';
+  const boundedGoalRun = await runOnlyChatGoal({
+    baseUrl: 'http://127.0.0.1:8899', prompt: 'bounded goal turn', durationMs: 1_000, fixedDuration: true,
+    fetchImpl: async () => {
+      boundedGoalNow = 11_001;
+      return new Response(boundedGoalToolEvents, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    now: () => boundedGoalNow, write: text => { boundedGoalOutput += text; }
+  });
+  assert.equal(boundedGoalRun.iteration, 1);
+  assert.doesNotMatch(boundedGoalOutput, /회차 제한 도달/, 'a fixed Goal turn can complete more than the old 12-tool ceiling');
+  assert.match(boundedGoalOutput, /GOAL_STEP_BLOCKED: narrow test stop/);
+
   const loopEvents = Array.from({ length: 4 }, (_, index) => `data: ${JSON.stringify({ type: 'tool_start', call: { id: `loop-${index}`, name: 'call_mcp_tool' } })}\n\n`).join('');
   const limitedTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_1793780000000', prompt: 'loop guard', maxToolCalls: 3,
