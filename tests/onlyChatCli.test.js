@@ -331,6 +331,37 @@ async function main() {
   assert.equal(stepBlockedGoal.iteration, 2, 'a blocked subtask advances to a distinct next task in fixed-duration mode');
   assert.match(stepBlockedRequests[1].prompt, /one candidate overlaps an active lease/);
 
+  let repeatedLimitNow = 1_000;
+  let repeatedLimitTurn = 0;
+  const repeatedLimitRequests = [];
+  const repeatedLimitOutput = [];
+  const repeatedLimitStream = Array.from({ length: 25 }, (_, index) =>
+    `data: ${JSON.stringify({ type: 'tool_start', call: { id: `repeat-${index}`, name: 'call_mcp_tool' } })}\n\n`
+  ).join('');
+  const repeatedLimitGoal = await runOnlyChatGoal({
+    baseUrl: 'http://127.0.0.1:8899', prompt: 'continue after tool limits and one blocked task', durationMs: 10_000, fixedDuration: true,
+    fetchImpl: async (_url, options) => {
+      repeatedLimitNow += repeatedLimitTurn === 5 ? 20_000 : 100;
+      const body = JSON.parse(options.body);
+      repeatedLimitRequests.push(body);
+      repeatedLimitTurn++;
+      const response = repeatedLimitTurn <= 4
+        ? repeatedLimitStream
+        : [
+          `data: ${JSON.stringify({ type: 'message_delta', delta: repeatedLimitTurn === 5 ? 'GOAL_STEP_BLOCKED: YouTube quota gate.' : 'next unrelated Only Chat task advanced' })}\n\n`,
+          `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+          'data: [DONE]\n\n'
+        ].join('');
+      return new Response(response, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    now: () => repeatedLimitNow, write: text => repeatedLimitOutput.push(text)
+  });
+  assert.equal(repeatedLimitGoal.iteration, 6, 'tool-limit interruptions do not count as blocked subtasks');
+  assert.equal(repeatedLimitTurn, 6, 'one blocked task after four limited turns still advances to another task');
+  assert.match(repeatedLimitRequests[4].prompt, /tool_call_limit/);
+  assert.match(repeatedLimitRequests[5].prompt, /YouTube quota gate/);
+  assert.doesNotMatch(repeatedLimitOutput.join(''), /서로 다른 하위 작업 5개가 연속으로 막혀/);
+
   now = 1_000;
   const blockedGoal = await runOnlyChatGoal({
     baseUrl: 'http://127.0.0.1:8899', prompt: 'blocked goal', durationMs: 1_000, fixedDuration: true,
