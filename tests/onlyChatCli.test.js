@@ -106,6 +106,23 @@ async function main() {
   assert.ok(writes.some(text => text.includes('[도구 실패: read_file · MCP bridge unavailable; access_token=[redacted]]')));
   assert.ok(!writes.join('').includes('hidden'));
 
+  const leakedToolCallEvents = [
+    { type: 'session_started', sessionId: 'ses_0123456789abcdef' },
+    { type: 'message_delta', delta: 'I will inspect the file. ' },
+    { type: 'message_delta', delta: '</tool_' },
+    { type: 'message_delta', delta: 'call>' },
+    { type: 'turn_complete' }
+  ].map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n';
+  const leakedOutput = [];
+  const leakedToolCallTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_1793780000001', prompt: 'read a file',
+    fetchImpl: async () => new Response(leakedToolCallEvents, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => leakedOutput.push(text)
+  });
+  assert.equal(leakedToolCallTurn.ok, false, 'provider tool-call markup must not be accepted as a successful user-facing answer');
+  assert.equal(leakedToolCallTurn.category, 'invalid_provider_output');
+  assert.equal(leakedToolCallTurn.response, 'I will inspect the file. ');
+  assert.ok(!leakedOutput.join('').includes('tool_call'));
   const workspaceScopeEvent = {
     type: 'tool_approval_required', requestId: 'req-workspace', sessionId: 'ses_0123456789abcdef',
     name: 'codex_cli_workspace_write_scope', scopeRequiresExplicit: false,

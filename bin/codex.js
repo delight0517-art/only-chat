@@ -370,7 +370,25 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
         if (event.type === 'session_started') resolvedSessionId = event.sessionId || resolvedSessionId;
         if (event.type === 'tier_resolved') write(`\n[Only Chat: ${event.tier?.name || '모델 확인'} · ${event.tier?.model || model}]\n`);
         if (event.type === 'message_delta') {
-          const delta = String(event.delta || ''); responseText += delta; write(delta);
+          const nextResponseText = pendingToolMarker + String(event.delta || '');
+          const markerIndex = nextResponseText.search(/<\/?tool_call>/i);
+          if (markerIndex >= 0) {
+            const safeDelta = nextResponseText.slice(0, markerIndex);
+            responseText += safeDelta;
+            if (safeDelta) write(safeDelta);
+            error = { category: 'invalid_provider_output' };
+            try { await reader.cancel(); } catch (_) {}
+            break;
+          }
+          const markers = ['<tool_call>', '</tool_call>'];
+          const pendingLength = Math.max(0, ...markers.flatMap(marker =>
+            Array.from({ length: marker.length - 1 }, (_, index) => index + 1)
+              .filter(length => nextResponseText.endsWith(marker.slice(0, length)))
+          ));
+          const safeDelta = pendingLength ? nextResponseText.slice(0, -pendingLength) : nextResponseText;
+          pendingToolMarker = pendingLength ? nextResponseText.slice(-pendingLength) : '';
+          responseText += safeDelta;
+          if (safeDelta) write(safeDelta);
         }
         if (event.type === 'tool_start') {
           toolCalls++;
@@ -424,6 +442,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
     else throw streamError;
   } finally {
     reader.releaseLock();
+  if (!error && pendingToolMarker) error = { category: 'invalid_provider_output' };
   }
   if (error) return { ok: false, ...error, sessionId: resolvedSessionId, response: responseText };
   return { ok: completed && Boolean(responseText.trim()), sessionId: resolvedSessionId, response: responseText };
