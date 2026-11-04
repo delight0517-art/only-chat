@@ -238,7 +238,10 @@ class CodexCliAdapter {
     const macPowerInstructions = process.platform === 'darwin' && approvalPolicy !== 'read-only'
       ? 'Mac 전원 안전 규칙: 사용자가 명시적으로 요청한 절전·깨우기 변경은 onlychat_35closer MCP 도구로 35Closer Timer에 승인 요청만 등록하세요. 35Closer 앱에서 사용자가 승인하기 전에는 전원 상태를 변경하지 마세요. 셸 명령, AppleScript 또는 다른 경로로 절전·깨우기를 직접 실행하지 마세요.'
       : '';
-    const trustedDeveloperInstructions = [developerInstructions, macPowerInstructions].filter(Boolean).join('\n\n');
+    const workspaceCoordinationInstructions = process.platform === 'darwin' && approvalPolicy !== 'read-only'
+      ? 'Only Chat 작업공간 파일을 수정하기 전에 onlychat_workspace_coordination의 workspace_lease_status로 현재 작업공간 lease를 확인하고, 정확한 상대 경로만 workspace_lease_claim으로 claim하세요. 겹치는 다른 작업자의 lease가 있으면 편집하지 말고 다른 TODO를 고르세요. 테스트·커밋 확인을 마친 뒤 claim한 lease를 workspace_lease_release로 해제하세요. 이 도구는 조정용 advisory lease이며 파일 쓰기 승인 범위를 넓히지 않습니다. 작업공간 밖 경로, 저장소 전체 lease, 새 branch/worktree는 사용하지 마세요.'
+      : '';
+    const trustedDeveloperInstructions = [developerInstructions, macPowerInstructions, workspaceCoordinationInstructions].filter(Boolean).join('\n\n');
     const promptHistory = history.filter(item => item?.role !== 'system');
     const prompt = formatHistory(promptHistory);
     if (!prompt.trim()) throw new Error('Codex에 보낼 대화 내용이 없습니다.');
@@ -297,6 +300,11 @@ class CodexCliAdapter {
       ];
       if (trustedDeveloperInstructions) args.splice(args.length - 3, 0, '-c', `developer_instructions=${JSON.stringify(trustedDeveloperInstructions)}`);
       if (process.platform === 'darwin' && approvalPolicy !== 'read-only') {
+        const coordinationServer = path.join(this.projectRoot, 'src/connectors/WorkspaceCoordinationMcpServer.js');
+        args.splice(args.length - 3, 0,
+          '-c', 'mcp_servers.onlychat_workspace_coordination.enabled=true',
+          '-c', `mcp_servers.onlychat_workspace_coordination.command=${JSON.stringify(process.execPath)}`,
+          '-c', `mcp_servers.onlychat_workspace_coordination.args=${JSON.stringify([coordinationServer])}`);
         args.splice(args.length - 3, 0,
           '-c', 'mcp_servers.onlychat_35closer.enabled=true',
           '-c', `mcp_servers.onlychat_35closer.command=${JSON.stringify(process.execPath)}`,
@@ -330,7 +338,7 @@ class CodexCliAdapter {
           '-c', `mcp_servers.onlychat_mac_screen.command=${JSON.stringify(process.execPath)}`,
           '-c', `mcp_servers.onlychat_mac_screen.args=${JSON.stringify([serverPath])}`);
       }
-      const response = await this._run(args, prompt, profile, workspaceDir, tier, hooks, screenBridge);
+      const response = await this._run(args, prompt, profile, workspaceDir, tier, hooks, screenBridge, context.sessionId);
       if (!response.trim()) throw new Error(`Codex 계정 ${tier.email}에서 빈 응답을 받았습니다.`);
       hooks.onMessageDelta?.(response);
       return { content: response, toolCalls: [] };
@@ -339,7 +347,7 @@ class CodexCliAdapter {
     }
   }
 
-  _run(args, prompt, profile, cwd, tier, hooks, screenBridge = null) {
+  _run(args, prompt, profile, cwd, tier, hooks, screenBridge = null, sessionId = '') {
     return new Promise((resolve, reject) => {
       let child;
       try {
@@ -347,6 +355,8 @@ class CodexCliAdapter {
           cwd,
           env: { ...process.env, CODEX_HOME: profile, ONLY_CHAT_DATA_DIR: this.dataDir, ONLY_CHAT_GOOGLE_TOKEN_FILE: this.googleTokenFile || '',
             ONLY_CHAT_35CLOSER_CLI: this.powerCliPath,
+            ONLY_CHAT_WORKSPACE_DIR: cwd,
+            ONLY_CHAT_SESSION_ID: String(sessionId || ''),
             ONLY_CHAT_MAC_SCREEN_PORT: screenBridge?.enabled === true ? String(screenBridge.port) : '',
             ONLY_CHAT_MAC_SCREEN_TOKEN: screenBridge?.enabled === true ? screenBridge.token : '' },
           stdio: ['pipe', 'pipe', 'pipe']
