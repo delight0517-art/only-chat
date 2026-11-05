@@ -185,7 +185,7 @@ test('concurrent contenders reclaim one stale workspace lease without admitting 
       "  await new Promise(resolve => { const timer = setInterval(() => { if (fs.existsSync(process.env.ONLYCHAT_RELEASE_PATH)) { clearInterval(timer); resolve(); } }, 5); });",
       "  fs.unlinkSync(process.env.ONLYCHAT_ACTIVE_MARKER);",
       "}).catch(error => {",
-      "  if (/다른 Only Chat 작업이 사용 중입니다/.test(error.message)) { fs.writeFileSync(resultPath, 'busy', { flag: 'wx' }); process.stdout.write('busy\\n'); process.exitCode = 2; }",
+      "  if (error.code === 'WORKSPACE_BUSY' || /다른 Only Chat 작업이 사용 중입니다/.test(error.message)) { fs.writeFileSync(resultPath, 'busy', { flag: 'wx' }); process.stdout.write('busy\\n'); process.exitCode = 2; }",
       "  else { fs.writeFileSync(resultPath, 'error', { flag: 'wx' }); console.error(error); process.exitCode = 1; }",
       "}));"
     ].join('\n');

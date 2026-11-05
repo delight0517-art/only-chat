@@ -11,6 +11,7 @@
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
+const { canRecoverWorkspace } = require('./CoordinationRecovery');
 
 const DARWIN_MEMORY_SAMPLE_INTERVAL_MS = 15_000;
 const DARWIN_MEMORY_SAMPLE_TIMEOUT_MS = 1_500;
@@ -72,6 +73,10 @@ class ParallelDispatcher extends EventEmitter {
     this.now = options.now || Date.now;
     this.memorySampleIntervalMs = options.memorySampleIntervalMs || DARWIN_MEMORY_SAMPLE_INTERVAL_MS;
     this.executeTask = options.executeTask || null;
+    this.recoverTask = options.recoverTask || null;
+    this.maxRecoveryAttempts = 2;
+    this.recoveryControllers = new Map();
+    this.stopping = false;
     this.canStartTask = options.canStartTask || (() => true);
     this.lastMemorySampleAt = 0;
     this.lastAvailablePercent = null;
@@ -80,6 +85,7 @@ class ParallelDispatcher extends EventEmitter {
     this.completedTasks = [];
     this.terminalTasks = [];
     this.isTicking = false;
+    this.tickRequested = false;
 
     // Start periodic dispatcher loop (checks queue every 2 seconds)
     this.timer = options.autoStart === false ? null : setInterval(() => this.tick(), 2000);
@@ -148,7 +154,7 @@ class ParallelDispatcher extends EventEmitter {
   /**
    * Enqueue a batch of requests (e.g. Rogan's 10 candidate requests)
    */
-  enqueueTasks(tasks) {
+  enqueueTasks(tasks, managerContext = {}) {
     if (!Array.isArray(tasks) || tasks.some(task => !Array.isArray(task?.allowedTools)
       || task.allowedTools.length < 1 || task.allowedTools.length > 32
       || task.allowedTools.some(name => typeof name !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/i.test(name)))) {
@@ -160,8 +166,11 @@ class ParallelDispatcher extends EventEmitter {
         id: t.id || `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         title: t.title || t.prompt?.substring(0, 40) || '무제 작업',
         prompt: t.prompt || t.title,
-        targetFiles: Array.isArray(t.files) ? t.files : [],
+        targetFiles: Array.isArray(t.files) ? [...t.files] : [],
         allowedTools: [...new Set(t.allowedTools)],
+        ...(managerContext.registryTaskKey ? {
+          registryTaskKey: managerContext.registryTaskKey, managerOwnerChatId: managerContext.managerOwnerChatId
+        } : {}),
         ...(typeof t.forAiProject === 'string' ? { forAiProject: t.forAiProject } : {}),
         ...(typeof t.forAiReceiptKey === 'string' ? { forAiReceiptKey: t.forAiReceiptKey } : {}),
         requireToolExecution: t.requireToolExecution !== false,
@@ -181,7 +190,8 @@ class ParallelDispatcher extends EventEmitter {
    * Dispatcher loop: matches queued tasks to available concurrency slots
    */
   async tick() {
-    if (this.isTicking) return;
+    if (this.stopping) return;
+    if (this.isTicking) { this.tickRequested = true; return; }
     this.isTicking = true;
 
     try {
@@ -201,6 +211,10 @@ class ParallelDispatcher extends EventEmitter {
       }
     } finally {
       this.isTicking = false;
+      if (this.tickRequested && !this.stopping) {
+        this.tickRequested = false;
+        queueMicrotask(() => { void this.tick(); });
+      }
     }
   }
 
@@ -213,7 +227,7 @@ class ParallelDispatcher extends EventEmitter {
       startedAt: task.startedAt
     });
 
-    this.emit('worker_started', { task, activeCount: this.activeWorkers.size });
+    this.emit(task.recoveryAttempts ? 'worker_resumed' : 'worker_started', { task, activeCount: this.activeWorkers.size });
 
     void this._runWorker(task);
   }
@@ -251,6 +265,11 @@ class ParallelDispatcher extends EventEmitter {
           this.completedTasks.push(task);
           this.emit('worker_completed', { task, result });
         } else if (reportedStatus === 'blocked') {
+          if (this.recoverTask && canRecoverWorkspace(result)
+            && (task.recoveryAttempts || 0) < this.maxRecoveryAttempts && !this.stopping) {
+            void this._recoverWorker(task, result);
+            return;
+          }
           task.status = 'blocked';
           task.blockReason = result?.reason || result?.error || 'AgentEngine이 작업을 차단했습니다.';
           this.emit('worker_blocked', { task, reason: task.blockReason, result });
@@ -270,7 +289,40 @@ class ParallelDispatcher extends EventEmitter {
       this.terminalTasks.push(task);
     } finally {
       this.activeWorkers.delete(task.id);
-      this.queue = this.queue.filter(q => q.id !== task.id);
+      this.queue = this.queue.filter(q => q.id !== task.id || q.status === 'waiting');
+      this.emit('queue_updated', { queueLength: this.queue.length });
+      this.tick();
+    }
+  }
+
+  async _recoverWorker(task, result) {
+    task.status = 'waiting';
+    task.recoveryAttempts = (task.recoveryAttempts || 0) + 1;
+    task.recovery = { ...result.recovery, attempt: task.recoveryAttempts };
+    const controller = new AbortController();
+    this.recoveryControllers.set(task.id, controller);
+    this.emit('worker_waiting', { task, reason: result.reason, recovery: task.recovery });
+    try {
+      const outcome = await this.recoverTask(task, result, { signal: controller.signal });
+      if (outcome?.ready === true && !controller.signal.aborted && !this.stopping) {
+        task.recovery.recheckedAt = outcome.evidence?.readAt || task.recovery.observedAt;
+        task.status = 'queued';
+        this.emit('worker_ready', { task, recovery: task.recovery, evidence: outcome.evidence });
+        return;
+      }
+      task.blockReason = `작업 재개 전 소유권 확인이 필요합니다 (${outcome?.reason || 'owner_unverified'}). 복구 계획과 미완료 작업은 보존했습니다.`;
+    } catch (error) {
+      task.blockReason = error?.name === 'AbortError'
+        ? '작업 대기가 취소되었습니다. 실행하지 않은 작업과 복구 계획은 보존했습니다.'
+        : '소유권 재확인에 실패했습니다. 실행하지 않은 작업과 복구 계획은 보존했습니다.';
+    } finally {
+      this.recoveryControllers.delete(task.id);
+      if (task.status !== 'queued') {
+        task.status = 'blocked';
+        this.queue = this.queue.filter(item => item.id !== task.id);
+        this.terminalTasks.push(task);
+        this.emit('worker_blocked', { task, reason: task.blockReason, result });
+      }
       this.emit('queue_updated', { queueLength: this.queue.length });
       this.tick();
     }
@@ -280,6 +332,8 @@ class ParallelDispatcher extends EventEmitter {
     const mem = this.getMemoryMetrics();
     return {
       memory: mem,
+      recovery: { version: 1, scope: 'workspace_execution', preToolOnly: true,
+        maxAttempts: this.maxRecoveryAttempts, waitingCount: this.recoveryControllers.size },
       queue: this.queue,
       activeWorkers: Array.from(this.activeWorkers.values()),
       completedCount: this.completedTasks.length,
@@ -289,6 +343,8 @@ class ParallelDispatcher extends EventEmitter {
   }
 
   stop() {
+    this.stopping = true;
+    for (const controller of this.recoveryControllers.values()) controller.abort();
     if (this.timer) clearInterval(this.timer);
   }
 }

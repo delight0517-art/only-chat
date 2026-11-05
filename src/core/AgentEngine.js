@@ -15,6 +15,7 @@ const { SkillManager } = require('./SkillManager.js');
 const { ParallelDispatcher } = require('./ParallelDispatcher.js');
 const { OwnershipLock } = require('./OwnershipLock.js');
 const { WorkspaceExecutionLease } = require('./WorkspaceExecutionLease.js');
+const { workspaceRecovery } = require('./CoordinationRecovery.js');
 const { TaskRegistryStore } = require('./TaskRegistryStore.js');
 const { HandoffAdapter } = require('./HandoffAdapter.js');
 const { parseReasoningEffort } = require('./ReasoningEffort.js');
@@ -127,11 +128,15 @@ class AgentEngine {
       pluginCacheDir: false,
       watchEnabled: false
     } : { workspaceDir: this.workspaceDir, watchEnabled: options.watchSkills !== false });
-    // Dispatched tasks get their own session and run serially in this workspace.
+    this.workspaceLeaseWaitMs = options.workspaceLeaseWaitMs ?? 30_000;
+    this.workspaceRecoveryWaitMs = options.workspaceRecoveryWaitMs ?? 30_000;
+    this.dispatchedRecoveryWorkspaces = new Map();
+    // Dispatched tasks retain separate sessions; waiting releases the execution slot.
     this.dispatcher = new ParallelDispatcher({
       autoStart: options.dispatcherAutoStart ?? !this.isolated,
       maxGlobalConcurrency: 1,
-      executeTask: task => this._executeDispatchedTask(task)
+      executeTask: task => this._executeDispatchedTask(task),
+      recoverTask: (task, result, recoveryOptions) => this._recoverDispatchedTask(task, result, recoveryOptions)
     });
     this.managerProgressQueues = new Map();
     this.managerLeaseTimers = new Map();
@@ -141,12 +146,18 @@ class AgentEngine {
       ['worker_started', 'running'], ['worker_completed', 'completed'],
       ['worker_blocked', 'blocked'], ['worker_failed', 'failed']
     ]) {
-      this.dispatcher.on(eventName, event => { void this._queueManagerWorkerProgress(event, status); });
+      this.dispatcher.on(eventName, event => {
+        if (status !== 'running') this.dispatchedRecoveryWorkspaces.delete(event.task?.id);
+        void this._queueManagerWorkerProgress(event, status);
+      });
+    }
+    for (const phase of ['waiting', 'resumed']) {
+      this.dispatcher.on(`worker_${phase}`, event => { void this._queueWorkIncident(event, phase); });
     }
     this.ownership = new OwnershipLock({ workspaceDir: this.workspaceDir });
     this.workspaceExecutionLease = new WorkspaceExecutionLease({
       lockRoot: path.join(this.dataDir, 'workspace-leases'),
-      waitMs: 30_000
+      waitMs: this.workspaceLeaseWaitMs
     });
     this.handoff = options.handoffStorageDir
       ? new HandoffAdapter({ storageDir: insideDataDir(options.handoffStorageDir), gdriveHandoffDir: false })
@@ -221,6 +232,62 @@ class AgentEngine {
     return next;
   }
 
+  async _recoverDispatchedTask(task, result, { signal } = {}) {
+    const workspace = this.dispatchedRecoveryWorkspaces.get(task.id);
+    let ready = false;
+    try {
+      if (!workspace || result.recovery?.resourceKey !== this.workspaceExecutionLease._workspaceKey(workspace)) {
+        return { ready: false, reason: 'resource_scope_mismatch' };
+      }
+      const checkpoint = await this.managerProgressQueues.get(task.registryTaskKey || task.id);
+      if (!checkpoint || (task.registryTaskKey && checkpoint.updated !== true)) {
+        return { ready: false, reason: 'recovery_checkpoint_unconfirmed' };
+      }
+      const outcome = await this.workspaceExecutionLease.waitUntilAvailable(workspace, {
+        signal, waitMs: this.workspaceRecoveryWaitMs
+      });
+      if (outcome.ready) {
+        const persisted = await this._queueWorkIncident({ task, evidence: outcome.evidence }, 'ready');
+        if (!persisted || (task.registryTaskKey && persisted.updated !== true)) {
+          return { ready: false, reason: 'recovery_checkpoint_unconfirmed' };
+        }
+        ready = true;
+      }
+      return outcome;
+    } finally { if (!ready) this.dispatchedRecoveryWorkspaces.delete(task.id); }
+  }
+
+  _queueWorkIncident(event, phase) {
+    const task = event?.task;
+    if (!task?.recovery) return Promise.resolve(null);
+    const recovery = { ...task.recovery };
+    const sessionId = task.sessionId;
+    const prior = this.managerProgressQueues.get(task.registryTaskKey || task.id) || Promise.resolve();
+    const next = prior.catch(() => {}).then(async () => {
+      const incident = { phase, attempt: recovery.attempt, code: recovery.code,
+        scope: recovery.scope, resourceKey: recovery.resourceKey,
+        observedAt: event.evidence?.readAt || recovery.recheckedAt || recovery.observedAt,
+        plan: recovery.plan, toolReplayAllowed: false };
+      if (sessionId) this.sessions.appendItem(sessionId, {
+        type: 'session_metadata', metadata: { workIncident: incident }
+      });
+      const registry = this.tools.taskRegistryStore;
+      if (!registry || !task.registryTaskKey || !task.managerOwnerChatId) return incident;
+      const current = registry.getTask(task.registryTaskKey);
+      if (!current || !['claimed', 'executing'].includes(current.status)) return incident;
+      return registry.updateCheckpoint({ taskKey: task.registryTaskKey, ownerChatId: task.managerOwnerChatId,
+        status: current.status, nextAction: phase === 'waiting' ? recovery.plan : '소유권을 재확인했습니다. 저장된 원래 작업의 실행과 검증을 이어갑니다.',
+        blocker: '', evidenceRefs: current.checkpoint?.evidenceRefs || [],
+        idempotencyKey: `incident-${task.id}-${recovery.attempt}-${phase}` });
+    }).catch(error => {
+      this.dispatcher.emit('manager_persistence_error', { taskKey: task.registryTaskKey,
+        executorId: task.id, status: 'recovery-checkpoint', reason: String(error?.message || error).slice(0, 1000) });
+      return null;
+    });
+    this.managerProgressQueues.set(task.registryTaskKey || task.id, next);
+    return next;
+  }
+
   _startManagerLeaseRenewal(taskKey, ownerChatId) {
     if (this.managerLeaseTimers.has(taskKey)) return;
     const registry = this.tools.taskRegistryStore;
@@ -272,8 +339,8 @@ class AgentEngine {
     if (!prepared.accepted || prepared.replayed) return prepared;
     try {
       const queued = this.dispatcher.enqueueTasks(prepared.tasks.map(task => ({
-        ...task, registryTaskKey: taskKey, managerOwnerChatId: ownerChatId, requireToolExecution: true
-      })));
+        ...task, requireToolExecution: true
+      })), { registryTaskKey: taskKey, managerOwnerChatId: ownerChatId });
       if (queued.length !== prepared.tasks.length) throw new Error('saved executor tasks were not fully queued');
       return { accepted: true, taskKey, status: 'claimed', queuedCount: queued.length };
     } catch (error) {
@@ -496,7 +563,7 @@ class AgentEngine {
       for_ai: '/Users/rogan/appDev/note_app_memo/22appmemosquare',
       detox: '/Users/rogan/appDev/library-content-sns/11Isle_SNS_contorl/isle'
     };
-    let taskWorkspaceDir = this.workspaceDir;
+    let taskWorkspaceDir = this.dispatchedRecoveryWorkspaces.get(task.id) || this.workspaceDir;
     if (task.forAiProject) {
       const expectedRoot = forAiProjects[task.forAiProject];
       if (!expectedRoot) return { status: 'blocked', reason: 'For AI 요청의 프로젝트가 허용 목록에 없습니다.' };
@@ -520,6 +587,7 @@ class AgentEngine {
       approvalPolicy: this.tools.approvalPolicy,
       watchSkills: false,
       dispatcherAutoStart: false,
+      workspaceLeaseWaitMs: this.workspaceLeaseWaitMs,
       handoffStorageDir: path.join(this.dataDir, 'dispatcher-handoff', taskKey)
     });
     worker.forAiTaskGuard = this.forAiTaskGuard;
@@ -648,7 +716,10 @@ class AgentEngine {
           ? { requestToolApproval: request => this.dispatcherApprovalHandler(task, request) }
           : {}),
         allowedTools: task.allowedTools,
-        executorSystemMessage: [manager.buildExecutorSystemMessage({ taskTitle: task.title, workspaceDir: taskWorkspaceDir, files: task.targetFiles }), trustedTaskInstructions].filter(Boolean).join('\n\n')
+        executorSystemMessage: {
+          role: 'system',
+          content: [manager.buildExecutorSystemMessage({ taskTitle: task.title, workspaceDir: taskWorkspaceDir, files: task.targetFiles }).content, trustedTaskInstructions].filter(Boolean).join('\n\n')
+        }
       });
       worker.sessions.appendItem(session.sessionId, { type: 'session_metadata', metadata: { executionEvidence: evidence } });
       if (typeof response?.content !== 'string' || !response.content.trim()) {
@@ -672,13 +743,15 @@ class AgentEngine {
       return { status: 'completed', result: response.content, sessionId: session.sessionId, executionEvidence: evidence };
     } catch (error) {
       const message = error?.message || String(error);
-      const blocked = /작업공간은 다른 Only Chat 작업이 사용 중|승인|차단/.test(message);
+      const recovery = workspaceRecovery(error, evidence, worker.workspaceExecutionLease._workspaceKey(taskWorkspaceDir));
+      if (recovery) this.dispatchedRecoveryWorkspaces.set(task.id, taskWorkspaceDir);
+      const blocked = error?.code === 'WORKSPACE_BUSY' || /작업공간은 다른 Only Chat 작업이 사용 중|승인|차단/.test(message);
       const sessionId = worker.currentSession?.sessionId || null;
       if (sessionId) {
         try { worker.sessions.appendItem(sessionId, { type: 'session_metadata', metadata: { executionEvidence: evidence } }); } catch (_) {}
       }
-      return blocked
-        ? { status: 'blocked', reason: message, result: '', sessionId, executionEvidence: evidence }
+      return blocked || recovery
+        ? { status: 'blocked', reason: message, result: '', sessionId, executionEvidence: evidence, ...(recovery ? { recovery } : {}) }
         : { status: 'failed', error: message, result: '', sessionId, executionEvidence: evidence };
     } finally {
       worker.dispatcher.stop();
@@ -886,11 +959,9 @@ class AgentEngine {
                       try {
                         const queued = this.dispatcher.enqueueTasks(plan.tasks.map((task, index) => ({
                           id: `${taskKey}-${index + 1}`,
-                          registryTaskKey: taskKey,
-                          managerOwnerChatId: ownerChatId,
                           ...task,
                           requireToolExecution: true
-                        })));
+                        })), { registryTaskKey: taskKey, managerOwnerChatId: ownerChatId });
                         if (queued.length !== plan.tasks.length) throw new Error('작업 큐가 계획된 작업 수와 다르게 접수했습니다.');
                         managerDelegation = { summary: plan.summary, registryTaskKey: taskKey, tasks: queued };
                         response = { content: `관리자: ${plan.summary}\n실행 가능: ${plan.feasibility.reason}\n실행 계획 ${taskKey}를 저장하고 실행자 ${queued.length}개 작업을 큐에 접수했습니다.`, toolCalls: [] };

@@ -813,7 +813,7 @@ class TaskRegistryStore {
         return result;
       }
       const allowed = STATUS_TRANSITIONS.get(task.status);
-      if (!allowed?.has(normalized.status)) throw new Error(`invalid task transition: ${task.status} -> ${normalized.status}`);
+      if (task.status !== normalized.status && !allowed?.has(normalized.status)) throw new Error(`invalid task transition: ${task.status} -> ${normalized.status}`);
       const evidenceRefs = [...new Set([...(task.checkpoint?.evidenceRefs || []), ...normalized.evidenceRefs])].slice(-20);
       if (normalized.status === 'completed') verifyCompletionIntegration(task, evidenceRefs);
       task.status = normalized.status;

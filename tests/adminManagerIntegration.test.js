@@ -42,11 +42,12 @@ async function main() {
   try {
     engine.priorityChain.upsertTier({ id: 'synthetic', name: 'Synthetic', provider: 'test', model: 'offline' });
     engine.isolated = false;
+    engine._ensureAccountRouterTier = async () => false; // Never discover real providers in this synthetic fixture.
     engine.initSession();
     const managerSessionId = engine.currentSession.sessionId;
-    engine.dispatcher.enqueueTasks = tasks => {
+    engine.dispatcher.enqueueTasks = (tasks, managerContext = {}) => {
       enqueueCalls += 1;
-      enqueued = tasks.map(task => ({ ...task, status: 'queued' }));
+      enqueued = tasks.map(task => ({ ...task, ...managerContext, status: 'queued' }));
       return enqueued;
     };
     const deltas = [];

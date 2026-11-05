@@ -181,14 +181,22 @@ class DesktopServer {
     this.pendingDispatcherToolApprovals = new Map();
     this.engine.dispatcherApprovalHandler = (task, request) => this._requestDispatcherToolApproval(task, request);
     this.engine.dispatcher.canStartTask = () => this.activeTurns === 0;
-    this.engine.dispatcher.on('worker_started', () => { this.activeTurns += 1; });
-    const finishDispatchedTurn = () => {
-      this.activeTurns = Math.max(0, this.activeTurns - 1);
+    const dispatchedTurns = new Set();
+    const startDispatchedTurn = ({ task }) => {
+      if (dispatchedTurns.has(task.id)) return;
+      dispatchedTurns.add(task.id);
+      this.activeTurns += 1;
+    };
+    this.engine.dispatcher.on('worker_started', startDispatchedTurn);
+    this.engine.dispatcher.on('worker_resumed', startDispatchedTurn);
+    const finishDispatchedTurn = ({ task }) => {
+      if (dispatchedTurns.delete(task.id)) this.activeTurns = Math.max(0, this.activeTurns - 1);
       void this.engine.dispatcher.tick();
     };
     this.engine.dispatcher.on('worker_completed', finishDispatchedTurn);
     this.engine.dispatcher.on('worker_blocked', finishDispatchedTurn);
     this.engine.dispatcher.on('worker_failed', finishDispatchedTurn);
+    this.engine.dispatcher.on('worker_waiting', finishDispatchedTurn);
     this.hub = new MetamorphicHub({
       workspaceDir: this.engine.workspaceDir,
       dataDir: this.dataDir,

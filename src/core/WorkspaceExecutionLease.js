@@ -120,6 +120,22 @@ class WorkspaceExecutionLease {
       readAt: new Date().toISOString() };
   }
 
+  async waitUntilAvailable(workspaceDir, { signal, waitMs = 30_000 } = {}) {
+    if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > 60_000) throw new RangeError('lease waitMs must be 0–60000');
+    const started = performance.now();
+    for (;;) {
+      aborted(signal);
+      const evidence = this.getEvidence(workspaceDir);
+      if (evidence.state === 'free' || (evidence.state === 'stale' && evidence.sameHost === true)) {
+        return { ready: true, evidence };
+      }
+      if (evidence.state !== 'held' || evidence.sameHost !== true) return { ready: false, reason: 'owner_unverified', evidence };
+      const remaining = waitMs - (performance.now() - started);
+      if (remaining <= 0) return { ready: false, reason: 'owner_still_active', evidence };
+      await waitForRetry(Math.min(this.retryMs, remaining), signal);
+    }
+  }
+
   _readOwner(lockPath) {
     try {
       return JSON.parse(fs.readFileSync(lockPath, 'utf8'));
