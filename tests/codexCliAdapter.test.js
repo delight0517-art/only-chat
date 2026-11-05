@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
@@ -233,6 +234,61 @@ test('Codex exposes Only Chat Mac screen tools only when the local opt-in is ena
     assert.equal(spawnEnv.ONLY_CHAT_MAC_SCREEN_TOKEN, 'ephemeral-test-token');
     assert.match(approvalReason, /사용자가 켠 Mac 화면 제어로 화면을 읽거나 조작/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Codex routes only the assigned Only Chat session to its private Cua Driver socket', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-'));
+  let socketServer;
+  try {
+    const dataDir = path.join(root, 'd');
+    const workspaceDir = path.join(root, 'w');
+    const socketDir = path.join(dataDir, 'agent-workspaces');
+    const socketPath = path.join(socketDir, 'a.sock');
+    const cuaDriverPath = path.join(root, 'cua-driver');
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+    createProfile(path.join(dataDir, 'codex-profiles', 'codex-primary'), 'primary@example.com');
+    fs.writeFileSync(cuaDriverPath, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    fs.chmodSync(cuaDriverPath, 0o700);
+    await new Promise((resolve, reject) => {
+      socketServer = net.createServer();
+      socketServer.once('error', reject);
+      socketServer.listen(socketPath, resolve);
+    });
+    const assignmentPath = path.join(dataDir, 'agent-workspaces.json');
+    fs.writeFileSync(assignmentPath, JSON.stringify({ version: 1, sessions: { 'session-1': { socketPath } } }), { mode: 0o600 });
+    let spawnArgs;
+    const fakeSpawn = (_command, args) => {
+      spawnArgs = args;
+      const child = new EventEmitter();
+      child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+      const outputPath = args[args.indexOf('--output-last-message') + 1];
+      child.stdout.end('', () => { fs.writeFileSync(outputPath, '완료'); child.emit('close', 0); });
+      return child;
+    };
+    const adapter = new CodexCliAdapter({ dataDir, defaultCodexHome: path.join(root, 'empty-home'), command: '/fake/codex', spawn: fakeSpawn });
+    adapter.cuaDriverPath = cuaDriverPath;
+    const tier = { id: 'codex-primary', model: 'gpt-6-luna', email: 'primary@example.com' };
+    let approvalReason = '';
+    const common = {
+      workspaceDir, reasoningEffort: 'low', approvalPolicy: 'on-request',
+      requestWorkspaceWriteApproval: async request => { approvalReason = request.reason; return true; }
+    };
+    await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, { ...common, sessionId: 'session-1' });
+    assert.ok(spawnArgs.includes('mcp_servers.onlychat_agent_workspace.enabled=true'));
+    assert.ok(spawnArgs.includes(`mcp_servers.onlychat_agent_workspace.args=${JSON.stringify(['mcp', '--socket', socketPath])}`));
+    assert.match(approvalReason, /격리 워크스테이션의 앱을 읽고 조작/);
+    await adapter.call(tier, [{ role: 'user', content: '도구를 사용하지 말고 답해줘.' }], {}, { ...common, sessionId: 'session-1', toolProfile: 'no-tools' });
+    assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_agent_workspace')), 'explicit no-tools mode cannot attach the desktop bridge');
+    await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, { ...common, sessionId: 'session-2' });
+    assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_agent_workspace')));
+    fs.chmodSync(assignmentPath, 0o644);
+    await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, { ...common, sessionId: 'session-1' });
+    assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_agent_workspace')), 'shared or group-readable route configuration fails closed');
+  } finally {
+    if (socketServer) await new Promise(resolve => socketServer.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('Codex account profiles are not reused across email identities', () => {

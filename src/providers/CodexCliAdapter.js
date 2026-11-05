@@ -72,6 +72,8 @@ class CodexCliAdapter {
     this.command = options.command || path.join(this.dataDir, 'runtime/codex-cli/node_modules/.bin/codex');
     this.defaultCodexHome = path.resolve(options.defaultCodexHome || process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
     this.profilesDir = path.join(this.dataDir, 'codex-profiles');
+    this.agentWorkspacesFile = path.join(this.dataDir, 'agent-workspaces.json');
+    this.cuaDriverPath = path.join(os.homedir(), '.local/bin/cua-driver');
     this.projectRoot = path.resolve(options.projectRoot || path.join(__dirname, '../..'));
     this.googleTokenFile = options.googleTokenFile || null;
     this.powerCliPath = path.resolve(options.powerCliPath || process.env.ONLY_CHAT_35CLOSER_CLI || path.join(os.homedir(), 'appDev/devtool/35Closer_App/scripts/35closerctl'));
@@ -120,6 +122,29 @@ class CodexCliAdapter {
     const id = String(tier?.id || '');
     if (!id) return;
     this.authenticationFailures.set(id, String(message).slice(0, 500));
+  }
+
+  _agentWorkspaceSocket(sessionId) {
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._-]{1,200}$/.test(sessionId)) return null;
+    try {
+      const configStat = fs.lstatSync(this.agentWorkspacesFile);
+      if (!configStat.isFile() || configStat.size > 65_536 || (typeof process.getuid === 'function' && configStat.uid !== process.getuid()) || (configStat.mode & 0o077) !== 0) return null;
+      const config = JSON.parse(fs.readFileSync(this.agentWorkspacesFile, 'utf8'));
+      if (config.version !== 1 || !config.sessions || !Object.hasOwn(config.sessions, sessionId)) return null;
+      const socketPath = config.sessions?.[sessionId]?.socketPath;
+      const socketDir = path.resolve(this.dataDir, 'agent-workspaces');
+      const socketDirStat = fs.lstatSync(socketDir);
+      if (!socketDirStat.isDirectory() || (typeof process.getuid === 'function' && socketDirStat.uid !== process.getuid()) || (socketDirStat.mode & 0o077) !== 0) return null;
+      const socketRoot = socketDir + path.sep;
+      const resolvedSocket = path.resolve(String(socketPath || ''));
+      if (!resolvedSocket.startsWith(socketRoot)) return null;
+      const socketStat = fs.lstatSync(resolvedSocket);
+      if (!socketStat.isSocket() || (typeof process.getuid === 'function' && socketStat.uid !== process.getuid())) return null;
+      fs.accessSync(this.cuaDriverPath, fs.constants.X_OK);
+      return resolvedSocket;
+    } catch (_) {
+      return null;
+    }
   }
 
   clearAuthenticationFailure(tier) {
@@ -255,6 +280,8 @@ class CodexCliAdapter {
     const fullAccess = context.fullAccess === true;
     if (fullAccess && approvalPolicy === 'read-only') throw new Error('읽기 전용 승인 정책에서는 Full access를 사용할 수 없습니다.');
     const screenBridge = approvalPolicy === 'read-only' ? null : this.macScreenBridge?.();
+    const agentWorkspaceSocket = process.platform === 'darwin' && approvalPolicy !== 'read-only' && context.toolProfile !== 'no-tools'
+      ? this._agentWorkspaceSocket(context.sessionId) : null;
     if (fullAccess || approvalPolicy === 'on-request') {
       const approve = context.requestWorkspaceWriteApproval;
       if (typeof approve !== 'function') {
@@ -271,6 +298,7 @@ class CodexCliAdapter {
           reason += ' Only Chat의 35Closer 도구로 대기 중 전원 요청을 등록하거나 취소할 수 있으며, 실제 절전·깨우기는 35Closer 앱에서 별도 승인이 필요합니다.';
         }
         if (screenBridge?.enabled === true) reason += ' 사용자가 켠 Mac 화면 제어로 화면을 읽거나 조작할 수도 있습니다.';
+        if (agentWorkspaceSocket) reason += ' 이 Only Chat 대화에 배정된 격리 워크스테이션의 앱을 읽고 조작할 수 있습니다.';
         approved = await approve({
           directory: workspaceDir,
           reason
@@ -300,6 +328,12 @@ class CodexCliAdapter {
         '-c', `model_reasoning_effort="${effort}"`, '-'
       ];
       if (trustedDeveloperInstructions) args.splice(args.length - 3, 0, '-c', `developer_instructions=${JSON.stringify(trustedDeveloperInstructions)}`);
+      if (agentWorkspaceSocket) {
+        args.splice(args.length - 3, 0,
+          '-c', 'mcp_servers.onlychat_agent_workspace.enabled=true',
+          '-c', `mcp_servers.onlychat_agent_workspace.command=${JSON.stringify(this.cuaDriverPath)}`,
+          '-c', `mcp_servers.onlychat_agent_workspace.args=${JSON.stringify(['mcp', '--socket', agentWorkspaceSocket])}`);
+      }
       if (process.platform === 'darwin' && approvalPolicy !== 'read-only') {
         const coordinationServer = path.join(this.projectRoot, 'src/connectors/WorkspaceCoordinationMcpServer.js');
         args.splice(args.length - 3, 0,
