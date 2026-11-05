@@ -58,7 +58,7 @@ function run(argv = process.argv.slice(2)) {
     if (request.method === 'tools/list') {
       response(request.id, { tools: [{
         name: 'get_assigned_display',
-        description: 'Read this Only Chat conversation assigned display and CUA session label. Before computer actions, call CUA start_session with this exact label, then pass that session to supported CUA tools. Use exact assigned app windows and background input. The frame is advisory, and this route does not create physical keyboard or mouse devices.',
+        description: 'Read this Only Chat conversation assigned display and CUA session label. Before computer actions, call CUA start_session with this exact label, enable its cursor with set_agent_cursor_enabled, and pass that session to supported CUA tools. Use exact assigned app windows and background input. The frame is advisory, and this route does not create physical keyboard or mouse devices.',
         inputSchema: { type: 'object', properties: {}, additionalProperties: false },
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
       }] });
