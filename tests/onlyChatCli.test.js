@@ -436,6 +436,45 @@ async function main() {
   assert.match(verifiedReadTurn.response, /const verifiedSource = true;/);
   assert.doesNotMatch(verifiedReadTurn.response, /invented content/);
 
+  const sourceAnalysisOutput = [];
+  const sourceAnalysisPrompt = 'Read Sources/AutoWiFi/HealthProbe.swift and Sources/AutoWiFi/NetworkQualityProbe.swift, analyze the throughput failure path.';
+  const sourceAnalysisTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_source_analysis', prompt: sourceAnalysisPrompt,
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_source_analysis' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file' }, result: { ok: true, content: 'RAW HEALTH SOURCE MUST NOT REPLACE ANALYSIS' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-quality', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-quality', name: 'read_file' }, result: { ok: true, content: 'RAW NETWORK SOURCE MUST NOT REPLACE ANALYSIS' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift starts a new path monitor. NetworkQualityProbe.swift reports typed failures.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => sourceAnalysisOutput.push(text)
+  });
+  assert.equal(sourceAnalysisTurn.ok, true);
+  assert.match(sourceAnalysisTurn.response, /HealthProbe\.swift starts a new path monitor/);
+  assert.match(sourceAnalysisTurn.response, /NetworkQualityProbe\.swift reports typed failures/);
+  assert.doesNotMatch(sourceAnalysisTurn.response, /RAW .* SOURCE/);
+
+  const incompleteSourceAnalysis = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_incomplete_source_analysis', prompt: sourceAnalysisPrompt,
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_incomplete_source_analysis' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file' }, result: { ok: true, content: 'health source' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-quality', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-quality', name: 'read_file' }, result: { ok: true, content: 'network source' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift was inspected; no other file was discussed.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  });
+  assert.equal(incompleteSourceAnalysis.ok, false);
+  assert.equal(incompleteSourceAnalysis.category, 'source_analysis_incomplete');
+  assert.match(incompleteSourceAnalysis.response, /NetworkQualityProbe\.swift/);
+  assert.doesNotMatch(incompleteSourceAnalysis.response, /health source|network source/);
+
   const todoListOutput = [];
   const todoListTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_list',

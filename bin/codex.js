@@ -171,6 +171,30 @@ function groundSourceReadAnswer(results = []) {
   return `Only Chat read_file 실제 결과:\n${content.slice(0, 4000)}${content.length > 4000 ? '\n(첫 4000자만 표시)' : ''}`;
 }
 
+function isSourceAnalysisRequest(prompt) {
+  return /\b(?:analy[sz]e|analysis|diagnos(?:e|is)|review)\b|분석|진단/i.test(String(prompt || ''));
+}
+
+function validateSourceAnalysisResponse(prompt, answer, results = []) {
+  if (!results.map(readFileText).some(Boolean)) {
+    return { passed: false, missing: [], response: 'Only Chat 분석을 뒷받침하는 성공한 read_file 결과가 없습니다.' };
+  }
+  const requested = [...String(prompt || '').matchAll(/(?:^|\s)([\w./-]+\.[A-Za-z][A-Za-z0-9]{0,7})(?=$|[\s,;])/g)]
+    .map(match => path.basename(match[1]));
+  const missing = [...new Set(requested)].filter(name => !String(answer || '').toLowerCase().includes(name.toLowerCase()));
+  if (missing.length) {
+    return {
+      passed: false,
+      missing,
+      response: `Only Chat 분석 미완료: 읽기 도구는 실행됐지만 최종 답변에서 요청한 근거 파일 ${missing.join(', ')}을(를) 다루지 않았습니다.`
+    };
+  }
+  if (!String(answer || '').trim()) {
+    return { passed: false, missing: [], response: 'Only Chat 분석 미완료: 읽기 도구는 성공했지만 종합 답변이 비어 있습니다.' };
+  }
+  return { passed: true, missing: [], response: String(answer).trim() };
+}
+
 function groundTodoSectionAnswer(prompt, answer, readFileResults = []) {
   if (!/정확한\s*(?:요구사항|원문|내용)|acceptance[-\s]*(?:checks?|criteria)|exact\s+(?:requirements|source|text)/i.test(String(prompt || ''))) return null;
   const requestedId = /\bTODO-[A-Za-z0-9_-]+\b/i.exec(String(prompt || ''))?.[0];
@@ -601,6 +625,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const taskRegistryListRequest = isTaskRegistryListRequest(prompt);
   const taskRegistryReadRequest = isTaskRegistryReadRequest(prompt);
   const sourceReadRequest = isSourceReadEvidenceRequest(prompt);
+  const sourceAnalysisRequest = sourceReadRequest && isSourceAnalysisRequest(prompt);
   const evidenceGroundedRequest = todoEvidenceRequest || todoListEvidenceRequest || sourceReadRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || embeddedThreefNavigateRequest || embeddedThreefHistoryRequest || taskRegistryListRequest || taskRegistryReadRequest;
   const readFileResults = [];
   const toolFailureResults = [];
@@ -717,6 +742,9 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   if (!error && pendingToolMarker) error = { category: 'invalid_provider_output' };
   const execution = { toolCalls, successfulTools, failedTools, failedMutatingTools };
   if (error) {
+    if (sourceAnalysisRequest) {
+      return { ok: false, ...error, sessionId: resolvedSessionId, response: responseText, execution };
+    }
     const recoveredResponse = (error.category === 'invalid_provider_output' || sourceReadRequest)
       ? groundTodoSectionAnswer(prompt, responseText, readFileResults)
         ?? (todoListEvidenceRequest ? groundTodoListAnswer(prompt, readFileResults) : null)
@@ -749,7 +777,16 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   if (failedMutatingTools > 0) {
     return { ok: false, category: 'tool_execution_failed', sessionId: resolvedSessionId, response: responseText, execution };
   }
-  const groundedResponse = groundTodoSectionAnswer(prompt, responseText, readFileResults)
+  const sourceAnalysisValidation = sourceAnalysisRequest
+    ? validateSourceAnalysisResponse(prompt, responseText, readFileResults)
+    : null;
+  if (sourceAnalysisValidation && !sourceAnalysisValidation.passed) {
+    write(sourceAnalysisValidation.response);
+    return { ok: false, category: 'source_analysis_incomplete', sessionId: resolvedSessionId, response: sourceAnalysisValidation.response, execution };
+  }
+  const groundedResponse = sourceAnalysisRequest
+    ? sourceAnalysisValidation.response
+    : groundTodoSectionAnswer(prompt, responseText, readFileResults)
     ?? (todoListEvidenceRequest ? groundTodoListAnswer(prompt, readFileResults) : null)
     ?? (sourceReadRequest && readFileResults.length ? groundSourceReadAnswer(readFileResults) : null)
     ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
