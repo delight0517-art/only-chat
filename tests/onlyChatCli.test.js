@@ -475,6 +475,23 @@ async function main() {
   assert.match(incompleteSourceAnalysis.response, /NetworkQualityProbe\.swift/);
   assert.doesNotMatch(incompleteSourceAnalysis.response, /health source|network source/);
 
+  const longEnglishSourcePrompt = 'Analyze the Auto WiFi throughput recovery path using actual workspace files. Read and cite every exact file below: Sources/AutoWiFi/HealthProbe.swift, Sources/AutoWiFi/NetworkQualityProbe.swift, Sources/AutoWiFi/Persistence.swift, Sources/Algorithms/Hysteresis.swift, Tests/AlgorithmsRunner/Runner.swift.';
+  const ungroundedEnglishSourceAnalysis = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_ungrounded_english_source_analysis', prompt: longEnglishSourcePrompt,
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_ungrounded_english_source_analysis' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file' }, result: { ok: true, content: 'actual source evidence' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'Generic state machine discussion without any requested filenames.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  });
+  assert.equal(ungroundedEnglishSourceAnalysis.ok, false, 'natural English source-analysis requests must not bypass evidence coverage');
+  assert.equal(ungroundedEnglishSourceAnalysis.category, 'source_analysis_incomplete');
+  assert.match(ungroundedEnglishSourceAnalysis.response, /HealthProbe\.swift/);
+  assert.match(ungroundedEnglishSourceAnalysis.response, /Hysteresis\.swift/);
+
   const todoListOutput = [];
   const todoListTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_list',

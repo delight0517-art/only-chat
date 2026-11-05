@@ -162,7 +162,9 @@ function groundTodoListAnswer(prompt, readFileResults = []) {
 function isSourceReadEvidenceRequest(prompt) {
   const text = String(prompt || '');
   return /\bread_file\b/i.test(text)
-    || /(?:read|reading|읽|확인).{0,40}(?:파일|소스|줄|lines?|\.[a-z0-9]{1,8}\b)/i.test(text);
+    || (/\b(?:read|reading|inspect|inspecting|analy[sz]e|analysis|diagnos(?:e|is)|review|reviewing)\b/i.test(text)
+      && /\b(?:files?|sources?|code|lines?)\b|\.[a-z0-9]{1,8}\b/i.test(text))
+    || /(?:읽|확인).{0,240}(?:파일|소스|줄|lines?|\.[a-z0-9]{1,8}\b)/i.test(text);
 }
 
 function groundSourceReadAnswer(results = []) {
