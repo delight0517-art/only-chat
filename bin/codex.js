@@ -161,10 +161,25 @@ function groundTodoListAnswer(prompt, readFileResults = []) {
 
 function isSourceReadEvidenceRequest(prompt) {
   const text = String(prompt || '');
+  if (isExplicitFileMutationRequest(text)) return false;
   return /\bread_file\b/i.test(text)
     || (/\b(?:read|reading|inspect|inspecting|analy[sz]e|analysis|diagnos(?:e|is)|review|reviewing)\b/i.test(text)
       && /\b(?:files?|sources?|code|lines?)\b|\.[a-z0-9]{1,8}\b/i.test(text))
     || /(?:읽|확인).{0,240}(?:파일|소스|줄|lines?|\.[a-z0-9]{1,8}\b)/i.test(text);
+}
+
+function isExplicitFileMutationRequest(prompt) {
+  const text = String(prompt || '');
+  if (/(?:do not|don't|never|avoid)\s+(?:(?:call|use|invoke)\s+)?(?:edit_file|write_file|apply_patch)\b|(?:edit_file|write_file|apply_patch).{0,32}(?:호출하지|사용하지|실행하지)\s*마/i.test(text)) return false;
+  return /\b(?:edit_file|write_file|apply_patch)\b/i.test(text)
+    || (/\b(?:edit|write|append|modify|update|replace|create|delete|insert)\b/i.test(text)
+      && /\b(?:files?|documents?|sources?|TODO|roadmap)\b|\.[a-z0-9]{1,8}\b/i.test(text))
+    || /(?:파일|문서|소스|TODO).{0,80}(?:수정|추가|작성|삽입|교체|변경|삭제|붙여)/i.test(text)
+    || /(?:수정|추가|작성|삽입|교체|변경|삭제|붙여).{0,80}(?:파일|문서|소스|TODO)/i.test(text);
+}
+
+function groundSuccessfulMutationAnswer(count) {
+  return `Only Chat mutation tool success: ${count} approved file-change tool call(s) returned success. This confirms the tool result only; independently read the target before treating the requested change as complete.`;
 }
 
 function groundSourceReadAnswer(results = []) {
@@ -647,7 +662,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const reader = response.body?.getReader();
   if (!reader) throw new Error('Only Chat did not return a readable event stream.');
   const decoder = new TextDecoder();
-  let buffer = '', resolvedSessionId = null, responseText = '', pendingToolMarker = '', error = null, completed = false, toolCalls = 0, successfulTools = 0, failedTools = 0, failedMutatingTools = 0;
+  let buffer = '', resolvedSessionId = null, responseText = '', pendingToolMarker = '', error = null, completed = false, toolCalls = 0, successfulTools = 0, successfulMutatingTools = 0, failedTools = 0, failedMutatingTools = 0;
   const todoEvidenceRequest = isTodoEvidenceRequest(prompt);
   const todoListEvidenceRequest = isTodoListEvidenceRequest(prompt);
   const embeddedThreefStatusRequest = isEmbeddedThreefStatusRequest(prompt);
@@ -656,9 +671,10 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const embeddedThreefHistoryRequest = isEmbeddedThreefHistoryRequest(prompt);
   const taskRegistryListRequest = isTaskRegistryListRequest(prompt);
   const taskRegistryReadRequest = isTaskRegistryReadRequest(prompt);
+  const fileMutationRequest = isExplicitFileMutationRequest(prompt);
   const sourceReadRequest = isSourceReadEvidenceRequest(prompt);
   const sourceAnalysisRequest = sourceReadRequest && isSourceAnalysisRequest(prompt);
-  const evidenceGroundedRequest = todoEvidenceRequest || todoListEvidenceRequest || sourceReadRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || embeddedThreefNavigateRequest || embeddedThreefHistoryRequest || taskRegistryListRequest || taskRegistryReadRequest;
+  const evidenceGroundedRequest = todoEvidenceRequest || todoListEvidenceRequest || sourceReadRequest || fileMutationRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || embeddedThreefNavigateRequest || embeddedThreefHistoryRequest || taskRegistryListRequest || taskRegistryReadRequest;
   const readFileResults = [];
   let activeToolCall = null;
   let activeToolOutput = '';
@@ -736,7 +752,10 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
             failedTools++;
             if (MUTATING_TOOL_NAMES.has(tool)) failedMutatingTools++;
           }
-          else successfulTools++;
+          else {
+            successfulTools++;
+            if (MUTATING_TOOL_NAMES.has(tool)) successfulMutatingTools++;
+          }
           if (failed) toolFailureResults.push({
             name: tool,
             detail: detail || redactToolMessage(result?.stderr || result?.error || result?.message || '')
@@ -792,7 +811,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
     reader.releaseLock();
   }
   if (!error && pendingToolMarker) error = { category: 'invalid_provider_output' };
-  const execution = { toolCalls, successfulTools, failedTools, failedMutatingTools };
+  const execution = { toolCalls, successfulTools, successfulMutatingTools, failedTools, failedMutatingTools };
   if (error) {
     if (sourceAnalysisRequest) {
       return { ok: false, ...error, sessionId: resolvedSessionId, response: responseText, execution };
@@ -847,6 +866,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
     ?? (embeddedThreefHistoryRequest ? groundEmbeddedThreefHistoryAnswer(embeddedThreefHistoryResults) : null)
     ?? (taskRegistryListRequest ? groundTaskRegistryListAnswer(taskRegistryListResults) : null)
     ?? (taskRegistryReadRequest ? groundTaskRegistryReadAnswer(prompt, taskRegistryReadResults) : null)
+    ?? (fileMutationRequest && successfulMutatingTools > 0 ? groundSuccessfulMutationAnswer(successfulMutatingTools) : null)
     ?? (evidenceGroundedRequest && successfulTools === 0 ? groundToolFailureAnswer(toolFailureResults) : null)
     ?? groundTodoStatusAnswer(prompt, responseText, readFileResults);
   if (evidenceGroundedRequest && groundedResponse !== responseText && completed) write(groundedResponse);

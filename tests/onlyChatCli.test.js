@@ -406,9 +406,29 @@ async function main() {
   assert.equal(failedToolTurn.execution.failedTools, 1);
   assert.match(failedToolOutput.join(''), /도구 실패: edit_file/);
 
+  const successfulEditOutput = [];
+  const successfulEditTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_successful_edit',
+    prompt: 'Read the anchor, then use edit_file to append one line to TODO_ROADMAP.md. Use read_file only for checking the result afterward.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_successful_edit' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'edit-1', name: 'edit_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'edit-1', name: 'edit_file', args: { path: 'TODO_ROADMAP.md' } }, result: { ok: true } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The requested TODO note is complete.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => successfulEditOutput.push(text)
+  });
+  assert.equal(successfulEditTurn.ok, true, 'a successful requested file edit must not be reported as a missing read');
+  assert.equal(successfulEditTurn.execution.successfulMutatingTools, 1);
+  assert.match(successfulEditTurn.response, /mutation tool success/);
+  assert.match(successfulEditTurn.response, /independently read the target/);
+  assert.match(successfulEditOutput.join(''), /mutation tool success/);
+
   const unverifiedReadTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_unverified_read',
-    prompt: 'Read bin/codex.js lines 890-902 exactly with read_file.',
+    prompt: 'Read bin/codex.js lines 890-902 exactly with read_file. Do not call edit_file or write_file.',
     fetchImpl: async () => new Response([
       `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_unverified_read' })}\n\n`,
       `data: ${JSON.stringify({ type: 'message_delta', delta: 'I read those lines and they say the CLI is ready.' })}\n\n`,
