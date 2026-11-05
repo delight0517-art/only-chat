@@ -344,6 +344,8 @@ function setupEventListeners() {
     if (event.target.id === 'scheduleModal') closeSchedules();
   });
   document.getElementById('btnNewSchedule')?.addEventListener('click', () => beginScheduleEdit());
+  document.getElementById('btnScheduleIn30')?.addEventListener('click', setScheduleRunIn30Minutes);
+  document.getElementById('btnScheduleResumeIn30')?.addEventListener('click', setScheduleResumeCurrentChatIn30Minutes);
   document.getElementById('btnRefreshSchedules')?.addEventListener('click', () => { void refreshScheduleList(); });
   document.getElementById('scheduleFrequency')?.addEventListener('change', renderScheduleRecurrenceFields);
   document.getElementById('btnScheduleAddFiles')?.addEventListener('click', () => document.getElementById('scheduleFiles')?.click());
@@ -5363,6 +5365,7 @@ function beginScheduleEdit(schedule = null) {
   retainedScheduleAttachments = (schedule?.attachments || []).map(({ id, name, size }) => ({ id, name, size }));
   addedScheduleAttachments = [];
   document.getElementById('scheduleId').value = selectedScheduleId || '';
+  document.getElementById('scheduleResumeSessionId').value = schedule?.resumeSessionId || '';
   document.getElementById('scheduleTitle').value = schedule?.title || '';
   document.getElementById('schedulePrompt').value = schedule?.prompt || '';
   document.getElementById('scheduleAllowedTools').value = schedule
@@ -5390,12 +5393,43 @@ function beginScheduleEdit(schedule = null) {
 function renderScheduleRecurrenceFields() {
   const frequency = document.getElementById('scheduleFrequency')?.value;
   const once = frequency === 'once';
+  if (!once) document.getElementById('scheduleResumeSessionId').value = '';
   document.getElementById('scheduleOnceAtWrap').hidden = !once;
+  document.getElementById('btnScheduleIn30').hidden = !once;
+  document.getElementById('btnScheduleResumeIn30').hidden = !once;
   document.getElementById('scheduleOnceAt').required = once;
   document.getElementById('scheduleMonthDayWrap').hidden = frequency !== 'monthly';
   document.getElementById('scheduleWeekdayWrap').hidden = frequency !== 'weekly';
   document.getElementById('scheduleLocalTimeWrap').hidden = once;
   document.getElementById('scheduleLocalTime').required = !once;
+}
+
+function setScheduleRunIn30Minutes() {
+  document.getElementById('scheduleResumeSessionId').value = '';
+  const frequency = document.getElementById('scheduleFrequency');
+  frequency.value = 'once';
+  renderScheduleRecurrenceFields();
+  const runAt = new Date(Date.now() + 30 * 60 * 1000);
+  document.getElementById('scheduleOnceAt').value = new Date(runAt.getTime() - runAt.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  scheduleFormStatus('지금부터 30분 뒤 한 번 실행하도록 설정했습니다. 요청 내용과 허용 도구를 확인하고 저장하세요.');
+}
+
+function setScheduleResumeCurrentChatIn30Minutes() {
+  if (!/^ses_[a-f0-9]{16}$/.test(currentSessionId || '')) {
+    scheduleFormStatus('먼저 메시지를 한 번 보내 저장된 Only Chat 대화를 만든 뒤 예약해 주세요.', true);
+    return;
+  }
+  beginScheduleEdit();
+  document.getElementById('scheduleTitle').value = '현재 대화 이어서 확인';
+  document.getElementById('schedulePrompt').value = '이 대화의 마지막 작업 상태를 다시 확인하고 사용자가 요청한 범위에서 계속 진행하세요. 기존 요청과 이미 완료한 내용을 먼저 확인하고, 새 승인이나 권한이 필요한 조치는 멈춰서 보고하세요.';
+  document.getElementById('scheduleAllowedTools').value = 'read_file';
+  document.getElementById('scheduleResumeSessionId').value = currentSessionId;
+  const frequency = document.getElementById('scheduleFrequency');
+  frequency.value = 'once';
+  renderScheduleRecurrenceFields();
+  const runAt = new Date(Date.now() + 30 * 60 * 1000);
+  document.getElementById('scheduleOnceAt').value = new Date(runAt.getTime() - runAt.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  scheduleFormStatus('현재 대화를 30분 뒤 한 번 재개하도록 준비했습니다. 요청 내용과 읽기 전용 도구를 확인한 뒤 저장하세요.');
 }
 
 function renderScheduleLastRun(schedule) {
@@ -5479,7 +5513,9 @@ async function refreshScheduleList() {
       button.className = `schedule-list-item${schedule.id === selectedScheduleId ? ' selected' : ''}`;
       button.setAttribute('role', 'listitem');
       const title = document.createElement('strong'); title.textContent = schedule.title;
-      const detail = document.createElement('small'); detail.textContent = `${schedule.enabled ? '사용 중' : '꺼짐'} · ${schedule.frequency === 'monthly' ? `매월 ${schedule.monthDay}일` : schedule.frequency === 'weekly' ? `매주 ${['일','월','화','수','목','금','토'][schedule.weekday]}요일` : '매일'} ${schedule.localTime}`;
+      const recurrence = schedule.frequency === 'once' ? `한 번 · ${new Date(schedule.runAt).toLocaleString()}`
+        : `${schedule.frequency === 'monthly' ? `매월 ${schedule.monthDay}일` : schedule.frequency === 'weekly' ? `매주 ${['일','월','화','수','목','금','토'][schedule.weekday]}요일` : '매일'} ${schedule.localTime}`;
+      const detail = document.createElement('small'); detail.textContent = `${schedule.resumeSessionId ? '현재 대화 재개 · ' : ''}${schedule.enabled ? '사용 중' : '꺼짐'} · ${recurrence}`;
       button.append(title, detail);
       button.addEventListener('click', () => { void loadSchedule(schedule.id); });
       return button;
@@ -5554,6 +5590,7 @@ function schedulePayload() {
     title: document.getElementById('scheduleTitle').value,
     prompt: document.getElementById('schedulePrompt').value,
     allowedTools: document.getElementById('scheduleAllowedTools').value.split(',').map(name => name.trim()).filter(Boolean),
+    resumeSessionId: document.getElementById('scheduleResumeSessionId').value || null,
     frequency,
     enabled: document.getElementById('scheduleEnabled').checked,
     attachments: [...retainedScheduleAttachments.map(({ id }) => ({ id })), ...addedScheduleAttachments.map(({ name, contentBase64 }) => ({ name, contentBase64 }))]

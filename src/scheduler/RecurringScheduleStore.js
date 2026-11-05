@@ -178,6 +178,11 @@ class RecurringScheduleStore {
     const enabled = input.enabled === undefined ? (existing.enabled ?? true) : input.enabled;
     if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean');
     const frequency = input.frequency ?? existing.frequency;
+    const resumeSessionId = Object.hasOwn(input, 'resumeSessionId') ? input.resumeSessionId : (existing.resumeSessionId || null);
+    if (resumeSessionId !== null && (typeof resumeSessionId !== 'string' || !/^ses_[a-f0-9]{16}$/.test(resumeSessionId))) {
+      throw new TypeError('resumeSessionId must be a saved internal Only Chat session');
+    }
+    if (resumeSessionId && frequency !== 'once') throw new TypeError('resume schedules must run once');
     const recurrence = { frequency, localTime: input.localTime ?? existing.localTime,
       ...(input.weekday !== undefined || existing.weekday !== undefined ? { weekday: input.weekday ?? existing.weekday } : {}),
       ...(input.monthDay !== undefined || existing.monthDay !== undefined ? { monthDay: input.monthDay ?? existing.monthDay } : {}),
@@ -196,6 +201,7 @@ class RecurringScheduleStore {
       title: validateTitle(input.title ?? existing.title),
       prompt: validatePrompt(input.prompt ?? existing.prompt),
       allowedTools: validateAllowedTools(input.allowedTools ?? existing.allowedTools),
+      resumeSessionId,
       ...recurrence,
       nextRunAt: new Date(nextRunAt).toISOString(),
       enabled,

@@ -1332,12 +1332,15 @@
         </aside>
         <form id="scheduleForm" class="schedule-editor" autocomplete="off">
           <input type="hidden" id="scheduleId">
+          <input type="hidden" id="scheduleResumeSessionId">
           <label class="schedule-field">스케줄 제목<input id="scheduleTitle" maxlength="120" required placeholder="예: 월간 프로젝트 점검"></label>
           <label class="schedule-field">요청 내용<textarea id="schedulePrompt" rows="5" maxlength="100000" required placeholder="예약 시 실행할 내용을 적어 주세요."></textarea></label>
           <label class="schedule-field">허용 도구<textarea id="scheduleAllowedTools" rows="2" required placeholder="read_file, google_drive_read"></textarea><small>쉼표로 구분해 이 스케줄이 실행할 도구 이름만 입력하세요. 비어 있으면 저장할 수 없습니다.</small></label>
           <div class="schedule-recurrence-grid">
             <label class="schedule-field">실행<select id="scheduleFrequency"><option value="once">한 번</option><option value="monthly">매월</option><option value="weekly">매주</option><option value="daily">매일</option></select></label>
             <label class="schedule-field" id="scheduleOnceAtWrap">실행 시각<input id="scheduleOnceAt" type="datetime-local" required></label>
+            <button class="btn-secondary" id="btnScheduleIn30" type="button">지금부터 30분 뒤로 설정</button>
+            <button class="btn-secondary" id="btnScheduleResumeIn30" type="button">현재 대화를 30분 뒤 이어서 확인</button>
             <label class="schedule-field" id="scheduleMonthDayWrap">날짜<input id="scheduleMonthDay" type="number" min="1" max="31" value="1"></label>
             <label class="schedule-field" id="scheduleWeekdayWrap">요일<select id="scheduleWeekday"><option value="1">월요일</option><option value="2">화요일</option><option value="3">수요일</option><option value="4">목요일</option><option value="5">금요일</option><option value="6">토요일</option><option value="0">일요일</option></select></label>
             <label class="schedule-field" id="scheduleLocalTimeWrap">시각<input id="scheduleLocalTime" type="time" value="09:00" required></label>

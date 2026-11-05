@@ -715,7 +715,16 @@ class AgentEngine {
       }
     };
     try {
-      const session = worker.initSession({ title: task.title, workspaceDir: taskWorkspaceDir });
+      const session = task.resumeSessionId
+        ? worker.sessions.resumeSession(task.resumeSessionId)
+        : worker.initSession({ title: task.title, workspaceDir: taskWorkspaceDir });
+      if (task.resumeSessionId && (!session || session.source !== 'internal')) {
+        return { status: 'blocked', reason: '예약된 Only Chat 대화를 찾을 수 없어 재개하지 않았습니다.', sessionId: task.resumeSessionId, executionEvidence: evidence };
+      }
+      if (task.resumeSessionId && path.resolve(session.cwd || taskWorkspaceDir) !== path.resolve(taskWorkspaceDir)) {
+        return { status: 'blocked', reason: '예약한 대화의 작업공간이 현재 Only Chat 작업공간과 달라 재개하지 않았습니다.', sessionId: task.resumeSessionId, executionEvidence: evidence };
+      }
+      if (task.resumeSessionId) worker.loadInternalSession(session);
       task.sessionId = session.sessionId;
       const manager = await import('../features/admin-manager/v1.mjs');
       const response = await worker.executeTurn(taskPrompt, {

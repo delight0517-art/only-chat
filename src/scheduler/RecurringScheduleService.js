@@ -87,6 +87,7 @@ class RecurringScheduleService {
       files: [],
       allowedTools: Array.isArray(schedule.allowedTools) ? [...schedule.allowedTools] : [],
       requireToolExecution: true,
+      ...(schedule.resumeSessionId ? { resumeSessionId: schedule.resumeSessionId, sessionId: schedule.resumeSessionId } : {}),
       recurringScheduleId: schedule.id
     };
     const execution = { scheduleId: schedule.id, taskId: executionId, manual };
