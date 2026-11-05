@@ -5161,16 +5161,72 @@ async function handleStageVaultSave() {
 // ==========================================================================
 // Aside Models & M-Oasis 1, 2, 3 Tier Priority Selection Logic
 // ==========================================================================
+function providerAccountRows(providerId, status) {
+  const routerProviders = providerId === 'chatgpt' ? ['chatgpt-plan']
+    : providerId === 'google' ? ['antigravity-cli'] : [providerId];
+  return (status?.accountRouter?.accounts || [])
+    .filter(account => routerProviders.includes(account.provider) && account.provider !== 'demo');
+}
+
+async function providerAccountAction(action, accountId) {
+  if (action === 'remove' && !confirm('선택한 계정을 삭제하시겠습니까?')) return;
+  try {
+    const response = await fetch('/api/account-router/account', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, accountId })
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || '계정 작업 실패');
+    if (result.pending) alert('로그인 완료 후 계정 목록이 자동 갱신됩니다.');
+    await refreshPriorityStatus();
+    await loadStagePriorityTiers();
+  } catch (error) { alert(error.message); }
+}
+
 function toggleKebabMenu(event, providerId) {
   event.stopPropagation();
-  // Close all other kebabs
+  const trigger = event.currentTarget;
   document.querySelectorAll('.kebab-popover').forEach(p => {
     if (p.id !== `kebab-${providerId}`) p.classList.remove('open');
   });
   const popover = document.getElementById(`kebab-${providerId}`);
-  if (popover) {
-    popover.classList.toggle('open');
+  if (!popover) return;
+  const opening = !popover.classList.contains('open');
+  popover.replaceChildren();
+  popover.setAttribute('role', 'group');
+  popover.setAttribute('aria-label', '연결된 계정');
+  for (const account of providerAccountRows(providerId, priorityStatus)) {
+    const row = document.createElement('div');
+    row.className = 'kebab-item';
+    const label = document.createElement('span');
+    label.textContent = account.name || account.id;
+    row.append(label);
+    for (const [action, symbol, title] of [['reauth', '⟳', '다시 인증'], ['remove', '🗑', '계정 삭제']]) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.textContent = symbol;
+      button.setAttribute('aria-label', `${label.textContent} ${title}`);
+      button.addEventListener('click', () => { void providerAccountAction(action, account.id); });
+      row.append(button);
+    }
+    popover.append(row);
   }
+  const add = document.createElement('button');
+  add.type = 'button'; add.className = 'kebab-item'; add.textContent = '+ 계정 추가';
+  add.addEventListener('click', () => {
+    if (providerId === 'chatgpt') void providerAccountAction('add-chatgpt');
+    else if (providerId === 'google') alert('Antigravity CLI는 현재 제공자 앱의 로그인 세션을 사용합니다. 독립된 여러 계정 세션 지원은 아직 연결되지 않았습니다.');
+    else openConnectModal(providerId);
+  });
+  popover.append(add);
+  popover.classList.toggle('open', opening);
+  trigger?.setAttribute('aria-expanded', String(opening));
+  popover.onkeydown = key => {
+    if (key.key === 'Escape') {
+      popover.classList.remove('open');
+      trigger?.setAttribute('aria-expanded', 'false');
+      trigger?.focus();
+    }
+  };
 }
 
 // Close kebabs on click outside

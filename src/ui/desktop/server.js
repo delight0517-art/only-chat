@@ -6,6 +6,7 @@
  * @description Zero-dependency HTTP & SSE Server powering the My-Codex Mac App UI.
  */
 'use strict';
+const { manageRouterAccount } = require('./accountManagement.js');
 
 const http = require('node:http');
 const fs = require('node:fs');
@@ -1450,6 +1451,22 @@ class DesktopServer {
       const ok = this.engine.priorityChain.setAutomaticPriority(body.enabled);
       res.writeHead(ok ? 200 : 400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok, status: this.getPriorityStatus(), error: ok ? undefined : '자동 우선순위 값이 올바르지 않습니다.' }));
+      return;
+    }
+
+    if (pathname === '/api/account-router/account' && req.method === 'POST') {
+      try {
+        const body = await this._readBody(req);
+        const adapter = await this.engine._getAccountRouterAdapter();
+        const result = await manageRouterAccount(adapter, body);
+        this.engine.accountRouterDiscoveryRetryAt = 0;
+        await this.engine._ensureAccountRouterTier();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        res.writeHead([400, 403, 404, 409].includes(error.status) ? error.status : 503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error.message }));
+      }
       return;
     }
 
