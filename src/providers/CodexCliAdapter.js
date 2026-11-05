@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
@@ -160,7 +161,9 @@ class CodexCliAdapter {
           frame: { x: frame.x, y: frame.y, width: frame.width, height: frame.height } };
       }
       return { socketPath: resolvedSocket, virtualDisplay,
-        cuaSession: virtualDisplay ? `${virtualDisplay.agentID}:${sessionId}` : null };
+        cuaSession: virtualDisplay
+          ? `${virtualDisplay.agentID}:${crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 24)}`
+          : null };
     } catch (_) {
       return null;
     }

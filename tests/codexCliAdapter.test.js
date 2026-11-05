@@ -289,7 +289,10 @@ test('Codex routes only the assigned Only Chat session to its private Cua Driver
     assert.ok(spawnArgs.includes('mcp_servers.onlychat_assigned_display.enabled=true'));
     const displayArgsConfig = spawnArgs.find(arg => String(arg).startsWith('mcp_servers.onlychat_assigned_display.args='));
     const displayArgs = JSON.parse(displayArgsConfig.slice(displayArgsConfig.indexOf('=') + 1));
-    assert.deepEqual(displayArgs.slice(1), ['--agent-id', 'only-chat', '--display-id', '101', '--cua-session', 'only-chat:session-1', '--x', '-1280', '--y', '0', '--width', '1280', '--height', '800']);
+    assert.deepEqual(displayArgs.slice(1, 5), ['--agent-id', 'only-chat', '--display-id', '101']);
+    assert.equal(displayArgs[5], '--cua-session');
+    assert.match(displayArgs[6], /^only-chat:[a-f0-9]{24}$/);
+    assert.deepEqual(displayArgs.slice(7), ['--x', '-1280', '--y', '0', '--width', '1280', '--height', '800']);
     assert.match(approvalReason, /이 Only Chat 대화에 배정된 워크스테이션/);
     await adapter.call(tier, [{ role: 'user', content: '도구를 사용하지 말고 답해줘.' }], {}, { ...common, sessionId: 'session-1', toolProfile: 'no-tools' });
     assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_agent_workspace')), 'explicit no-tools mode cannot attach the desktop bridge');
