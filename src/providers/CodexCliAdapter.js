@@ -133,11 +133,10 @@ class CodexCliAdapter {
       const config = JSON.parse(fs.readFileSync(this.agentWorkspacesFile, 'utf8'));
       const assignments = config.onlyChatSessionAssignments?.version === 1
         ? config.onlyChatSessionAssignments.sessions : null;
-      const route = assignments && Object.hasOwn(assignments, sessionId)
-        ? assignments[sessionId]
-        : config.version === 1 && config.sessions && Object.hasOwn(config.sessions, sessionId)
-          ? config.sessions[sessionId]
-          : null;
+      let route = null;
+      if (assignments && Object.hasOwn(assignments, sessionId)) route = assignments[sessionId];
+      else if (config.onlyChatSessionAssignments?.version === 1) route = config.onlyChatSessionAssignments.default || null;
+      else if (config.version === 1 && config.sessions && Object.hasOwn(config.sessions, sessionId)) route = config.sessions[sessionId];
       if (!route || typeof route !== 'object') return null;
       const socketPath = route.socketPath;
       const socketDir = path.resolve(this.dataDir, 'agent-workspaces');

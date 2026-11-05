@@ -259,12 +259,14 @@ test('Codex routes only the assigned Only Chat session to its private Cua Driver
     const assignmentPath = path.join(dataDir, 'agent-workspaces.json');
     fs.writeFileSync(assignmentPath, JSON.stringify({
       mcpServers: {},
-      onlyChatSessionAssignments: { version: 1, sessions: {
-        'session-1': {
+      onlyChatSessionAssignments: { version: 1, default: {
           agentID: 'only-chat', socketPath, displayInfoServer: 'agent-display-101',
           virtualDisplay: { displayID: 101, frame: { x: -1280, y: 0, width: 1280, height: 800 } }
-        }
-      } }
+        }, sessions: { 'session-1': {
+          agentID: 'only-chat', socketPath, displayInfoServer: 'agent-display-101',
+          virtualDisplay: { displayID: 101, frame: { x: -1280, y: 0, width: 1280, height: 800 } }
+        } }
+      }
     }), { mode: 0o600 });
     let spawnArgs;
     const fakeSpawn = (_command, args) => {
@@ -298,7 +300,12 @@ test('Codex routes only the assigned Only Chat session to its private Cua Driver
     assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_agent_workspace')), 'explicit no-tools mode cannot attach the desktop bridge');
     assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_assigned_display')), 'explicit no-tools mode cannot attach display context');
     await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, { ...common, sessionId: 'session-2' });
-    assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_agent_workspace')));
+    assert.ok(spawnArgs.includes('mcp_servers.onlychat_agent_workspace.enabled=true'), 'default Only Chat route applies to other conversations');
+    assert.ok(spawnArgs.includes('mcp_servers.onlychat_assigned_display.enabled=true'));
+    const secondDisplayArgsConfig = spawnArgs.find(arg => String(arg).startsWith('mcp_servers.onlychat_assigned_display.args='));
+    const secondDisplayArgs = JSON.parse(secondDisplayArgsConfig.slice(secondDisplayArgsConfig.indexOf('=') + 1));
+    assert.match(secondDisplayArgs[6], /^only-chat:[a-f0-9]{24}$/);
+    assert.notEqual(secondDisplayArgs[6], displayArgs[6], 'conversations receive distinct cursor session labels');
     fs.writeFileSync(assignmentPath, JSON.stringify({ version: 1, sessions: { 'session-1': { socketPath } } }), { mode: 0o600 });
     await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, { ...common, sessionId: 'session-1' });
     assert.ok(spawnArgs.includes('mcp_servers.onlychat_agent_workspace.enabled=true'), 'legacy CUA-only assignment remains supported');
