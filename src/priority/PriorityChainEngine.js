@@ -347,12 +347,13 @@ class PriorityChainEngine {
 
     // Brief cooldown for a transient provider or network error.
     const cooldownMs = 2 * 60 * 1000;
+    const unconfigured = error?.code === 'provider_unconfigured';
     health.isThrottled = true;
     health.totalRemainingPercent = null;
     health.fiveHourRemainingPercent = null;
-    health.quotaState = 'provider-unavailable';
-    health.throttledReason = 'provider-error';
-    health.cooldownUntil = Date.now() + cooldownMs;
+    health.quotaState = unconfigured ? 'provider-unconfigured' : 'provider-unavailable';
+    health.throttledReason = unconfigured ? 'provider-unconfigured' : 'provider-error';
+    health.cooldownUntil = unconfigured ? null : Date.now() + cooldownMs;
     health.lastCheckedAt = Date.now();
     this._save();
 

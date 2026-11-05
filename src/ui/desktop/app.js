@@ -5570,7 +5570,8 @@ async function runScheduleNow() {
 }
 
 function renderRouterAccountControls(router) {
-  if (!router?.accounts?.length) return '<p>계정·모델 변경 기능을 적용하려면 Only Chat을 한 번 다시 열어주세요.</p>';
+  if (!router) return '<p>계정·모델 변경 기능을 적용하려면 Only Chat을 한 번 다시 열어주세요.</p>';
+  if (!router.accounts?.length) return '<p>AI Account Router에 등록된 계정이 없습니다. Router 메뉴에서 계정을 추가하면 자동으로 연결됩니다.</p>';
   return `<section aria-label="AI Account Router 계정과 모델">
     <h4>AI Account Router · 자동 연결됨</h4>
     <p>Router 내부 계정 순서 · 잔여 한도 ${escapeHtml(router.thresholdPercent ?? 10)}% 이하이면 다음 계정으로 전환합니다.</p>

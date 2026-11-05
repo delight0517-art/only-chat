@@ -40,6 +40,11 @@ async function main() {
     assert.equal((await post('/api/account-router/model', { accountId: 'a', model: 'alpha' }, 'https://untrusted.example')).status, 403);
 
     const ui = fs.readFileSync(path.join(__dirname, '../src/ui/desktop/app.js'), 'utf8');
+    const renderSource = ui.slice(ui.indexOf('function renderRouterAccountControls('), ui.indexOf('function bindRouterAccountControls('));
+    const render = new Function('escapeHtml', `${renderSource}; return renderRouterAccountControls;`)(String);
+    assert.match(render(null), /Only Chat을 한 번 다시 열어/);
+    assert.match(render({ accounts: [] }), /계정을 추가하면 자동으로 연결/);
+    assert.doesNotMatch(render({ accounts: [] }), /다시 열어/, 'empty accounts require registration rather than another restart');
     const stage = ui.slice(ui.indexOf('async function loadStagePriorityTiers()'), ui.indexOf('// Ensure loadStagePriorityTiers'));
     const container = { innerHTML: '', querySelector: () => null, querySelectorAll: () => [] };
     const data = { enabled: true, tiers: Array.from({ length: 5 }, (_, index) => ({ id: `tier${index}`, tier: index + 1, name: `Provider ${index}`, provider: 'synthetic', health: {} })) };

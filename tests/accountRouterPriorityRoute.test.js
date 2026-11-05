@@ -85,6 +85,20 @@ async function main() {
     const restored = new PriorityChainEngine({ configDir: path.join(tempRoot, 'priority'), notify: () => {} });
     assert.equal(restored.adoptAccountRouter(), false);
     assert.equal(restored.chain.tiers[3].id, 'account-router-local', 'user order survives restart');
+    engine.accountRouterDiscoveryRetryAt = 0;
+    engine.accountRouterAdapter.getChain = async () => ({ enabled: true, accounts: [] });
+    engine.accountRouterReadiness = { verified: true, connected: true };
+    await engine._ensureAccountRouterTier();
+    assert.equal(engine.accountRouterReadiness.connected, false, 'an empty Router invalidates prior successful readiness');
+    assert.equal(engine.accountRouterReadiness.state, 'unconfigured');
+    assert.notEqual(chain.resolveActiveTier()?.id, 'account-router-local', 'empty Router is skipped while its user rank is preserved');
+    assert.equal(chain.tierHealth.get('account-router-local').cooldownUntil, null, 'empty configuration cannot recover just because a timeout expired');
+    engine.accountRouterDiscoveryRetryAt = 0;
+    engine.accountRouterAdapter.getChain = async () => ({ enabled: true, accounts: [{ enabled: true, provider: 'chatgpt-plan', model: 'gpt-test' }] });
+    await engine._ensureAccountRouterTier();
+    assert.equal(chain.tierHealth.get('account-router-local').isThrottled, false, 'adding an account restores Router eligibility');
+    assert.equal(engine.accountRouterReadiness.verified, false, 'configuration recovery does not fabricate inference success');
+    assert.equal(chain.chain.tiers[3].id, 'account-router-local', 'account recovery does not overwrite the user rank');
     console.log('Router priority: automatic first discovery, persistent user reorder, fallback and demo exclusion passed.');
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });

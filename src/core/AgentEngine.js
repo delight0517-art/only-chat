@@ -466,7 +466,7 @@ class AgentEngine {
       const configured = chain.enabled && chain.accounts.some(account => account.enabled !== false &&
         account.provider && account.provider !== 'demo' && account.provider !== 'unconfigured' &&
         account.model && account.model !== 'unconfigured');
-      if (!this.accountRouterReadiness?.verified) {
+      if (!configured || !this.accountRouterReadiness?.verified) {
         const unverified = chain.providerState === 'unverified' || chain.accounts.some(account => account.availability === 'unverified');
         this.accountRouterReadiness = {
           available: configured ? null : false,
@@ -478,7 +478,16 @@ class AgentEngine {
             : configured ? 'AI Account Router 실제 요청 확인이 필요합니다.' : 'AI Account Router에 사용 가능한 계정이 없습니다.'
         };
       }
-      if (!configured) return false;
+      const existingRouter = this.priorityChain.chain.tiers.find(tier => tier.provider === 'account-router');
+      const routerHealth = existingRouter && this.priorityChain.tierHealth?.get(existingRouter.id);
+      if (!configured) {
+        if (existingRouter && routerHealth?.throttledReason !== 'provider-unconfigured') {
+          this.priorityChain.reportTierFailure(existingRouter.id,
+            Object.assign(new Error('AI Account Router has no enabled provider accounts.'), { code: 'provider_unconfigured' }));
+        }
+        return false;
+      }
+      if (routerHealth?.throttledReason === 'provider-unconfigured') this.priorityChain.reportTierSuccess(existingRouter.id);
       if (this.priorityChain.chain.tiers.some(tier => tier.provider === 'account-router')) {
         return this.priorityChain.adoptAccountRouter();
       }
