@@ -8,9 +8,17 @@ async function manageRouterAccount(adapter, input, fetchImpl = globalThis.fetch)
   }
   const { action, accountId } = input;
   let endpoint, method = 'POST', body;
+  if (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 80)) throw Object.assign(new Error('계정 이름은 80자 이내로 입력해 주세요.'), { status: 400 });
   if (action === 'add-chatgpt') {
     endpoint = '/api/oauth/chatgpt/start';
-    body = { id: `chatgpt-${require('node:crypto').randomUUID()}`, name: 'ChatGPT', model: 'auto' };
+    const id = `chatgpt-${require('node:crypto').randomUUID()}`;
+    body = { id, name: input.name?.trim() || `ChatGPT ${id.slice(-6)}`, model: 'auto' };
+  } else if (action === 'refresh-antigravity') {
+    const chain = await adapter.getChain();
+    const current = chain.accounts.filter(account => account.provider === 'antigravity-cli');
+    if (current.length > 1) throw Object.assign(new Error('Antigravity 프로필이 여러 개입니다. 제공자 앱에서 실제 계정 연결을 먼저 확인해 주세요.'), { status: 409 });
+    endpoint = '/api/antigravity/refresh';
+    body = { id: current[0]?.id || 'antigravity-google', name: current[0]?.name || 'Antigravity 현재 로그인' };
   } else if (['remove', 'reauth'].includes(action)) {
     if (typeof accountId !== 'string' || !accountId || accountId.length > 128) throw Object.assign(new Error('계정을 선택해 주세요.'), { status: 400 });
     const chain = await adapter.getChain();
@@ -27,7 +35,7 @@ async function manageRouterAccount(adapter, input, fetchImpl = globalThis.fetch)
   const result = await response.json();
   if (!response.ok) throw Object.assign(new Error(result?.error?.message || '계정 작업을 완료하지 못했습니다.'), { status: response.status });
   // OAuth state and credentials stay in Router. The UI refreshes public account metadata.
-  return { ok: true, pending: action !== 'remove' };
+  return { ok: true, pending: action === 'add-chatgpt' || action === 'reauth' };
 }
 
 module.exports = { manageRouterAccount };

@@ -1,0 +1,63 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const http = require('node:http');
+const { DesktopServer } = require('../src/ui/desktop/server');
+(async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-priority-account-routes-'));
+  const forwarded = [];
+  let app;
+  let failUpstream = false;
+  const router = http.createServer(async (req, res) => {
+    let body = ''; for await (const chunk of req) body += chunk;
+    forwarded.push({ path: req.url, body: body ? JSON.parse(body) : null });
+    res.writeHead(failUpstream ? 503 : 200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(failUpstream ? { error: { message: 'synthetic upstream failure' } } : { ok: true }));
+  });
+  try {
+    await new Promise(resolve => router.listen(0, '127.0.0.1', resolve));
+    app = new DesktopServer({ port: 0, isolated: true, dataDir: root, enableQuotaRefresh: false, notify: () => {} });
+    await app.start();
+    const origin = `http://127.0.0.1:${app.port}`;
+    const post = (endpoint, body, requestOrigin = origin) => fetch(origin + endpoint, { method: 'POST', headers: { Origin: requestOrigin, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const chain = app.engine.priorityChain;
+    chain.upsertTier({ id: 'a', name: 'A', provider: 'codex', model: 'synthetic' });
+    chain.upsertTier({ id: 'b', name: 'B', provider: 'codex', model: 'synthetic' });
+    assert.equal((await post('/api/priority/disconnect', { providerId: 'chatgpt' })).status, 400);
+    assert.deepEqual(chain.chain.tiers.map(t => t.id), ['a', 'b']);
+    assert.equal((await post('/api/priority/disconnect', { tierId: 'a' })).status, 200);
+    assert.deepEqual(chain.chain.tiers.map(t => t.id), ['b']);
+    assert.equal((await post('/api/priority/disconnect', { tierId: 'missing' })).status, 404);
+    assert.equal((await post('/api/priority/connect', { provider: 'chatgpt' })).status, 503);
+    app.isolated = false;
+    app.engine._getAccountRouterAdapter = async () => ({ baseUrl: `http://127.0.0.1:${router.address().port}`, getChain: async () => ({ accounts: [] }) });
+    app.engine._ensureAccountRouterTier = async () => {};
+    const before = JSON.stringify(chain.chain.tiers);
+    assert.equal((await post('/api/priority/connect', { provider: 'claude', apiKey: 'synthetic-do-not-store' })).status, 400);
+    assert.equal(forwarded.length, 0);
+    const oauth = await post('/api/priority/connect', { provider: 'chatgpt', name: 'Synthetic account' });
+    assert.equal(oauth.status, 200);
+    assert.equal((await oauth.json()).pending, true);
+    assert.equal(forwarded[0].path, '/api/oauth/chatgpt/start');
+    assert.equal(forwarded[0].body.name, 'Synthetic account');
+    assert.equal(JSON.stringify(chain.chain.tiers), before, 'starting OAuth never inserts a fake connected tier');
+    const ag = await post('/api/priority/connect', { provider: 'google' });
+    assert.equal(ag.status, 200);
+    assert.equal((await ag.json()).pending, false);
+    assert.equal(forwarded[1].path, '/api/antigravity/refresh');
+    failUpstream = true;
+    const failure = await post('/api/priority/connect', { provider: 'chatgpt' });
+    assert.equal(failure.status, 503);
+    assert.match((await failure.json()).error, /synthetic upstream failure/);
+    assert.equal(JSON.stringify(chain.chain.tiers), before);
+    assert.equal((await post('/api/priority/disconnect', { tierId: 'b' }, 'https://untrusted.example')).status, 403);
+    assert.equal(JSON.stringify(chain.chain.tiers), before);
+    console.log('priorityAccountRoutes: scoped deletion, real OAuth/current-session forwarding, no phantom tiers, upstream errors, isolation and origin rejection passed');
+  } finally {
+    await app?.stop();
+    await new Promise(resolve => router.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });

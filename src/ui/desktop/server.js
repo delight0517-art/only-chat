@@ -1505,19 +1505,37 @@ class DesktopServer {
       return;
     }
 
-    if (pathname === '/api/priority/connect' && req.method === 'POST') {
+    if (pathname === '/api/priority/disconnect' && req.method === 'POST') {
       const body = await this._readBody(req);
-      const { id, name, provider, model, email, apiKey } = body;
-      const ok = this.engine.priorityChain.upsertTier({
-        id: id || `${provider}-${Date.now()}`,
-        name: name || provider,
-        provider,
-        model,
-        email,
-        description: apiKey ? 'API Key configured' : 'Active Connection'
-      });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (typeof body.tierId !== 'string' || !body.tierId || body.providerId !== undefined) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: '삭제할 계정 하나를 선택해 주세요.' }));
+        return;
+      }
+      const ok = this.engine.priorityChain.removeTier(body.tierId);
+      if (ok && this.engine.auth) this.engine.auth.removeAccount(body.tierId);
+      res.writeHead(ok ? 200 : 404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok, status: this.getPriorityStatus() }));
+      return;
+    }
+
+    if (pathname === '/api/priority/connect' && req.method === 'POST') {
+      try {
+        if (this.isolated) throw Object.assign(new Error('격리 테스트에서는 실제 계정을 연결하지 않습니다.'), { status: 503 });
+        const body = await this._readBody(req);
+        const action = body.provider === 'chatgpt' ? 'add-chatgpt'
+          : body.provider === 'google' ? 'refresh-antigravity' : null;
+        if (!action || body.apiKey) throw Object.assign(new Error('이 연결 창에서는 ChatGPT 로그인과 현재 Antigravity 로그인 연결을 지원합니다. API 계정은 AI Account Router에서 등록해 주세요.'), { status: 400 });
+        const adapter = await this.engine._getAccountRouterAdapter();
+        const result = await manageRouterAccount(adapter, { action, name: body.name });
+        this.engine.accountRouterDiscoveryRetryAt = 0;
+        await this.engine._ensureAccountRouterTier();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        res.writeHead([400, 403, 409].includes(error.status) ? error.status : 503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error.message }));
+      }
       return;
     }
 

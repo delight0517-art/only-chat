@@ -1379,40 +1379,22 @@
       </div>
       <div class="modal-body">
         <div class="form-group">
-          <label class="form-label">Provider</label>
+          <label class="form-label" for="modalProviderSelect">제공자</label>
           <select class="settings-select-dropdown" id="modalProviderSelect" style="width: 100%;">
-            <option value="google">Google (Antigravity OAuth / API)</option>
-            <option value="chatgpt">ChatGPT (Codex OAuth / Session Token)</option>
-            <option value="openrouter">OpenRouter (Global Multi-Model)</option>
-            <option value="claude">Anthropic Claude</option>
-            <option value="ollama">Ollama (Local Offline 0원)</option>
-            <option value="copilot">GitHub Copilot</option>
-            <option value="litellm">LiteLLM Proxy</option>
-            <option value="account-router">AI Account Router (local shared account chain)</option>
+            <option value="chatgpt">ChatGPT 계정 추가 · 로그인</option>
+            <option value="google">현재 Antigravity 로그인 연결</option>
+            <option value="account-router">AI Account Router에서 API 계정 관리</option>
           </select>
-          <small>Router 연결에는 계정 라벨만 입력하세요. 제공자 자격 증명은 Router가 로컬에서 관리합니다.</small>
+          <small>ChatGPT는 로그인 완료 후 추가됩니다. Antigravity는 현재 로그인한 세션을 연결합니다. API 자격 증명은 Router에서 관리합니다.</small>
         </div>
         <div class="form-group" style="margin-top: 10px;">
-          <label class="form-label">계정 / 식별 이름</label>
-          <input type="text" id="modalAccountName" class="settings-input-box" placeholder="예: rogan2534@gmail.com 또는 Main-Key">
-        </div>
-        <div class="form-group" style="margin-top: 10px;">
-          <label class="form-label">API Key 또는 세션 토큰</label>
-          <input type="password" id="modalApiKey" class="settings-input-box" placeholder="sk-ant-... 또는 gsk_... (로컬/OAuth의 경우 생략 가능)">
-        </div>
-        <div class="form-group" style="margin-top: 10px;">
-          <label class="form-label">M-Oasis 우선순위 체인 지정</label>
-          <select class="settings-select-dropdown" id="modalPriorityRank" style="width: 100%;">
-            <option value="0">체인에 등록만 함 (수동 호출)</option>
-            <option value="1">1순위로 즉시 승격 (Primary Tier)</option>
-            <option value="2">2순위로 지정 (Secondary Fallback)</option>
-            <option value="3">3순위로 지정 (Final Defense Tier)</option>
-          </select>
+          <label class="form-label" for="modalAccountName">계정 표시 이름 (선택)</label>
+          <input type="text" id="modalAccountName" maxlength="80" class="settings-input-box" placeholder="예: 업무용 ChatGPT">
         </div>
       </div>
       <div class="modal-footer">
         <button class="btn-change-outline" onclick="closeConnectModal()">취소</button>
-        <button class="btn-save-orange" id="btnSubmitConnectModal">연결 및 저장</button>
+        <button class="btn-save-orange" id="btnSubmitConnectModal">연결 시작</button>
       </div>
     </div>
   </div>

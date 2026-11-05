@@ -5201,7 +5201,7 @@ function toggleKebabMenu(event, providerId) {
     const label = document.createElement('span');
     label.textContent = account.name || account.id;
     row.append(label);
-    for (const [action, symbol, title] of [['reauth', '⟳', '다시 인증'], ['remove', '🗑', '계정 삭제']]) {
+    for (const [action, symbol, title] of [[account.provider === 'antigravity-cli' ? 'refresh-antigravity' : 'reauth', '⟳', account.provider === 'antigravity-cli' ? '현재 로그인 새로고침' : '다시 인증'], ['remove', '🗑', '계정 삭제']]) {
       const button = document.createElement('button');
       button.type = 'button'; button.textContent = symbol;
       button.setAttribute('aria-label', `${label.textContent} ${title}`);
@@ -5211,10 +5211,10 @@ function toggleKebabMenu(event, providerId) {
     popover.append(row);
   }
   const add = document.createElement('button');
-  add.type = 'button'; add.className = 'kebab-item'; add.textContent = '+ 계정 추가';
+  add.type = 'button'; add.className = 'kebab-item'; add.textContent = providerId === 'google' ? '+ 현재 Antigravity 로그인 연결' : '+ 계정 추가';
   add.addEventListener('click', () => {
     if (providerId === 'chatgpt') void providerAccountAction('add-chatgpt');
-    else if (providerId === 'google') alert('Antigravity CLI는 현재 제공자 앱의 로그인 세션을 사용합니다. 독립된 여러 계정 세션 지원은 아직 연결되지 않았습니다.');
+    else if (providerId === 'google') void providerAccountAction('refresh-antigravity');
     else openConnectModal(providerId);
   });
   popover.append(add);
@@ -5280,7 +5280,7 @@ function openConnectModal(preselectProvider = 'google') {
   if (modal) {
     modal.style.display = 'flex';
     if (preselectProvider) {
-      document.getElementById('modalProviderSelect').value = preselectProvider;
+      document.getElementById('modalProviderSelect').value = ['google', 'chatgpt', 'account-router'].includes(preselectProvider) ? preselectProvider : 'account-router';
     }
     document.getElementById('modalAccountName').focus();
   }
@@ -5293,50 +5293,29 @@ function closeConnectModal() {
 
 async function handleConnectSubmit() {
   const provider = document.getElementById('modalProviderSelect').value;
-  const email = document.getElementById('modalAccountName').value.trim();
-  const apiKey = document.getElementById('modalApiKey').value.trim();
-  const rank = parseInt(document.getElementById('modalPriorityRank').value, 10);
-
-  if (!email && !apiKey && provider !== 'ollama') {
-    alert('계정 이름 또는 API Key를 입력하세요.');
+  const name = document.getElementById('modalAccountName').value.trim();
+  if (provider === 'account-router') {
+    closeConnectModal();
+    setBrowserPanelOpen(true);
+    await navBrowser('http://127.0.0.1:18880/');
     return;
   }
-
-  const id = `${provider}-${Date.now()}`;
-  const name = `${provider.toUpperCase()} (${email || 'Default'})`;
-
+  const button = document.getElementById('btnSubmitConnectModal');
+  if (button.disabled) return;
+  button.disabled = true;
   try {
-    const res = await fetch('/api/priority/connect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id,
-        name,
-        provider,
-        model: provider === 'ollama' ? 'qwen2.5:7b' : 'auto',
-        email,
-        apiKey
-      })
+    const response = await fetch('/api/priority/connect', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, name })
     });
-    const d = await res.json();
-    if (d.ok) {
-      if (rank > 0) {
-        await fetch('/api/priority/set-rank', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tierId: id, rank })
-        });
-      }
-      alert(`[연결 완료] ${name} 공급자가 추가되었습니다!`);
-      closeConnectModal();
-      refreshPriorityStatus();
-      loadStagePriorityTiers();
-    } else {
-      alert('연결 실패');
-    }
-  } catch (err) {
-    alert('연결 오류: ' + err.message);
-  }
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || '계정 연결을 시작하지 못했습니다.');
+    closeConnectModal();
+    if (result.pending) alert('로그인 완료 후 계정 목록이 갱신됩니다.');
+    await refreshPriorityStatus();
+    await loadStagePriorityTiers();
+  } catch (error) { alert(error.message); }
+  finally { button.disabled = false; }
 }
 
 // Hook connect submit
