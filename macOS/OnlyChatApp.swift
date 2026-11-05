@@ -16,6 +16,10 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var webView: WKWebView!
     private var browserWebView: NSHostingView<AnyView>?
     private var serverProcess: Process?
+    private var serverLaunchInProgress = false
+    private var serverRestartAttempts = 0
+    private var serverRestartWorkItem: DispatchWorkItem?
+    private var appIsTerminating = false
     private var serverDiagnosticsHandle: FileHandle?
     private let port = (Bundle.main.object(forInfoDictionaryKey: "OnlyChatServerPort") as? Int)
         ?? Int(ProcessInfo.processInfo.environment["ONLY_CHAT_PORT"] ?? "") ?? 8899
@@ -141,6 +145,9 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        appIsTerminating = true
+        serverRestartWorkItem?.cancel()
+        serverRestartWorkItem = nil
         stopSpeech()
         if let process = serverProcess, process.isRunning {
             process.terminate()
@@ -555,13 +562,45 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     private func startServer() {
+        guard !appIsTerminating, !serverLaunchInProgress, serverProcess?.isRunning != true else { return }
+        serverLaunchInProgress = true
         guard let root = projectRoot() else {
+            serverLaunchInProgress = false
             showError("Only Chat 원본 폴더를 찾지 못했습니다. 앱을 다시 빌드해 주세요.")
             return
         }
+        probeForExistingServer(root: root) { [weak self] isCompatible in
+            guard let self, !self.appIsTerminating else { return }
+            if isCompatible {
+                self.serverLaunchInProgress = false
+                self.serverRestartAttempts = 0
+                self.webView.load(URLRequest(url: URL(string: "http://127.0.0.1:\(self.port)/")!))
+                return
+            }
+            self.launchServer(root: root)
+        }
+    }
+
+    private func probeForExistingServer(root: URL, completion: @escaping (Bool) -> Void) {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/status")!, timeoutInterval: 2)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            let status = response as? HTTPURLResponse
+            let payload = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let isCompatible = status?.statusCode == 200
+                && payload?["routerIntegrationRevision"] as? String == "2026-11-05-v1"
+                && payload?["workspaceDir"] as? String == root.path
+            DispatchQueue.main.async { completion(isCompatible) }
+        }.resume()
+    }
+
+    private func launchServer(root: URL) {
+        guard !appIsTerminating else { return }
+        serverLaunchInProgress = true
         let node = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
             .first(where: FileManager.default.isExecutableFile(atPath:))
         guard let node else {
+            serverLaunchInProgress = false
             showError("Node.js를 찾지 못했습니다. 이 Mac에 Node.js를 설치한 뒤 다시 실행해 주세요.")
             return
         }
@@ -571,7 +610,7 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         process.currentDirectoryURL = root
         process.arguments = [
             "-e",
-            "const path=require('node:path');const {DesktopServer}=require('./src/ui/desktop/server.js');const options={port:Number(process.env.PORT)||8899};if(process.env.ONLY_CHAT_ISOLATED==='1')options.isolated=true;if(process.env.ONLY_CHAT_DATA_DIR){options.dataDir=process.env.ONLY_CHAT_DATA_DIR;options.workspaceDir=path.join(options.dataDir,'workspace');}const server=new DesktopServer(options);process.on('SIGTERM',()=>server.stop());server.start().then(({url})=>console.log('Only Chat ready: '+url)).catch(error=>{console.error(error);server.stop();process.exitCode=1;});"
+            "const path=require('node:path');const {DesktopServer}=require('./src/ui/desktop/server.js');const options={port:Number(process.env.PORT)||8899};if(process.env.ONLY_CHAT_ISOLATED==='1')options.isolated=true;if(process.env.ONLY_CHAT_DATA_DIR){options.dataDir=process.env.ONLY_CHAT_DATA_DIR;options.workspaceDir=path.join(options.dataDir,'workspace');}const server=new DesktopServer(options);process.on('SIGTERM',()=>{const httpServer=server.server;server.stop();httpServer?.closeAllConnections?.();process.exitCode=75;});server.start().then(({url})=>console.log('Only Chat ready: '+url)).catch(error=>{console.error(error);server.stop();process.exitCode=1;});"
         ]
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
@@ -600,18 +639,50 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         process.standardError = serverDiagnosticsHandle ?? FileHandle.nullDevice
         process.terminationHandler = { [weak self] child in
             DispatchQueue.main.async {
-                guard child.terminationStatus != 0, self?.window.isVisible == true else { return }
-                self?.showError("Only Chat 서버가 시작되지 않았습니다. 포트 \(self?.port ?? 8899)를 확인해 주세요.")
+                guard let self, !self.appIsTerminating,
+                      self.serverProcess?.processIdentifier == child.processIdentifier else { return }
+                self.serverProcess = nil
+                self.serverLaunchInProgress = false
+                self.scheduleServerRestart(
+                    requested: child.terminationStatus == 75,
+                    message: "Only Chat 서버가 예기치 않게 종료됐습니다."
+                )
             }
         }
 
         do {
             try process.run()
             serverProcess = process
+            serverLaunchInProgress = false
             waitForServer(attempt: 0)
         } catch {
-            showError("Only Chat 서버를 시작하지 못했습니다: \(error.localizedDescription)")
+            serverLaunchInProgress = false
+            scheduleServerRestart(requested: false, message: "Only Chat 서버를 시작하지 못했습니다: \(error.localizedDescription)")
         }
+    }
+
+    private func scheduleServerRestart(requested: Bool, message: String) {
+        guard !appIsTerminating else { return }
+        let delay: TimeInterval
+        if requested {
+            delay = 0.2
+        } else {
+            let delays: [TimeInterval] = [1, 2, 4]
+            guard serverRestartAttempts < delays.count else {
+                showError("\(message) 자동 재시작을 3회 시도했지만 복구하지 못했습니다. Only Chat을 다시 열어 주세요.")
+                return
+            }
+            delay = delays[serverRestartAttempts]
+            serverRestartAttempts += 1
+        }
+        serverRestartWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, !self.appIsTerminating else { return }
+            self.serverRestartWorkItem = nil
+            self.startServer()
+        }
+        serverRestartWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     private func waitForServer(attempt: Int) {
@@ -621,19 +692,20 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             }
             return
         }
-        let url = URL(string: "http://127.0.0.1:\(port)/")!
-        URLSession.shared.dataTask(with: url) { [weak self] _, response, _ in
+        guard let root = projectRoot() else { return }
+        probeForExistingServer(root: root) { [weak self] isCompatible in
             DispatchQueue.main.async {
                 guard let self, self.serverProcess?.isRunning == true else { return }
-                if (response as? HTTPURLResponse)?.statusCode == 200 {
-                    self.webView.load(URLRequest(url: url))
+                if isCompatible {
+                    self.serverRestartAttempts = 0
+                    self.webView.load(URLRequest(url: URL(string: "http://127.0.0.1:\(self.port)/")!))
                 } else {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                         self.waitForServer(attempt: attempt + 1)
                     }
                 }
             }
-        }.resume()
+        }
     }
 
     private func isLocalAppURL(_ url: URL) -> Bool {
