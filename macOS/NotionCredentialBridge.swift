@@ -20,11 +20,22 @@ guard let request = try? JSONDecoder().decode(Request.self, from: input) else {
     respond(["ok": false, "error": "잘못된 자격증명 브리지 요청입니다."])
 }
 
-let query: [String: Any] = [
+var query: [String: Any] = [
     kSecClass as String: kSecClassGenericPassword,
     kSecAttrService as String: "com.rogan.onlychat.notion",
     kSecAttrAccount as String: "hosted-mcp-oauth"
 ]
+
+#if ONLY_CHAT_KEYCHAIN_TESTING
+var testKeychain: SecKeychain?
+if let path = ProcessInfo.processInfo.environment["ONLY_CHAT_TEST_KEYCHAIN_PATH"] {
+    guard SecKeychainOpen((path as NSString).fileSystemRepresentation, &testKeychain) == errSecSuccess,
+          let testKeychain else {
+        respond(["ok": false, "error": "임시 테스트 키체인을 열지 못했습니다."])
+    }
+    query[kSecMatchSearchList as String] = [testKeychain]
+}
+#endif
 
 switch request.action {
 case "get":
@@ -47,14 +58,29 @@ case "set":
     let updateStatus = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
     if updateStatus == errSecItemNotFound {
         var item = query
+        #if ONLY_CHAT_KEYCHAIN_TESTING
+        if let testKeychain {
+            item.removeValue(forKey: kSecMatchSearchList as String)
+            item[kSecUseKeychain as String] = testKeychain
+        }
+        #endif
         item[kSecValueData as String] = data
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         let addStatus = SecItemAdd(item as CFDictionary, nil)
         guard addStatus == errSecSuccess else { respond(["ok": false, "error": "macOS 키체인에 Notion 연결 정보를 저장하지 못했습니다."]) }
     } else if updateStatus != errSecSuccess {
         respond(["ok": false, "error": "macOS 키체인에 Notion 연결 정보를 저장하지 못했습니다."])
     }
-    respond(["ok": true])
+    var verificationQuery = query
+    verificationQuery[kSecReturnData as String] = true
+    verificationQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+    var verificationResult: CFTypeRef?
+    let verificationStatus = SecItemCopyMatching(verificationQuery as CFDictionary, &verificationResult)
+    guard verificationStatus == errSecSuccess,
+          let savedData = verificationResult as? Data,
+          savedData == data else {
+        respond(["ok": false, "error": "저장된 Notion 연결 정보를 다시 읽어 확인하지 못했습니다."])
+    }
+    respond(["ok": true, "verified": true])
 case "delete":
     let status = SecItemDelete(query as CFDictionary)
     guard status == errSecSuccess || status == errSecItemNotFound else {

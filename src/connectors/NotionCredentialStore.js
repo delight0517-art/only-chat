@@ -43,7 +43,7 @@ class NotionCredentialStore {
         try {
           const response = JSON.parse(stdout.trim());
           if (code !== 0 || !response.ok) throw new Error(response.error || 'macOS 키체인 요청이 실패했습니다.');
-          finish(null, response.value);
+          finish(null, response);
         } catch (error) {
           finish(error instanceof SyntaxError ? new Error('macOS 키체인 응답을 읽지 못했습니다.') : error);
         }
@@ -52,8 +52,16 @@ class NotionCredentialStore {
     });
   }
 
-  async get() { return this._call('get'); }
-  async set(value) { await this._call('set', value); }
+  async get() {
+    const result = await this._call('get');
+    return result?.value ?? null;
+  }
+  async set(value) {
+    const result = await this._call('set', value);
+    if (result?.verified !== true) {
+      throw new Error('Notion 로그인 정보의 저장 결과를 확인하지 못했습니다.');
+    }
+  }
   async delete() { await this._call('delete'); }
 }
 
