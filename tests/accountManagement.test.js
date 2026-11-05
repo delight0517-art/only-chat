@@ -27,5 +27,22 @@ const { manageRouterAccount } = require('../src/ui/desktop/accountManagement');
   assert.deepEqual(rows('chatgpt', { accountRouter: { accounts } }).map(a => a.id), ['a', 'b']);
   assert.deepEqual(rows('google', { accountRouter: { accounts } }).map(a => a.id), ['ag']);
   assert.deepEqual(rows('chatgpt', { tiers: [{ id: 'fake', provider: 'codex' }] }), [], 'presets are never displayed as logged-in accounts');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { DesktopServer } = require('../src/ui/desktop/server');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-account-isolation-'));
+  let server;
+  try {
+    server = new DesktopServer({ isolated: true, port: 0, dataDir: root, enableQuotaRefresh: false });
+    await server.start();
+    const origin = `http://127.0.0.1:${server.port}`;
+    const response = await fetch(`${origin}/api/account-router/account`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add-chatgpt' }) });
+    assert.equal(response.status, 503, 'isolated tests cannot launch login or mutate real accounts');
+    const blocked = await fetch(`${origin}/api/account-router/account`, { method: 'POST', headers: { Origin: 'https://untrusted.example', 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(blocked.status, 403, 'cross-origin account mutation is rejected');
+  } finally {
+    await server?.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
   console.log('accountManagement: exact-account deletion, reconnect, unique OAuth add, error propagation and real-account rows passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

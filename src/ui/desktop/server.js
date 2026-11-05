@@ -1455,6 +1455,11 @@ class DesktopServer {
     }
 
     if (pathname === '/api/account-router/account' && req.method === 'POST') {
+      if (this.isolated) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: '격리 테스트에서는 실제 계정을 변경하지 않습니다.' }));
+        return;
+      }
       try {
         const body = await this._readBody(req);
         const adapter = await this.engine._getAccountRouterAdapter();
