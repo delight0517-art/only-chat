@@ -616,6 +616,24 @@ async function main() {
   assert.doesNotMatch(todoListTurn.response, /TODO-FAKE-99/);
   assert.ok(todoListOutput.join('').includes('TODO-REAL-01'));
 
+  const genericCheckboxTodoListTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_generic_checkbox_todo_list',
+    prompt: 'TODO_ROADMAP.md에서 미완료 체크박스 목록을 찾아서 보고해.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_generic_checkbox_todo_list' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'generic-checkbox-read', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'generic-checkbox-read', name: 'read_file', args: { path: 'TODO_ROADMAP.md' } }, result: '- [ ] 2026-11-05 local task without an ID prefix\\n- [ ] Another unchecked row' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '미완료 체크박스가 없습니다.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(genericCheckboxTodoListTurn.ok, true, 'a successful read returns unchecked checklist rows without TODO IDs');
+  assert.match(genericCheckboxTodoListTurn.response, /- \[ \] 2026-11-05 local task without an ID prefix/);
+  assert.match(genericCheckboxTodoListTurn.response, /- \[ \] Another unchecked row/);
+  assert.doesNotMatch(genericCheckboxTodoListTurn.response, /체크박스를 찾지 못했습니다|체크박스가 없습니다/);
+
   const groundedTodoOutput = [];
   const groundedTodoTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_grounding',

@@ -150,9 +150,16 @@ function isTodoListEvidenceRequest(prompt) {
 function groundTodoListAnswer(prompt, readFileResults = []) {
   const evidence = readFileResults.map(readFileText).filter(Boolean).join('\n');
   const rows = [...evidence.matchAll(/^\s*-\s+\[ \]\s+\*\*(TODO-[A-Za-z0-9_-]+)\.\s*([^*\n]+)\*\*:?[^\n]*/gmi)];
-  if (!rows.length) return evidence.trim()
-    ? 'Only Chat read_file 반환 범위에서 미완료 TODO 체크박스를 찾지 못했습니다. 이 범위만으로 목록이 없다고 판단할 수 없습니다.'
-    : 'Only Chat read_file 근거가 없어 미완료 TODO를 확인하지 못했습니다.';
+  if (!rows.length) {
+    const genericRows = [...evidence.matchAll(/^\s*-\s+\[ \]\s+.+$/gmi)];
+    if (genericRows.length) {
+      const limit = /(?:하나|한\s*개|one\b|single\b)/i.test(String(prompt || '')) ? 1 : 5;
+      return `Only Chat read_file에서 확인한 미완료 체크박스 (최대 ${limit}개):\n${genericRows.slice(0, limit).map(match => match[0].trim().slice(0, 1400)).join('\n')}`;
+    }
+    return evidence.trim()
+      ? 'Only Chat read_file 반환 범위에서 미완료 TODO 체크박스를 찾지 못했습니다. 이 범위만으로 목록이 없다고 판단할 수 없습니다.'
+      : 'Only Chat read_file 근거가 없어 미완료 TODO를 확인하지 못했습니다.';
+  }
   const limit = /(?:하나|한\s*개|one\b|single\b)/i.test(String(prompt || '')) ? 1 : 5;
   const bounded = /\[Only Chat read_file bounded output: omitted \d+ middle lines/i.test(evidence);
   const label = bounded ? '반환된 읽기 범위에서' : 'read_file 원문에서';
