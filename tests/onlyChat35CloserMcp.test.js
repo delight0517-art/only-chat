@@ -43,7 +43,8 @@ async function main() {
     ] },
     { requests: [{ requestId: 'wake-pending', client: 'onlychat', status: 'pending_user_approval' }] },
     { requestId: 'wake-pending', client: 'onlychat', status: 'cancelled' },
-    { available: true, fresh: true, ageSeconds: 0.2, policy: { owner: '35Closer', remotePowerChangesAllowed: false } }
+    { available: true, fresh: true, ageSeconds: 0.2, policy: { owner: '35Closer', remotePowerChangesAllowed: false } },
+    { resources: { available: true, memory: { usedPercent: 99.4, pressurePercent: 64, compressedMb: 5125.4 }, apps: [] } }
   ], calls) });
 
   const submitted = await server.invoke('sleep_request', { idle_minutes: 20 });
@@ -86,13 +87,19 @@ async function main() {
   assert.equal(status.policy.owner, '35Closer');
   assert.deepEqual(calls[8].args.slice(0, 4), ['agent', '--client', 'onlychat', 'status']);
   await assert.rejects(server.invoke('timer_status', { include_private_details: true }), /takes no arguments/);
+  const resources = await server.invoke('resource_status', {});
+  assert.equal(resources.memory.pressurePercent, 64);
+  assert.equal(resources.memory.compressedMb, 5125.4);
+  assert.deepEqual(calls[9].args.slice(0, 4), ['agent', '--client', 'onlychat', 'status']);
+  await assert.rejects(server.invoke('resource_status', { app_names: true }), /takes no arguments/);
 
   const protocol = await server.handle({ jsonrpc: '2.0', id: 7, method: 'tools/list' });
-  assert.equal(protocol.result.tools.length, 7);
+  assert.equal(protocol.result.tools.length, 8);
   assert.equal(protocol.result.tools.find(tool => tool.name === 'timer_status').annotations.readOnlyHint, true);
+  assert.equal(protocol.result.tools.find(tool => tool.name === 'resource_status').annotations.readOnlyHint, true);
   assert.equal(protocol.result.tools.find(tool => tool.name === 'sleep_request').annotations.destructiveHint, true);
   assert.equal(protocol.result.tools.find(tool => tool.name === 'wake_request').annotations.destructiveHint, true);
-  console.log('onlyChat35CloserMcp.test.js: PASS (sleep/wake intent request, Only Chat filtering, pending-only cancel, validation, MCP listing)');
+  console.log('onlyChat35CloserMcp.test.js: PASS (resource status, sleep/wake intents, Only Chat filtering, pending-only cancel, validation, MCP listing)');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

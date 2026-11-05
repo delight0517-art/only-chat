@@ -13,7 +13,13 @@ const HAS_TIMEZONE = /(Z|[+-]\d{2}:\d{2})$/i;
 const tools = [
   {
     name: 'timer_status', title: 'Read 35Closer Timer status',
-    description: 'Read the fresh 35Closer Timer state, idle policy, and Only Chat power-approval boundary. This does not change timer or power settings.',
+    description: 'Read fresh 35Closer Timer state, system memory pressure, compressed memory, idle-app status, idle policy, and the Only Chat power-approval boundary. This does not change timer, cleanup, or power settings.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+  },
+  {
+    name: 'resource_status', title: 'Read 35Closer resource status',
+    description: 'Read the current 35Closer memory pressure, compressed memory, and bounded idle-app inspection. Unknown or legacy metrics remain unknown. This does not close apps or change settings.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   },
@@ -114,6 +120,11 @@ function createServer(options = {}) {
     if (name === 'timer_status') {
       if (Object.keys(args).length) throw new Error('timer_status takes no arguments.');
       return run('status');
+    }
+    if (name === 'resource_status') {
+      if (Object.keys(args).length) throw new Error('resource_status takes no arguments.');
+      const status = await run('status');
+      return status.resources?.available === true ? status.resources : { available: false };
     }
     if (name === 'sleep_request') {
       const keys = Object.keys(args);
