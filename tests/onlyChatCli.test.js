@@ -314,7 +314,7 @@ async function main() {
     now += goalRequests.length === 1 ? 400 : 700;
     return new Response([
       `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_0123456789abcdef' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'message_delta', delta: 'step complete' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: `step ${goalRequests.length} complete` })}\n\n`,
       `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
       'data: [DONE]\n\n'
     ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
@@ -350,6 +350,61 @@ async function main() {
   assert.equal(fixedGoal.iteration, 2, 'fixed-duration ignores an early GOAL_COMPLETE marker and continues to the deadline');
   assert.equal(fixedGoal.completedEarly, false);
   assert.match(fixedRequests[1].prompt, /전체 시간이 끝나기 전에는 GOAL_COMPLETE/);
+
+  let contextGoalNow = 1_000;
+  let workspaceContextLoadArgs = null;
+  let workspaceContextPrompt = '';
+  const workspaceContextGoal = await runOnlyChatGoal({
+    baseUrl: 'http://127.0.0.1:8899', prompt: 'audit the current workspace locks', durationMs: 10_000,
+    toolProfile: 'file-edit',
+    workspaceContextLoader: async options => {
+      workspaceContextLoadArgs = options;
+      return {
+        workspaceRoot: '/workspace/only-chat', integrationBranch: 'main', gitHead: 'abc123',
+        lockEvidence: {
+          repositoryLeaseInventory: { available: true, records: [] },
+          inProcessPathLocks: { available: true, locks: [] },
+          workspaceExecution: { available: true, state: 'none' }
+        },
+        integrationGuard: { leasesClear: true }, activeBacklog: []
+      };
+    },
+    fetchImpl: async (url, options) => {
+      workspaceContextPrompt = JSON.parse(options.body).prompt;
+      contextGoalNow += 100;
+      return new Response([
+        `data: ${JSON.stringify({ type: 'message_delta', delta: 'GOAL_COMPLETE' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+        'data: [DONE]\n\n'
+      ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    now: () => contextGoalNow, write: () => {}
+  });
+  assert.equal(workspaceContextLoadArgs.baseUrl, 'http://127.0.0.1:8899');
+  assert.equal(workspaceContextLoadArgs.workspaceRoot, undefined, 'read scope uses the default workspace without approving writes');
+  assert.match(workspaceContextPrompt, /\[Only Chat local coordination snapshot; refreshed for this turn\]/);
+  assert.match(workspaceContextPrompt, /agent-coord leases \(exact paths and owners only\): none/);
+  assert.equal(workspaceContextGoal.ok, true);
+  assert.equal(workspaceContextGoal.completedEarly, true);
+
+  let repeatedNoProgressCalls = 0;
+  let repeatedNoProgressNow = 1_000;
+  const repeatedNoProgressGoal = await runOnlyChatGoal({
+    baseUrl: 'http://127.0.0.1:8899', prompt: 'audit workspace state', durationMs: 60_000,
+    fetchImpl: async () => {
+      repeatedNoProgressCalls++;
+      repeatedNoProgressNow += 100;
+      return new Response([
+        `data: ${JSON.stringify({ type: 'message_delta', delta: 'GOAL_COMPLETE: pending workspace/lease inspection.' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+        'data: [DONE]\n\n'
+      ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    now: () => repeatedNoProgressNow, write: () => {}
+  });
+  assert.equal(repeatedNoProgressCalls, 2, 'a non-fixed Goal stops when it repeats the same no-tool answer');
+  assert.equal(repeatedNoProgressGoal.ok, false);
+  assert.equal(repeatedNoProgressGoal.category, 'goal_no_progress');
 
   now = 1_000;
   let repeatedCompletionCalls = 0;

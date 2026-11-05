@@ -882,6 +882,7 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
   const interruptedTurns = [];
   let consecutiveInterruptedTurns = 0;
   let previousNoToolCompletionClaim = false;
+  let previousNoToolResponse = '';
   let repeatedNoProgress = 0;
   while (now() < deadline) {
     iteration++;
@@ -901,8 +902,8 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
     let result;
     try {
       let workspaceContext = null;
-      if (approveWorkspaceWrite) {
-        workspaceContext = await workspaceContextLoader({ baseUrl, workspaceRoot: approveWorkspaceWrite, fetchImpl });
+      if (approveWorkspaceWrite || toolProfile === 'file-edit') {
+        workspaceContext = await workspaceContextLoader({ baseUrl, workspaceRoot: approveWorkspaceWrite || undefined, fetchImpl });
         const inventory = workspaceContext.lockEvidence?.repositoryLeaseInventory;
         const leaseSummary = inventory?.available === true
           ? inventory.records.length === 0 ? '활성 repository lease 없음' : `repository lease ${inventory.records.length}건 · 경로 범위 확인 필요`
@@ -944,6 +945,12 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
     const normalizedResponse = result.response.trim().replace(/\s+/g, ' ').toLowerCase();
     const completionClaim = /(?:goal\s+complete|no\s+(?:remaining|further)\s+(?:actionable\s+)?tasks?|nothing\s+left\s+to\s+do|all\s+(?:tasks|work)\s+(?:are\s+)?complete|목표.{0,12}완료|남은\s*작업.{0,12}없|더\s*이상.{0,12}(?:할\s*일|작업).{0,8}없|모두\s*완료)/i.test(normalizedResponse);
     const noToolTurn = (result.execution?.toolCalls || 0) === 0 && (result.execution?.successfulTools || 0) === 0;
+    if (!fixedDuration && noToolTurn && normalizedResponse && normalizedResponse === previousNoToolResponse) {
+      const reason = '같은 도구 없는 응답이 반복되어 진행 증거가 없습니다.';
+      write(`\n[Goal 정지: ${reason}]\n`);
+      return { ok: false, category: 'goal_no_progress', reason, sessionId, iteration, deadline, response: result.response };
+    }
+    previousNoToolResponse = noToolTurn ? normalizedResponse : '';
     if (fixedDuration && noToolTurn && completionClaim && previousNoToolCompletionClaim) {
       repeatedNoProgress++;
     } else {
