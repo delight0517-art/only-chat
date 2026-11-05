@@ -90,7 +90,7 @@ class PriorityChainEngine {
       try {
         const raw = fs.readFileSync(this.configFile, 'utf8');
         const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.tiers) && parsed.tiers.length > 0) {
+        if (parsed && Array.isArray(parsed.tiers)) {
           return {
             enabled: parsed.enabled !== false,
             mode: parsed.mode || 'priority-first',
@@ -281,6 +281,26 @@ class PriorityChainEngine {
     this.chain.updatedAt = Date.now();
     this._save();
     this._initHealthStates();
+    return true;
+  }
+
+  /**
+   * Remove a provider/account tier by id
+   */
+  removeTier(tierId) {
+    const idx = this.chain.tiers.findIndex(t => t.id === tierId);
+    if (idx < 0) return false;
+    this.chain.tiers.splice(idx, 1);
+    this.tierHealth.delete(tierId);
+    if (this.chain.manualTierId === tierId) {
+      this.chain.manualTierId = this.chain.tiers[0]?.id || null;
+    }
+    if (this.lastActiveTierId === tierId) {
+      this.lastActiveTierId = null;
+    }
+    this._normalizeRanks();
+    this.chain.updatedAt = Date.now();
+    this._save();
     return true;
   }
 
