@@ -117,7 +117,7 @@ const activeModelLabel = document.getElementById('activeModelLabel');
 const activeModelAccount = document.getElementById('activeModelAccount');
 const activeModelVariant = document.getElementById('activeModelVariant');
 const MODEL_SELECTION_KEY = 'onlyChatSelectedModel';
-let selectedModelId = localStorage.getItem(MODEL_SELECTION_KEY) || 'gpt-6-luna';
+let selectedModelId = localStorage.getItem(MODEL_SELECTION_KEY) || 'auto';
 const effortPillTrigger = document.getElementById('effortPillTrigger');
 const effortSelectorPopup = document.getElementById('effortSelectorPopup');
 const activeEffortLabel = document.getElementById('activeEffortLabel');
@@ -806,6 +806,12 @@ async function refreshPriorityStatus() {
     if (!data || !Array.isArray(data.tiers)) throw new Error('Priority status response is invalid.');
     if (!isPriorityStatusRefreshCurrent(requestId)) return;
     priorityStatus = data;
+    if (data.routerModels?.length && data.tiers.some(tier => tier.provider === 'account-router')
+      && !localStorage.getItem('onlychat.router-auto-selection.v1')) {
+      selectedModelId = 'auto';
+      localStorage.setItem(MODEL_SELECTION_KEY, 'auto');
+      localStorage.setItem('onlychat.router-auto-selection.v1', 'true');
+    }
     activeTier = data.activeTier;
     const selectedRouteTier = resolveModelTierFromStatus(data, selectedModelId);
     const workspaceRootInput = document.getElementById('settingsCwdInput');
@@ -908,6 +914,13 @@ function displayPriorityModel(modelId) {
   return names[String(modelId || '').toLowerCase()] || String(modelId || '모델 미지정');
 }
 
+function displaySelectedModel(modelId) {
+  const prefix = 'account-router:';
+  return String(modelId || '').toLowerCase().startsWith(prefix)
+    ? `${displayPriorityModel(String(modelId).slice(prefix.length))} · AI Router`
+    : displayPriorityModel(modelId);
+}
+
 function priorityRouteHealth(tier) {
   const health = tier?.health || {};
   const failed = health.quotaState === 'provider-unavailable' || health.throttledReason === 'provider-error';
@@ -936,7 +949,7 @@ function renderActiveModelSelection() {
     ? (routeTier ? `${routingMode} · ${displayPriorityModel(routeTier.model)}${String(routeTier.model).toLowerCase() === 'gpt-6-luna' && selectedReasoningEffort === 'low' ? ' + Light' : ''}` : `${routingMode} · 모델 확인 중`)
     : selectedModelId === 'gpt-6-luna' && selectedReasoningEffort === 'low'
       ? 'GPT-6 Luna + Light'
-      : displayPriorityModel(selectedModelId);
+      : displaySelectedModel(selectedModelId);
   if (!routeTier) {
     const noActiveRoute = selectedModelId === 'auto' ? '사용 가능한 실행 계정 없음' : '선택 모델을 사용할 수 있는 계정 없음';
     if (activeModelLabel) activeModelLabel.textContent = selectedModel;
@@ -992,19 +1005,23 @@ function syncAvailableModelOptions() {
   const tiers = priorityStatus?.tiers;
   if (!container || !Array.isArray(tiers)) return;
   const manualTier = priorityStatus.enabled === false ? priorityStatus.activeTier : null;
-  const models = [...new Set((manualTier ? [manualTier] : tiers)
+  const localModels = [...new Set((manualTier ? [manualTier] : tiers)
     .filter(tier => tier.enabled !== false && typeof tier.model === 'string' && tier.model.trim() && tier.model.trim().toLowerCase() !== 'auto')
     .map(tier => tier.model.trim()))];
+  const routerModels = [...new Set((priorityStatus.routerModels || []).filter(model => typeof model === 'string' && model.trim())
+    .map(model => `account-router:${model.trim().toLowerCase()}`))];
+  const models = [...localModels, ...routerModels];
   const modelSignature = JSON.stringify(models.map(model => model.toLowerCase()));
   const targetSelect = document.getElementById('modelSwitchTarget');
-  if (targetSelect && targetSelect.dataset.modelSignature !== modelSignature) {
+  const localModelSignature = JSON.stringify(localModels.map(model => model.toLowerCase()));
+  if (targetSelect && targetSelect.dataset.modelSignature !== localModelSignature) {
     const previousTarget = targetSelect.value;
-    targetSelect.replaceChildren(...models.map(model => {
+    targetSelect.replaceChildren(...localModels.map(model => {
       const option = document.createElement('option'); option.value = model.toLowerCase(); option.textContent = displayPriorityModel(model); return option;
     }));
-    if (models.some(model => model.toLowerCase() === previousTarget)) targetSelect.value = previousTarget;
-    else if (models.some(model => model.toLowerCase() === 'gpt-6-sol')) targetSelect.value = 'gpt-6-sol';
-    targetSelect.dataset.modelSignature = modelSignature;
+    if (localModels.some(model => model.toLowerCase() === previousTarget)) targetSelect.value = previousTarget;
+    else if (localModels.some(model => model.toLowerCase() === 'gpt-6-sol')) targetSelect.value = 'gpt-6-sol';
+    targetSelect.dataset.modelSignature = localModelSignature;
   }
   if (container.dataset.modelSignature !== modelSignature) {
     const focusedModel = container.contains(document.activeElement) ? document.activeElement?.dataset?.model : null;
@@ -1017,7 +1034,7 @@ function syncAvailableModelOptions() {
       option.setAttribute('role', 'option');
       const title = document.createElement('span');
       title.className = 'model-opt-title';
-      title.textContent = displayPriorityModel(model);
+      title.textContent = displaySelectedModel(model);
       const check = document.createElement('span');
       check.className = 'model-check';
       check.textContent = '✓';
@@ -1037,7 +1054,8 @@ function syncAvailableModelOptions() {
   const autoOption = modelSelectorPopup?.querySelector('.model-option[data-model="auto"]');
   const automaticTitle = document.getElementById('automaticModelOptionTitle');
   const automaticDescription = document.getElementById('automaticModelOptionDescription');
-  if (automaticTitle) automaticTitle.textContent = priorityStatus.enabled === false ? '현재 선택 계정 모델' : '자동 우선순위 모델';
+  if (automaticTitle) automaticTitle.textContent = priorityStatus.enabled === false ? '현재 선택 계정 모델'
+    : priorityStatus.activeTier?.provider === 'account-router' ? 'AI Account Router · 자동 선택' : '자동 우선순위 모델';
   if (automaticDescription) automaticDescription.textContent = priorityStatus.enabled === false
     ? '수동으로 선택한 계정의 모델을 사용합니다'
     : '우선순위 설정에 따라 모델과 계정을 선택합니다';
@@ -1056,7 +1074,20 @@ function resolveSelectedModelTier() {
 
 function resolveModelTierFromStatus(status, modelSelection) {
   if (!status) return null;
-  if (modelSelection === 'auto') return status.activeTier || null;
+  if (modelSelection === 'auto') {
+    const tier = status.activeTier;
+    const account = tier?.provider === 'account-router'
+      ? status.accountRouter?.accounts?.find(item => item.id === status.accountRouter.activeAccountId) : null;
+    return account ? { ...tier, model: account.model, account: `Router 내부 ${account.rank}순위 · ${account.name || account.id}` } : tier || null;
+  }
+  const routerPrefix = 'account-router:';
+  if (modelSelection.startsWith(routerPrefix)) {
+    const model = modelSelection.slice(routerPrefix.length).trim().toLowerCase();
+    return (status.routerModels || []).some(item => String(item).trim().toLowerCase() === model)
+      ? { id: 'account-router-local', name: 'AI Router', provider: 'account-router', model,
+        enabled: true, providerReady: status.accountRouterReadiness || { connected: false, message: 'AI Router 실제 요청 확인 필요' }, health: { quotaState: 'unknown', isThrottled: false } }
+      : null;
+  }
   const tiers = status.tiers;
   if (!Array.isArray(tiers)) return null;
   const threshold = Number(status.thresholds?.totalRemainingPercent ?? 10);
@@ -1162,7 +1193,7 @@ function renderDrawerTiers() {
         ${distinctAccounts.sort((a, b) => a.tier - b.tier).map(tier => {
           const tierIdentity = /secondary/i.test(`${tier.id} ${tier.name}`) ? '보조 계정' : /primary/i.test(`${tier.id} ${tier.name}`) ? '주 계정' : '계정';
           const isActive = tier.id === selectedRouteTier?.id;
-          const rankLabel = tier.tier === 2 ? '2순위 · Codex 보조 계정' : tier.tier === 3 ? '3순위 · Codex 주 계정' : `${tier.tier}순위 · Codex ${tierIdentity}`;
+          const rankLabel = `${tier.tier}순위 · Codex ${tierIdentity}`;
           return `<div class="priority-account-pair-row tier-${escapeHtml(tier.tier)} ${isActive ? 'active' : ''}" aria-label="${escapeHtml(rankLabel)} · ${escapeHtml(tier.email || '이메일 정보 없음')} · 계정 ID ${escapeHtml(tier.account || tier.id || 'ID 정보 없음')} · ${isActive ? '현재 선택/라우팅' : '폴백'}">
             <span class="priority-account-pair-rank"><strong>${escapeHtml(tier.tier)}순위</strong><small>${isActive ? '현재 라우팅' : '폴백 계정'}</small></span>
             <span class="priority-account-pair-identity"><strong>${escapeHtml(rankLabel)} · ${escapeHtml(displayPriorityModel(tier.model))}</strong><span>로그인 이메일 · ${escapeHtml(tier.email || '이메일 정보 없음')}</span><span>계정 ID · ${escapeHtml(tier.account || tier.id || 'ID 정보 없음')}</span></span>
@@ -1227,7 +1258,7 @@ function renderDrawerTiers() {
       continue;
     }
     card.className = `tier-list-card priority-account-card ${isActive ? 'active' : ''} ${isCodex ? 'codex-account' : 'google-account'} tier-${tier.tier}`;
-    const explicitRankLabel = tier.tier === 2 ? '2순위 · Codex 보조 계정' : tier.tier === 3 ? '3순위 · Codex 주 계정' : `${tier.tier}순위 계정`;
+    const explicitRankLabel = `${tier.tier}순위 · ${isCodex ? `Codex ${tierIdentity}` : tier.name || tier.provider}`;
     card.setAttribute('aria-label', `${explicitRankLabel} · ${tier.email || '이메일 정보 없음'} · 계정 ID ${tier.account || tier.id || 'ID 정보 없음'} · ${isActive ? '현재 선택/라우팅' : '폴백'}`);
     card.innerHTML = `
       <div class="priority-account-heading">
@@ -5151,7 +5182,7 @@ document.addEventListener('click', e => {
 
 async function setAsRank(tierOrProviderId, rank) {
   const providerProfile = priorityStatus?.tiers?.find(tier => tier.id === tierOrProviderId);
-  if (!providerProfile || !Number.isInteger(rank) || rank < 1 || rank > 3) return;
+  if (!providerProfile || !Number.isInteger(rank) || rank < 1 || rank > priorityStatus.tiers.length) return;
   // Close kebab
   document.querySelectorAll('.kebab-popover').forEach(p => p.classList.remove('open'));
   
@@ -5538,6 +5569,59 @@ async function runScheduleNow() {
   } catch (error) { scheduleFormStatus(error.message, true); }
 }
 
+function renderRouterAccountControls(router) {
+  if (!router?.accounts?.length) return '<p>계정·모델 변경 기능을 적용하려면 Only Chat을 한 번 다시 열어주세요.</p>';
+  return `<section aria-label="AI Account Router 계정과 모델">
+    <h4>AI Account Router · 자동 연결됨</h4>
+    <p>Router 내부 계정 순서 · 잔여 한도 ${escapeHtml(router.thresholdPercent ?? 10)}% 이하이면 다음 계정으로 전환합니다.</p>
+    <p data-router-save-status role="status" aria-live="polite"></p>
+    <ol>${router.accounts.map((account, index) => {
+      const models = account.models?.length ? account.models : [{ id: account.model, name: account.model }];
+      const state = account.availability === 'available' ? '실제 요청 확인됨'
+        : account.availability === 'authentication_required' ? '자격 증명 복구 필요' : '응답 미검증';
+      return `<li><strong>Router 내부 ${index + 1}순위 · ${escapeHtml(account.name || account.id)}</strong>
+        <span>${escapeHtml(state)} · 잔여 ${Number.isFinite(account.remainingPercent) ? `${Math.round(account.remainingPercent)}%` : '미확인'}</span>
+        <label>사용 모델 <select data-router-model="${index}" aria-label="Router ${index + 1}순위 모델">${models.map(model => `<option value="${escapeHtml(model.id)}" ${model.id === account.model ? 'selected' : ''}>${escapeHtml(model.name || model.id)}</option>`).join('')}</select></label>
+        <button type="button" class="btn-rank-action" data-router-move="${index}" data-direction="-1" ${index === 0 ? 'disabled' : ''} aria-label="Router ${index + 1}순위 계정을 위로 이동">위로</button>
+        <button type="button" class="btn-rank-action" data-router-move="${index}" data-direction="1" ${index === router.accounts.length - 1 ? 'disabled' : ''} aria-label="Router ${index + 1}순위 계정을 아래로 이동">아래로</button></li>`;
+    }).join('')}</ol></section>`;
+}
+
+function bindRouterAccountControls(container, router) {
+  if (!router?.accounts?.length) return;
+  const save = async (endpoint, body) => {
+    const controls = [...container.querySelectorAll('[data-router-model], [data-router-move]')];
+    const disabled = controls.map(control => control.disabled);
+    let saved = false;
+    controls.forEach(control => { control.disabled = true; });
+    try {
+      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || 'Router 설정 저장 실패');
+      saved = true;
+      await refreshPriorityStatus();
+    } catch (error) {
+      const status = container.querySelector('[data-router-save-status]');
+      if (status) status.textContent = error.message;
+    } finally {
+      controls.forEach((control, index) => { control.disabled = disabled[index]; });
+      if (saved) await loadStagePriorityTiers();
+    }
+  };
+  container.querySelectorAll('[data-router-model]').forEach(select => select.addEventListener('change', () => {
+    const account = router.accounts[Number(select.dataset.routerModel)];
+    if (account) void save('/api/account-router/model', { accountId: account.id, model: select.value });
+  }));
+  container.querySelectorAll('[data-router-move]').forEach(button => button.addEventListener('click', () => {
+    const index = Number(button.dataset.routerMove);
+    const next = index + Number(button.dataset.direction);
+    if (!Number.isInteger(index) || next < 0 || next >= router.accounts.length) return;
+    const accountIds = router.accounts.map(account => account.id);
+    [accountIds[index], accountIds[next]] = [accountIds[next], accountIds[index]];
+    void save('/api/account-router/reorder', { accountIds, expectedRevision: router.revision });
+  }));
+}
+
 // Load Priority Tiers into Settings > Models Stage
 async function loadStagePriorityTiers() {
   const container = document.getElementById('stagePriorityTiersGrid');
@@ -5567,8 +5651,7 @@ async function loadStagePriorityTiers() {
     container.innerHTML = tiers.map((tier, idx) => {
       const isActive = tier.id === activeTierId;
       const requestedRank = Number(tier.tier);
-      const rankNum = Number.isInteger(requestedRank) && requestedRank >= 1 && requestedRank <= 3
-        ? requestedRank : Math.min(idx + 1, 3);
+      const rankNum = Number.isInteger(requestedRank) && requestedRank >= 1 ? requestedRank : idx + 1;
       const isCodex = String(tier.provider || '').toLowerCase().includes('codex');
       const tierIdentity = /secondary/i.test(`${tier.id} ${tier.name}`) ? '보조 계정' : /primary/i.test(`${tier.id} ${tier.name}`) ? '주 계정' : '계정';
       const accountId = tier.account || tier.id || 'ID 정보 없음';
@@ -5579,18 +5662,17 @@ async function loadStagePriorityTiers() {
             <span>${rankNum}순위</span>
             ${isActive ? `<span style="font-size: 11px; font-weight: 700; background: #f06a35; color: #fff; padding: 3px 8px; border-radius: 6px;">${data.enabled === false ? '수동 고정 계정' : '현재 자동 라우팅 계정'}</span>` : ''}
           </div>
-          <div class="priority-rank-name">${rankNum === 2 ? '2순위 · Codex 보조 계정' : rankNum === 3 ? '3순위 · Codex 주 계정' : `${rankNum}순위 계정 · ${isCodex ? `OpenAI Codex ${tierIdentity}` : escapeHtml(tier.name || tier.provider || '계정')}`}</div>
+          <div class="priority-rank-name">${rankNum}순위 · ${isCodex ? `OpenAI Codex ${tierIdentity}` : escapeHtml(tier.name || tier.provider || '계정')}</div>
           <div class="priority-rank-model"><strong>${isActive ? '현재 선택/라우팅 모델' : '폴백 모델'}</strong><span>${escapeHtml(displayPriorityModel(tier.model))}</span></div>
           <div class="priority-rank-account"><strong>${isCodex ? `이 순위의 Codex 로그인 계정 (${tierIdentity})` : '이 순위의 로그인 계정'}</strong><span>${escapeHtml(tier.email || '이메일 정보 없음')}</span></div>
           <div class="priority-rank-account-id">계정 식별자 · ${escapeHtml(accountId)}</div>
           ${isCodex ? `<div class="priority-rank-ready ${readiness?.connected ? '' : 'not-ready'}">${escapeHtml(readiness?.connected ? 'Codex 계정 확인됨 · 요청 가능' : readiness?.message || 'Codex 로그인 상태 확인 불가')}</div>` : `<div class="priority-rank-ready ${priorityRouteHealth(tier).className === 'disconnected' ? 'not-ready' : ''}">${escapeHtml(priorityRouteHealth(tier).label)}</div>`}
           <div class="priority-rank-health">${escapeHtml(tierQuotaLabel(tier))}</div>
           <div class="priority-rank-actions">
-            <button class="btn-rank-action" data-priority-rank="1" title="이 계정을 1순위로 설정">1순위</button>
-            <button class="btn-rank-action" data-priority-rank="2" title="이 계정을 2순위로 설정">2순위</button>
-            <button class="btn-rank-action" data-priority-rank="3" title="이 계정을 3순위로 설정">3순위</button>
+            ${tiers.map((_, rank) => `<button class="btn-rank-action" data-priority-rank="${rank + 1}" title="이 경로를 ${rank + 1}순위로 설정">${rank + 1}순위</button>`).join('')}
             <button class="btn-rank-action" data-priority-switch ${isActive && data.enabled === false ? 'disabled' : ''} title="자동 우선순위를 끄고 이 계정을 수동 선택">${isActive && data.enabled === false ? '수동 선택됨' : '수동 선택'}</button>
           </div>
+          ${tier.provider === 'account-router' ? renderRouterAccountControls(data.accountRouter) : ''}
         </div>
       `;
     }).join('');
@@ -5607,6 +5689,7 @@ async function loadStagePriorityTiers() {
         switchButton.addEventListener('click', () => { if (tierId) void switchTier(tierId); });
       }
     });
+    bindRouterAccountControls(container, data.accountRouter);
   } catch (err) {
     if (requestId !== stagePriorityLoadRequestId) return;
     let error = container.querySelector('[data-priority-refresh-error]');

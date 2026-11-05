@@ -50,6 +50,12 @@ async function main() {
 
     assert.equal(await engine._ensureAccountRouterTier(), true);
     assert.deepEqual(chain.chain.tiers.map(tier => tier.id), [
+      'account-router-local', 'antigravity-first', 'codex-secondary', 'codex-primary'
+    ], 'newly discovered Router is the default first route');
+    chain.setTierRank('account-router-local', 4);
+    engine.accountRouterDiscoveryRetryAt = 0;
+    assert.equal(await engine._ensureAccountRouterTier(), false, 'rediscovery preserves the user-edited rank');
+    assert.deepEqual(chain.chain.tiers.map(tier => tier.id), [
       'antigravity-first', 'codex-secondary', 'codex-primary', 'account-router-local'
     ]);
     chain.isTierReady = tier => ['antigravity-first', 'codex-primary', 'account-router-local'].includes(tier.id);
@@ -76,7 +82,10 @@ async function main() {
     assert.equal(await demoEngine._ensureAccountRouterTier(), false);
     assert.equal(demoOnlyChain.chain.tiers.some(tier => tier.provider === 'account-router'), false);
 
-    console.log('accountRouterPriorityRoute.test.js: passed (preserves existing order, selects Router after exhausted/unready tiers, dispatches, ignores demo-only profiles)');
+    const restored = new PriorityChainEngine({ configDir: path.join(tempRoot, 'priority'), notify: () => {} });
+    assert.equal(restored.adoptAccountRouter(), false);
+    assert.equal(restored.chain.tiers[3].id, 'account-router-local', 'user order survives restart');
+    console.log('Router priority: automatic first discovery, persistent user reorder, fallback and demo exclusion passed.');
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

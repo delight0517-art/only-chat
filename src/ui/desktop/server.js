@@ -337,7 +337,11 @@ class DesktopServer {
     const status = this.engine.priorityChain.getStatus();
     status.tiers = status.tiers.map(tier => ({
       ...tier,
-      providerReady: tier.provider === 'codex' ? this.codexAdapter?.getReadiness(tier) || { available: false, connected: false, message: 'Codex 연결 어댑터를 사용할 수 없습니다.' } : { available: true, connected: true, message: '실행 경로 연결됨' }
+      providerReady: tier.provider === 'codex'
+        ? this.codexAdapter?.getReadiness(tier) || { available: false, connected: false, message: 'Codex 연결 어댑터를 사용할 수 없습니다.' }
+        : tier.provider === 'account-router'
+          ? { ...(this.engine.accountRouterReadiness || { available: null, connected: false, verified: false, state: 'unverified', message: 'AI Account Router 실제 요청은 아직 확인되지 않았습니다.' }) }
+          : { available: true, connected: true, message: '실행 경로 연결됨' }
     }));
     status.activeTier = status.tiers.find(tier => tier.id === status.activeTier?.id) || null;
     return status;
@@ -1030,7 +1034,42 @@ class DesktopServer {
 
     // API Routes
     if (pathname === '/api/status' && req.method === 'GET') {
+      let routerChain = null;
+      if (!this.isolated) {
+        try {
+          // Link AI Account Router during the normal app status refresh, not
+          // only after the first chat turn. This is local metadata discovery;
+          // credentials are still verified only by a real provider request.
+          await this.engine._ensureAccountRouterTier();
+          routerChain = await (await this.engine._getAccountRouterAdapter()).getChain();
+        } catch (_) {}
+      }
+      if (routerChain && !this.engine.accountRouterReadiness?.verified) {
+        const configured = routerChain.enabled === true && routerChain.accounts.some(account => account.enabled !== false
+          && account.provider && !['demo', 'unconfigured'].includes(account.provider)
+          && typeof account.model === 'string' && account.model.trim() && account.model.trim().toLowerCase() !== 'unconfigured');
+        const unverified = routerChain.providerState === 'unverified'
+          || routerChain.accounts.some(account => account.availability === 'unverified');
+        this.engine.accountRouterReadiness = {
+          available: configured ? null : false,
+          connected: false,
+          verified: false,
+          state: unverified ? 'unverified' : configured ? 'unknown' : 'unconfigured',
+          message: unverified
+            ? 'AI Account Router 계정 자격 증명이 아직 검증되지 않았습니다.'
+            : configured ? 'AI Account Router 실제 요청 확인이 필요합니다.' : 'AI Account Router에 사용 가능한 계정이 없습니다.'
+        };
+      }
       const status = this.getPriorityStatus();
+      status.accountRouter = routerChain;
+      status.routerIntegrationRevision = '2026-11-05-v1';
+      status.routerModels = routerChain?.enabled === true && Array.isArray(routerChain.accounts)
+        ? [...new Set(routerChain.accounts
+          .filter(account => account.enabled !== false && account.provider && !['demo', 'unconfigured'].includes(account.provider)
+            && typeof account.model === 'string' && account.model.trim() && account.model.trim().toLowerCase() !== 'auto')
+          .map(account => account.model.trim().toLowerCase()))]
+        : [];
+      status.accountRouterReadiness = { ...(this.engine.accountRouterReadiness || {}) };
       status.defaultWorkspaceDir = this.engine.defaultWorkspaceDir || this.engine.workspaceDir;
       status.sessionWorkspaceDir = this.engine.currentSession?.workspaceDir || null;
       status.workspaceDir = status.sessionWorkspaceDir || status.defaultWorkspaceDir;
@@ -1403,6 +1442,27 @@ class DesktopServer {
       const ok = this.engine.priorityChain.setAutomaticPriority(body.enabled);
       res.writeHead(ok ? 200 : 400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok, status: this.getPriorityStatus(), error: ok ? undefined : '자동 우선순위 값이 올바르지 않습니다.' }));
+      return;
+    }
+
+    if (['/api/account-router/reorder', '/api/account-router/model'].includes(pathname) && req.method === 'POST') {
+      try {
+        const body = await this._readBody(req);
+        const adapter = await this.engine._getAccountRouterAdapter();
+        if (pathname.endsWith('/reorder')) await adapter.reorderAccounts({ accountIds: body.accountIds, expectedRevision: body.expectedRevision });
+        else {
+          if (typeof body.accountId !== 'string' || typeof body.model !== 'string') throw Object.assign(new Error('계정과 모델이 필요합니다.'), { status: 400 });
+          await adapter.setAccountModel(body.accountId, body.model);
+        }
+        this.engine.accountRouterDiscoveryRetryAt = 0;
+        await this.engine._ensureAccountRouterTier();
+        const accountRouter = await adapter.getChain();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, accountRouter }));
+      } catch (error) {
+        res.writeHead([400, 403, 409].includes(error.status) ? error.status : 503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error.message }));
+      }
       return;
     }
 
@@ -1977,6 +2037,33 @@ class DesktopServer {
       }
       const modelSelection = typeof body.modelSelection === 'string' ? body.modelSelection : 'auto';
       const normalizedModelSelection = modelSelection.trim().toLowerCase();
+      const isFreeRouterModel = /^(?:openrouter\/free|[a-z0-9_.-]+\/[a-z0-9_.-]+:free)$/i.test(normalizedModelSelection);
+      let freeRouterModelAllowed = false;
+      const accountRouterPrefix = 'account-router:';
+      const selectedAccountRouterModel = normalizedModelSelection.startsWith(accountRouterPrefix)
+        ? normalizedModelSelection.slice(accountRouterPrefix.length) : '';
+      let accountRouterModelAllowed = false;
+      if (selectedAccountRouterModel && body.managerMode !== true && body.fullAccess !== true) {
+        try {
+          const routerChain = await (await this.engine._getAccountRouterAdapter()).getChain();
+          accountRouterModelAllowed = routerChain?.enabled === true && Array.isArray(routerChain.accounts)
+            && routerChain.accounts.some(account => account.enabled !== false && account.provider
+              && !['demo', 'unconfigured'].includes(account.provider)
+              && String(account.model || '').trim().toLowerCase() === selectedAccountRouterModel);
+        } catch (_) {
+          accountRouterModelAllowed = false;
+        }
+      }
+      if (isFreeRouterModel && body.managerMode !== true && body.fullAccess !== true) {
+        try {
+          const routerChain = await (await this.engine._getAccountRouterAdapter()).getChain();
+          freeRouterModelAllowed = routerChain?.enabled === true && Array.isArray(routerChain.accounts)
+            && routerChain.accounts.some(account => account.enabled !== false && String(account.model || '').trim().toLowerCase() === normalizedModelSelection
+              && /^(?:openrouter\/free|[a-z0-9_.-]+\/[a-z0-9_.-]+:free)$/i.test(String(account.model || '').trim().toLowerCase()));
+        } catch (_) {
+          freeRouterModelAllowed = false;
+        }
+      }
       if (body.fullAccess !== undefined && typeof body.fullAccess !== 'boolean') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Full access 상태가 올바르지 않습니다.' }));
@@ -2005,12 +2092,12 @@ class DesktopServer {
       const configuredModels = this.engine.priorityChain.chain.tiers
         .filter(tier => tier.enabled !== false && typeof tier.model === 'string' && tier.model.trim() && tier.model !== 'auto')
         .map(tier => tier.model.trim().toLowerCase());
-      if (normalizedModelSelection !== 'auto' && !configuredModels.includes(normalizedModelSelection)) {
+      if (normalizedModelSelection !== 'auto' && !configuredModels.includes(normalizedModelSelection) && !freeRouterModelAllowed && !accountRouterModelAllowed) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: '선택한 모델이 현재 우선순위 계정에 설정되어 있지 않습니다.' }));
         return;
       }
-      if (normalizedModelSelection !== 'auto' && !this.engine.priorityChain.chain.enabled) {
+      if (normalizedModelSelection !== 'auto' && !freeRouterModelAllowed && !accountRouterModelAllowed && !this.engine.priorityChain.chain.enabled) {
         const manualTier = this.engine.priorityChain.chain.tiers.find(tier => tier.id === this.engine.priorityChain.chain.manualTierId);
         if (!manualTier || String(manualTier.model || '').trim().toLowerCase() !== normalizedModelSelection) {
           res.writeHead(409, { 'Content-Type': 'application/json' });
@@ -2172,7 +2259,10 @@ class DesktopServer {
           signal: turnController.signal,
           reasoningEffort: effectiveReasoningEffort,
           fullAccess: body.fullAccess === true,
-          modelSelection: effectiveModelSelection,
+          routerModelSelection: accountRouterModelAllowed ? selectedAccountRouterModel
+            : freeRouterModelAllowed && effectiveModelSelection === normalizedModelSelection ? normalizedModelSelection : null,
+          accountRouterModelSelection: accountRouterModelAllowed ? selectedAccountRouterModel : null,
+          modelSelection: accountRouterModelAllowed ? 'auto' : effectiveModelSelection,
           managerMode,
           managerSystemMessage,
           managerExecutionAllowed,

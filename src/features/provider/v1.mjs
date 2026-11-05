@@ -208,7 +208,9 @@ function createAccountRouterAdapter(options = {}) {
     const toolCalls = parseToolCalls(message.tool_calls);
     const content = typeof message.content === 'string' ? message.content : '';
     if (content) hooks.onMessageDelta?.(content);
-    return { content, toolCalls, usage: body.usage || null, protocol: 'openai-compatible' };
+    const routing = body.router && typeof body.router.accountId === 'string'
+      ? { accountId: body.router.accountId, rank: body.router.rank, model: body.router.model } : null;
+    return { content, toolCalls, usage: body.usage || null, ...(routing ? { routing } : {}), protocol: 'openai-compatible' };
   }
 
   async function getChain() {
@@ -221,7 +223,24 @@ function createAccountRouterAdapter(options = {}) {
     return body;
   }
 
-  return Object.freeze({ baseUrl, getChain, call });
+  async function updateChain(endpoint, input) {
+    const response = await fetchImpl(`${baseUrl}${endpoint}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Origin: baseUrl },
+      body: JSON.stringify(input), signal: AbortSignal.timeout(5000)
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      const error = new Error(result?.error?.message || 'AI Account Router 설정을 저장하지 못했습니다.');
+      error.status = response.status;
+      throw error;
+    }
+    return result;
+  }
+
+  return Object.freeze({ baseUrl, getChain, call,
+    reorderAccounts: input => updateChain('/api/v1/account-chain/reorder', input),
+    setAccountModel: (id, model) => updateChain(`/api/accounts/${encodeURIComponent(id)}/model`, { model })
+  });
 }
 
 export { DEFAULT_BASE_URL, createAccountRouterAdapter, normalizeBaseUrl, parseToolCalls, toolDefinitions };

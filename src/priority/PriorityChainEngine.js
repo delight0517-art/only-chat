@@ -74,6 +74,7 @@ class PriorityChainEngine {
     this.lastActiveTierId = null;
 
     this.chain = this._load();
+    this._normalizeRanks();
     this._initHealthStates();
   }
 
@@ -94,6 +95,7 @@ class PriorityChainEngine {
             enabled: parsed.enabled !== false,
             mode: parsed.mode || 'priority-first',
             manualTierId: typeof parsed.manualTierId === 'string' ? parsed.manualTierId : null,
+            routerAutoLinked: parsed.routerAutoLinked === true,
             thresholds: parsed.thresholds || { totalRemainingPercent: 10, fiveHourRemainingPercent: 10 },
             tiers: parsed.tiers,
             tierHealth: parsed.tierHealth && typeof parsed.tierHealth === 'object' ? parsed.tierHealth : {},
@@ -124,6 +126,24 @@ class PriorityChainEngine {
       tierHealth: Object.fromEntries([...this.tierHealth.entries()].map(([id, health]) => [id, { ...health }]))
     };
     fs.writeFileSync(this.configFile, JSON.stringify(persisted, null, 2), { mode: 0o600 });
+  }
+
+  _normalizeRanks() {
+    this.chain.tiers.sort((a, b) => (Number(a.tier) || Infinity) - (Number(b.tier) || Infinity));
+    this.chain.tiers.forEach((tier, index) => {
+      tier.tier = index + 1;
+      if (tier.name) tier.name = tier.name.replace(/^\d+순위:\s*/, '');
+    });
+  }
+
+  adoptAccountRouter() {
+    if (this.chain.routerAutoLinked) return false;
+    const router = this.chain.tiers.find(tier => tier.provider === 'account-router');
+    if (!router) return false;
+    this.setTierRank(router.id, 1);
+    this.chain.routerAutoLinked = true;
+    this._save();
+    return true;
   }
 
   _initHealthStates() {
@@ -229,6 +249,7 @@ class PriorityChainEngine {
   setTiers(tiers) {
     if (!Array.isArray(tiers) || tiers.length === 0) return false;
     this.chain.tiers = tiers;
+    this._normalizeRanks();
     this.chain.updatedAt = Date.now();
     this._save();
     this._initHealthStates();
@@ -256,6 +277,7 @@ class PriorityChainEngine {
         description: tierData.description || ''
       });
     }
+    this._normalizeRanks();
     this.chain.updatedAt = Date.now();
     this._save();
     this._initHealthStates();
@@ -266,6 +288,7 @@ class PriorityChainEngine {
    * Assign rank (1순위, 2순위, 3순위) to a specific tier
    */
   setTierRank(tierId, rank) {
+    if (!Number.isInteger(rank) || rank < 1 || rank > this.chain.tiers.length) return false;
     const targetIdx = this.chain.tiers.findIndex(t => t.id === tierId);
     if (targetIdx < 0) return false;
     const target = this.chain.tiers.splice(targetIdx, 1)[0];
@@ -274,7 +297,7 @@ class PriorityChainEngine {
     // Re-index
     this.chain.tiers.forEach((t, i) => {
       t.tier = i + 1;
-      t.name = `${i + 1}순위: ${t.name.replace(/^\d+순위:\s*/, '')}`;
+      if (t.name) t.name = t.name.replace(/^\d+순위:\s*/, '');
     });
     this.chain.updatedAt = Date.now();
     this._save();

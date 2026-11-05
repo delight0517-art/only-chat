@@ -31,12 +31,28 @@ discoveryEngine.isolated = false;
 const originalTier = { id: 'codex-primary', provider: 'codex' };
 discoveryEngine.priorityChain = {
   chain: { enabled: true, tiers: [originalTier] },
+  adoptAccountRouter() { return false; },
   upsertTier(tier) { this.chain.tiers.push(tier); }
 };
 discoveryEngine.accountRouterAdapter = { getChain: async () => ({ enabled: true, accounts: [{ id: 'provider-1', enabled: true, provider: 'openai', model: 'gpt-model' }] }) };
 assert.equal(await discoveryEngine._ensureAccountRouterTier(), true);
 assert.deepEqual(discoveryEngine.priorityChain.chain.tiers.map(tier => tier.id), ['codex-primary', 'account-router-local']);
 assert.equal(await discoveryEngine._ensureAccountRouterTier(), false, 'a discovered Router tier is not duplicated');
+const existingRouterEngine = Object.create(AgentEngine.prototype);
+existingRouterEngine.isolated = false;
+existingRouterEngine.accountRouterDiscoveryRetryAt = 0;
+existingRouterEngine.accountRouterReadiness = { verified: false };
+const existingRouterTier = { id: 'account-router-local', provider: 'account-router', model: 'auto' };
+existingRouterEngine.priorityChain = { chain: { enabled: true, tiers: [existingRouterTier] }, adoptAccountRouter() { return false; }, upsertTier() { throw new Error('an existing Router tier must not be duplicated'); } };
+let existingRouterDiscoveryCount = 0;
+existingRouterEngine.accountRouterAdapter = { getChain: async () => {
+  existingRouterDiscoveryCount += 1;
+  return { enabled: true, providerState: 'unverified', accounts: [{ id: 'provider-1', enabled: true, provider: 'openai', model: 'gpt-model' }] };
+} };
+assert.equal(await existingRouterEngine._ensureAccountRouterTier(), false);
+assert.equal(existingRouterDiscoveryCount, 1, 'a persisted Router tier still refreshes shared Router state');
+assert.equal(existingRouterEngine.accountRouterReadiness.state, 'unverified');
+assert.equal(existingRouterEngine.priorityChain.chain.tiers.length, 1);
 const emptyRouterEngine = Object.create(AgentEngine.prototype);
 emptyRouterEngine.isolated = false;
 emptyRouterEngine.priorityChain = { chain: { enabled: true, tiers: [originalTier] }, upsertTier() { throw new Error('empty profiles must not alter the chain'); } };
@@ -61,7 +77,7 @@ assert.equal(payload.model, 'auto');
 assert.deepEqual(payload.messages, [{ role: 'user', content: 'hi' }]);
 assert.equal(payload.stream, false);
 assert.equal(payload.tool_choice, 'auto');
-assert.equal(payload.tools.length, 52, 'default policy exposes the current complete provider tool set');
+assert.deepEqual(payload.tools.map(item => item.function.name), toolDefinitions().map(item => item.function.name), 'default policy exposes the current complete provider tool set');
 for (const name of ['joint_development_list', 'joint_development_read', 'joint_development_assess', 'joint_development_create']) {
   assert.ok(payload.tools.some(tool => tool.function.name === name), `default policy exposes ${name}`);
 }
@@ -103,6 +119,13 @@ assert.equal(routed.content, 'router result');
 assert.equal(routedTier.tier.id, 'router-local');
 assert.equal(routedTier.context.reasoningEffort, 'low');
 assert.equal(routedTier.context.approvalPolicy, 'read-only');
+assert.deepEqual(engine.accountRouterReadiness, { available: true, connected: true, verified: true, state: 'connected', message: 'AI Account Router 실제 요청 성공' });
+const failedRouterEngine = Object.create(AgentEngine.prototype);
+failedRouterEngine.isolated = false;
+failedRouterEngine.tools = { approvalPolicy: 'read-only' };
+failedRouterEngine.accountRouterAdapter = { call: async () => { throw new Error('AI Account Router returned HTTP 503 (missing_credential).'); } };
+await assert.rejects(failedRouterEngine._callProviderWithFallback({ id: 'router-failed', provider: 'account-router', model: 'auto' }, [{ role: 'user', content: 'hi' }], {}, { reasoningEffort: 'low' }), /missing_credential/);
+assert.deepEqual(failedRouterEngine.accountRouterReadiness, { available: false, connected: false, verified: false, state: 'authentication', message: 'AI Account Router 인증을 확인해야 합니다.' });
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-router-tool-loop-'));
 let integrationEngine;

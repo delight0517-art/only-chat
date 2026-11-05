@@ -61,7 +61,7 @@ function providerFailureCategory(error) {
   if (['approval_required', 'approval_denied'].includes(error?.category)) return error.category;
   const message = String(error?.message || error || '');
   if (/\b429\b|too many requests|quota|rate[\s_-]?limit|resource.?exhausted/i.test(message)) return 'quota_rate_limit';
-  if (/unauthori[sz]ed|authentication required|not logged in|\b401\b|invalid credential/i.test(message)) return 'authentication';
+  if (/unauthori[sz]ed|authentication required|not logged in|missing_credential|sign.?in.{0,20}required|invalid_grant|\b401\b|invalid credential/i.test(message)) return 'authentication';
   if (/model_not_found|model.{0,30}(?:unavailable|not found|not supported)|unsupported model/i.test(message)) return 'model_unavailable';
   if (/sandbox|permission denied|not permitted|access denied|샌드박스|권한 거부|권한 차단/i.test(message)) return 'sandbox_permission_blocked';
   if (/network|\b(?:econn|enotfound|ehostunreach|etimedout|eai_again)\b|fetch failed|connection refused/i.test(message)) return 'network_unavailable';
@@ -82,6 +82,13 @@ function safeProviderTier(tier) {
 class AgentEngine {
   constructor(options = {}) {
     this.isolated = options.isolated === true;
+    this.accountRouterReadiness = {
+      available: null,
+      connected: false,
+      verified: false,
+      state: 'unverified',
+      message: 'AI Account Router 실제 요청은 아직 확인되지 않았습니다.'
+    };
     this.dataDir = path.resolve(options.dataDir || path.join(os.homedir(), '.my-codex'));
     if (this.isolated && !options.dataDir) throw new Error('An explicit temporary dataDir is required in isolated mode.');
     const insideDataDir = value => {
@@ -382,16 +389,32 @@ class AgentEngine {
   }
 
   async _ensureAccountRouterTier() {
-    if (this.isolated || this.priorityChain.chain.tiers.some(tier => tier.provider === 'account-router')) return false;
+    if (this.isolated) return false;
     if (Date.now() < (this.accountRouterDiscoveryRetryAt || 0)) return false;
     this.accountRouterDiscoveryRetryAt = Date.now() + 15_000;
     try {
       const accountRouterAdapter = await this._getAccountRouterAdapter();
       const chain = await accountRouterAdapter.getChain();
+      this.accountRouterChain = chain;
       const configured = chain.enabled && chain.accounts.some(account => account.enabled !== false &&
         account.provider && account.provider !== 'demo' && account.provider !== 'unconfigured' &&
         account.model && account.model !== 'unconfigured');
+      if (!this.accountRouterReadiness?.verified) {
+        const unverified = chain.providerState === 'unverified' || chain.accounts.some(account => account.availability === 'unverified');
+        this.accountRouterReadiness = {
+          available: configured ? null : false,
+          connected: false,
+          verified: false,
+          state: unverified ? 'unverified' : configured ? 'unknown' : 'unconfigured',
+          message: unverified
+            ? 'AI Account Router 계정 자격 증명이 아직 검증되지 않았습니다.'
+            : configured ? 'AI Account Router 실제 요청 확인이 필요합니다.' : 'AI Account Router에 사용 가능한 계정이 없습니다.'
+        };
+      }
       if (!configured) return false;
+      if (this.priorityChain.chain.tiers.some(tier => tier.provider === 'account-router')) {
+        return this.priorityChain.adoptAccountRouter();
+      }
       this.priorityChain.upsertTier({
         id: 'account-router-local',
         name: 'AI Account Router (Local)',
@@ -399,8 +422,9 @@ class AgentEngine {
         model: 'auto',
         account: 'account-router-local',
         enabled: true,
-        description: 'Automatic local fallback; provider profiles remain managed by AI Account Router.'
+        description: '자동 연결된 AI Account Router · 내부 계정 순위에 따라 모델을 선택합니다.'
       });
+      this.priorityChain.adoptAccountRouter();
       return true;
     } catch (_) {
       return false;
@@ -721,10 +745,41 @@ class AgentEngine {
     let turnSuccess = false;
     let attempts = 0;
     let lastProviderFailure = null;
-    const maxAttempts = callbacks.fullAccess === true ? 1 : this.priorityChain.chain.tiers.length;
+    let routerModelSelection = typeof callbacks.routerModelSelection === 'string'
+      && /^(?:openrouter\/free|[a-z0-9_.-]+\/[a-z0-9_.-]+:free)$/i.test(callbacks.routerModelSelection)
+      ? callbacks.routerModelSelection : null;
+    const explicitlySelectedRouterModel = typeof callbacks.accountRouterModelSelection === 'string'
+      ? callbacks.accountRouterModelSelection.trim().toLowerCase() : '';
+    if (explicitlySelectedRouterModel) {
+      const modelIsConfigured = /^[a-z0-9_.-]+(?:\/[a-z0-9_.-]+)?(?::[a-z0-9_.-]+)?$/i.test(explicitlySelectedRouterModel);
+      let modelIsEnabled = false;
+      if (modelIsConfigured) {
+        try {
+          const routerChain = await (await this._getAccountRouterAdapter()).getChain();
+          modelIsEnabled = routerChain?.enabled === true && Array.isArray(routerChain.accounts)
+            && routerChain.accounts.some(account => account.enabled !== false && account.provider
+              && !['demo', 'unconfigured'].includes(account.provider)
+              && String(account.model || '').trim().toLowerCase() === explicitlySelectedRouterModel);
+        } catch (_) {}
+      }
+      if (!modelIsEnabled) {
+        const error = new Error('The explicitly selected Account Router model is no longer enabled.');
+        error.category = 'model_unavailable';
+        error.model = explicitlySelectedRouterModel;
+        throw error;
+      }
+      routerModelSelection = explicitlySelectedRouterModel;
+    }
+    const maxAttempts = callbacks.fullAccess === true || routerModelSelection ? 1 : this.priorityChain.chain.tiers.length;
 
     while (!turnSuccess && attempts < maxAttempts) {
-      const activeTier = this.priorityChain.resolveActiveTier(null, preferredModel,
+      const activeTier = routerModelSelection
+        ? (() => {
+          const tier = this.priorityChain.chain.tiers.find(item => item.enabled !== false && item.provider === 'account-router'
+            && !this.priorityChain.tierHealth.get(item.id)?.isThrottled && this.priorityChain.isTierReady(item));
+          return tier ? { ...tier, model: routerModelSelection } : null;
+        })()
+        : this.priorityChain.resolveActiveTier(null, preferredModel,
         executorMode && Array.isArray(this.dispatcherAllowedProviderIds)
           ? { allowedProviderIds: this.dispatcherAllowedProviderIds }
           : undefined);
@@ -750,6 +805,7 @@ class AgentEngine {
           signal: callbacks.signal,
           approvalPolicy: this.tools.approvalPolicy,
           fullAccess: callbacks.fullAccess === true,
+          routerModelSelection,
           embeddedThreefMcp: callbacks.embeddedThreefMcp || null,
           requestWorkspaceWriteApproval: request => this._requestToolApproval({
             name: 'codex_cli_workspace_write_scope',
@@ -1151,12 +1207,39 @@ class AgentEngine {
       if (options.fullAccess === true) throw new Error('Full access는 Codex CLI 직접 실행에서만 지원됩니다.');
       if (this.isolated) throw new Error('AI Account Router is disabled in isolated mode.');
       const accountRouterAdapter = await this._getAccountRouterAdapter();
-      return accountRouterAdapter.call(tier, history, streamingHooks, {
-        sessionId: this.currentSession?.sessionId,
-        workspaceDir: this.workspaceDir,
-        reasoningEffort,
-        approvalPolicy: this.tools.approvalPolicy
-      });
+      const routerTier = options.routerModelSelection ? { ...tier, model: options.routerModelSelection } : tier;
+      try {
+        const response = await accountRouterAdapter.call(routerTier, history, streamingHooks, {
+          sessionId: this.currentSession?.sessionId,
+          workspaceDir: this.workspaceDir,
+          reasoningEffort,
+          toolProfile: options.toolProfile || null,
+          approvalPolicy: this.tools.approvalPolicy
+        });
+        this.accountRouterReadiness = {
+          available: true,
+          connected: true,
+          verified: true,
+          state: 'connected',
+          ...(response.routing ? { lastRoute: response.routing } : {}),
+          message: 'AI Account Router 실제 요청 성공'
+        };
+        return response;
+      } catch (error) {
+        const category = providerFailureCategory(error);
+        this.accountRouterReadiness = {
+          available: false,
+          connected: false,
+          verified: false,
+          state: category,
+          message: category === 'authentication'
+            ? 'AI Account Router 인증을 확인해야 합니다.'
+            : category === 'quota_rate_limit'
+              ? 'AI Account Router 사용 한도 또는 요청 제한 상태입니다.'
+              : 'AI Account Router 실제 요청에 실패했습니다.'
+        };
+        throw error;
+      }
     }
     if (this.isolated) {
       if (options.fullAccess === true) throw new Error('격리 실행에서는 Full access를 사용할 수 없습니다.');
