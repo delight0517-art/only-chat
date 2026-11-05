@@ -8,7 +8,7 @@ const test = require('node:test');
 const { AgentEngine } = require('../src/core/AgentEngine.js');
 const { DEFAULT_PRESET_TIERS } = require('../src/priority/PriorityChainEngine.js');
 
-async function runTask({ content = 'response', toolCalls = [], allowedTools, requireToolExecution, failTool = false, toolResult, toolResults = [], skipToolStart = false, duplicateToolEnd = false } = {}) {
+async function runTask({ content = 'response', toolCalls = [], allowedTools, requireToolExecution, outputContract, failTool = false, toolResult, toolResults = [], skipToolStart = false, duplicateToolEnd = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-tool-evidence-'));
   const secret = 'credential-secret-should-not-persist';
   const engine = new AgentEngine({
@@ -27,7 +27,7 @@ async function runTask({ content = 'response', toolCalls = [], allowedTools, req
     }
   });
   engine.priorityChain.setTiers([DEFAULT_PRESET_TIERS[0]]);
-  const task = { id: 'tool-evidence-case', title: 'Evidence case', prompt: `do work ${secret}`, allowedTools: allowedTools || [...new Set(toolCalls.map(call => call.name))], requireToolExecution };
+  const task = { id: 'tool-evidence-case', title: 'Evidence case', prompt: `do work ${secret}`, allowedTools: allowedTools || [...new Set(toolCalls.map(call => call.name))], requireToolExecution, outputContract };
   try {
     await engine.dispatcher._runWorker(task);
     const records = engine.sessions.readSession(task.sessionId);
@@ -166,6 +166,46 @@ test('successful operation completes and stores redacted execution evidence', as
   assert.equal(task.executionEvidence.failedCount, 0);
   assert.deepEqual(records.find(item => item.type === 'session_metadata')?.metadata.executionEvidence, task.executionEvidence);
   assert.equal(snapshot.completedTasks[0].executionEvidence.successfulCount, 1);
+});
+
+test('successful tool execution does not complete a task when required answer markers are missing', async () => {
+  const { task, snapshot } = await runTask({
+    content: 'Generic network test summary without the requested code-path details.',
+    toolCalls: [{ id: 'read-source', name: 'read_file', args: { path: 'context.md' } }],
+    outputContract: { requiredPhrases: ['HealthProbe.swift', 'A→B→A'] }
+  });
+  assert.equal(task.status, 'blocked');
+  assert.match(task.blockReason, /필수 응답 항목 2\/2개가 누락/);
+  assert.equal(task.result, 'Generic network test summary without the requested code-path details.');
+  assert.deepEqual(task.outputContractResult, { required: true, passed: false, missingCount: 2, requiredCount: 2 });
+  assert.equal(snapshot.completedTasks.length, 0);
+  assert.equal(snapshot.terminalTasks[0].status, 'blocked');
+});
+
+test('task completes when every required answer marker is present', async () => {
+  const { task, snapshot } = await runTask({
+    content: 'Consumer status: partial. HealthProbe.swift needs the app-start path, and A→B→A remains unverified.',
+    toolCalls: [{ id: 'read-source', name: 'read_file', args: { path: 'context.md' } }],
+    outputContract: { requiredPhrases: ['HealthProbe.swift', 'A→B→A'] }
+  });
+  assert.equal(task.status, 'completed');
+  assert.deepEqual(task.outputContractResult, { required: true, passed: true, missingCount: 0, requiredCount: 2 });
+  assert.equal(snapshot.completedTasks.length, 1);
+});
+
+test('malformed output contracts are rejected before enqueue', () => {
+  const { ParallelDispatcher } = require('../src/core/ParallelDispatcher.js');
+  const dispatcher = new ParallelDispatcher({ autoStart: false });
+  try {
+    assert.throws(() => dispatcher.enqueueTasks([{
+      id: 'invalid-output-contract',
+      prompt: 'review',
+      allowedTools: ['read_file'],
+      outputContract: { requiredPhrases: [] }
+    }]), /Output contract requires 1–16 non-empty phrases/);
+  } finally {
+    dispatcher.stop();
+  }
 });
 
 test('provider-native tool events outside the task allowlist cannot complete a task', async () => {

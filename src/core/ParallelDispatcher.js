@@ -61,6 +61,29 @@ function hasSuccessfulToolExecutionEvidence(evidence) {
     && ['provider', 'model', 'tierId'].every(key => typeof evidence[key] === 'string' && evidence[key].trim().length > 0);
 }
 
+function normalizeOutputContract(contract) {
+  if (contract === undefined || contract === null) return null;
+  if (!contract || typeof contract !== 'object' || Array.isArray(contract)
+    || Object.keys(contract).some(key => key !== 'requiredPhrases')) {
+    throw new TypeError('Output contract must contain only requiredPhrases.');
+  }
+  const phrases = contract.requiredPhrases;
+  if (!Array.isArray(phrases) || phrases.length < 1 || phrases.length > 16
+    || phrases.some(phrase => typeof phrase !== 'string' || !phrase.trim() || phrase.trim().length > 160)) {
+    throw new TypeError('Output contract requires 1–16 non-empty phrases of at most 160 characters.');
+  }
+  return { requiredPhrases: [...new Set(phrases.map(phrase => phrase.trim()))] };
+}
+
+function checkOutputContract(contract, result) {
+  if (!contract) return { required: false, passed: true, missingCount: 0 };
+  const response = (typeof result === 'string' ? result : result?.result || '').toLowerCase();
+  const missingCount = contract.requiredPhrases.reduce((count, phrase) => (
+    response.includes(phrase.toLowerCase()) ? count : count + 1
+  ), 0);
+  return { required: true, passed: missingCount === 0, missingCount, requiredCount: contract.requiredPhrases.length };
+}
+
 class ParallelDispatcher extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -168,6 +191,7 @@ class ParallelDispatcher extends EventEmitter {
         prompt: t.prompt || t.title,
         targetFiles: Array.isArray(t.files) ? [...t.files] : [],
         allowedTools: [...new Set(t.allowedTools)],
+        outputContract: normalizeOutputContract(t.outputContract),
         ...(managerContext.registryTaskKey ? {
           registryTaskKey: managerContext.registryTaskKey, managerOwnerChatId: managerContext.managerOwnerChatId
         } : {}),
@@ -259,6 +283,17 @@ class ParallelDispatcher extends EventEmitter {
             this.terminalTasks.push(task);
             return;
           }
+          const outputContractResult = checkOutputContract(task.outputContract, result);
+          if (!outputContractResult.passed) {
+            task.status = 'blocked';
+            task.blockReason = `필수 응답 항목 ${outputContractResult.missingCount}/${outputContractResult.requiredCount}개가 누락되어 완료로 표시하지 않았습니다.`;
+            task.outputContractResult = outputContractResult;
+            task.completedAt = undefined;
+            this.emit('worker_blocked', { task, reason: task.blockReason, result });
+            this.terminalTasks.push(task);
+            return;
+          }
+          if (outputContractResult.required) task.outputContractResult = outputContractResult;
           task.status = 'completed';
           task.completedAt = Date.now();
           task.result = result?.result;
