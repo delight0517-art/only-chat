@@ -138,7 +138,8 @@ class AgentEngine {
     }
     this.ownership = new OwnershipLock({ workspaceDir: this.workspaceDir });
     this.workspaceExecutionLease = new WorkspaceExecutionLease({
-      lockRoot: path.join(this.dataDir, 'workspace-leases')
+      lockRoot: path.join(this.dataDir, 'workspace-leases'),
+      waitMs: 30_000
     });
     this.handoff = options.handoffStorageDir
       ? new HandoffAdapter({ storageDir: insideDataDir(options.handoffStorageDir), gdriveHandoffDir: false })
@@ -372,7 +373,11 @@ class AgentEngine {
         await this._ensureAccountRouterTier();
         if (!this.currentSession) this.initSession();
         return this._executeTurn(userPrompt, callbacks);
-      }
+      },
+      { signal: callbacks.signal, onWait: evidence => {
+        this.emit('workspace_waiting', evidence);
+        callbacks.onWorkspaceWait?.(evidence);
+      } }
     );
   }
 
