@@ -124,14 +124,21 @@ class CodexCliAdapter {
     this.authenticationFailures.set(id, String(message).slice(0, 500));
   }
 
-  _agentWorkspaceSocket(sessionId) {
+  _agentWorkspaceRoute(sessionId) {
     if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._-]{1,200}$/.test(sessionId)) return null;
     try {
       const configStat = fs.lstatSync(this.agentWorkspacesFile);
       if (!configStat.isFile() || configStat.size > 65_536 || (typeof process.getuid === 'function' && configStat.uid !== process.getuid()) || (configStat.mode & 0o077) !== 0) return null;
       const config = JSON.parse(fs.readFileSync(this.agentWorkspacesFile, 'utf8'));
-      if (config.version !== 1 || !config.sessions || !Object.hasOwn(config.sessions, sessionId)) return null;
-      const socketPath = config.sessions?.[sessionId]?.socketPath;
+      const assignments = config.onlyChatSessionAssignments?.version === 1
+        ? config.onlyChatSessionAssignments.sessions : null;
+      const route = assignments && Object.hasOwn(assignments, sessionId)
+        ? assignments[sessionId]
+        : config.version === 1 && config.sessions && Object.hasOwn(config.sessions, sessionId)
+          ? config.sessions[sessionId]
+          : null;
+      if (!route || typeof route !== 'object') return null;
+      const socketPath = route.socketPath;
       const socketDir = path.resolve(this.dataDir, 'agent-workspaces');
       const socketDirStat = fs.lstatSync(socketDir);
       if (!socketDirStat.isDirectory() || (typeof process.getuid === 'function' && socketDirStat.uid !== process.getuid()) || (socketDirStat.mode & 0o077) !== 0) return null;
@@ -141,7 +148,19 @@ class CodexCliAdapter {
       const socketStat = fs.lstatSync(resolvedSocket);
       if (!socketStat.isSocket() || (typeof process.getuid === 'function' && socketStat.uid !== process.getuid())) return null;
       fs.accessSync(this.cuaDriverPath, fs.constants.X_OK);
-      return resolvedSocket;
+      let virtualDisplay = null;
+      if (route.virtualDisplay !== undefined) {
+        const display = route.virtualDisplay;
+        const frame = display?.frame;
+        if (!Number.isInteger(display?.displayID) || display.displayID < 1
+            || !frame || !['x', 'y', 'width', 'height'].every(key => Number.isFinite(frame[key]))
+            || frame.width <= 0 || frame.height <= 0
+            || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(String(route.agentID || ''))) return null;
+        virtualDisplay = { agentID: String(route.agentID), displayID: display.displayID,
+          frame: { x: frame.x, y: frame.y, width: frame.width, height: frame.height } };
+      }
+      return { socketPath: resolvedSocket, virtualDisplay,
+        cuaSession: virtualDisplay ? `${virtualDisplay.agentID}:${sessionId}` : null };
     } catch (_) {
       return null;
     }
@@ -280,8 +299,9 @@ class CodexCliAdapter {
     const fullAccess = context.fullAccess === true;
     if (fullAccess && approvalPolicy === 'read-only') throw new Error('읽기 전용 승인 정책에서는 Full access를 사용할 수 없습니다.');
     const screenBridge = approvalPolicy === 'read-only' ? null : this.macScreenBridge?.();
-    const agentWorkspaceSocket = process.platform === 'darwin' && approvalPolicy !== 'read-only' && context.toolProfile !== 'no-tools'
-      ? this._agentWorkspaceSocket(context.sessionId) : null;
+    const agentWorkspaceRoute = process.platform === 'darwin' && approvalPolicy !== 'read-only' && context.toolProfile !== 'no-tools'
+      ? this._agentWorkspaceRoute(context.sessionId) : null;
+    const agentWorkspaceSocket = agentWorkspaceRoute?.socketPath || null;
     if (fullAccess || approvalPolicy === 'on-request') {
       const approve = context.requestWorkspaceWriteApproval;
       if (typeof approve !== 'function') {
@@ -298,7 +318,7 @@ class CodexCliAdapter {
           reason += ' Only Chat의 35Closer 도구로 대기 중 전원 요청을 등록하거나 취소할 수 있으며, 실제 절전·깨우기는 35Closer 앱에서 별도 승인이 필요합니다.';
         }
         if (screenBridge?.enabled === true) reason += ' 사용자가 켠 Mac 화면 제어로 화면을 읽거나 조작할 수도 있습니다.';
-        if (agentWorkspaceSocket) reason += ' 이 Only Chat 대화에 배정된 격리 워크스테이션의 앱을 읽고 조작할 수 있습니다.';
+        if (agentWorkspaceSocket) reason += ' 이 Only Chat 대화에 배정된 워크스테이션의 앱을 읽고 조작할 수 있습니다.';
         approved = await approve({
           directory: workspaceDir,
           reason
@@ -333,6 +353,18 @@ class CodexCliAdapter {
           '-c', 'mcp_servers.onlychat_agent_workspace.enabled=true',
           '-c', `mcp_servers.onlychat_agent_workspace.command=${JSON.stringify(this.cuaDriverPath)}`,
           '-c', `mcp_servers.onlychat_agent_workspace.args=${JSON.stringify(['mcp', '--socket', agentWorkspaceSocket])}`);
+      }
+      if (agentWorkspaceRoute?.virtualDisplay) {
+        const display = agentWorkspaceRoute.virtualDisplay;
+        const serverPath = path.join(this.projectRoot, 'src/connectors/OnlyChatAgentDisplayInfoMcpServer.js');
+        args.splice(args.length - 3, 0,
+          '-c', 'mcp_servers.onlychat_assigned_display.enabled=true',
+          '-c', `mcp_servers.onlychat_assigned_display.command=${JSON.stringify(process.execPath)}`,
+          '-c', `mcp_servers.onlychat_assigned_display.args=${JSON.stringify([serverPath,
+            '--agent-id', display.agentID, '--display-id', String(display.displayID),
+            '--cua-session', agentWorkspaceRoute.cuaSession,
+            '--x', String(display.frame.x), '--y', String(display.frame.y),
+            '--width', String(display.frame.width), '--height', String(display.frame.height)])}`);
       }
       if (process.platform === 'darwin' && approvalPolicy !== 'read-only') {
         const coordinationServer = path.join(this.projectRoot, 'src/connectors/WorkspaceCoordinationMcpServer.js');

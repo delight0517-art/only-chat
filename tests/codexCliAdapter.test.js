@@ -9,6 +9,7 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { test } = require('node:test');
 const { CodexCliAdapter } = require('../src/providers/CodexCliAdapter.js');
+const { assignedDisplay } = require('../src/connectors/OnlyChatAgentDisplayInfoMcpServer.js');
 const { providerFailureCategory } = require('../src/core/AgentEngine.js');
 const { createToolSummary } = require('../bin/codex.js');
 
@@ -256,7 +257,15 @@ test('Codex routes only the assigned Only Chat session to its private Cua Driver
       socketServer.listen(socketPath, resolve);
     });
     const assignmentPath = path.join(dataDir, 'agent-workspaces.json');
-    fs.writeFileSync(assignmentPath, JSON.stringify({ version: 1, sessions: { 'session-1': { socketPath } } }), { mode: 0o600 });
+    fs.writeFileSync(assignmentPath, JSON.stringify({
+      mcpServers: {},
+      onlyChatSessionAssignments: { version: 1, sessions: {
+        'session-1': {
+          agentID: 'only-chat', socketPath, displayInfoServer: 'agent-display-101',
+          virtualDisplay: { displayID: 101, frame: { x: -1280, y: 0, width: 1280, height: 800 } }
+        }
+      } }
+    }), { mode: 0o600 });
     let spawnArgs;
     const fakeSpawn = (_command, args) => {
       spawnArgs = args;
@@ -277,18 +286,36 @@ test('Codex routes only the assigned Only Chat session to its private Cua Driver
     await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, { ...common, sessionId: 'session-1' });
     assert.ok(spawnArgs.includes('mcp_servers.onlychat_agent_workspace.enabled=true'));
     assert.ok(spawnArgs.includes(`mcp_servers.onlychat_agent_workspace.args=${JSON.stringify(['mcp', '--socket', socketPath])}`));
-    assert.match(approvalReason, /격리 워크스테이션의 앱을 읽고 조작/);
+    assert.ok(spawnArgs.includes('mcp_servers.onlychat_assigned_display.enabled=true'));
+    const displayArgsConfig = spawnArgs.find(arg => String(arg).startsWith('mcp_servers.onlychat_assigned_display.args='));
+    const displayArgs = JSON.parse(displayArgsConfig.slice(displayArgsConfig.indexOf('=') + 1));
+    assert.deepEqual(displayArgs.slice(1), ['--agent-id', 'only-chat', '--display-id', '101', '--cua-session', 'only-chat:session-1', '--x', '-1280', '--y', '0', '--width', '1280', '--height', '800']);
+    assert.match(approvalReason, /이 Only Chat 대화에 배정된 워크스테이션/);
     await adapter.call(tier, [{ role: 'user', content: '도구를 사용하지 말고 답해줘.' }], {}, { ...common, sessionId: 'session-1', toolProfile: 'no-tools' });
     assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_agent_workspace')), 'explicit no-tools mode cannot attach the desktop bridge');
+    assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_assigned_display')), 'explicit no-tools mode cannot attach display context');
     await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, { ...common, sessionId: 'session-2' });
     assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_agent_workspace')));
+    fs.writeFileSync(assignmentPath, JSON.stringify({ version: 1, sessions: { 'session-1': { socketPath } } }), { mode: 0o600 });
+    await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, { ...common, sessionId: 'session-1' });
+    assert.ok(spawnArgs.includes('mcp_servers.onlychat_agent_workspace.enabled=true'), 'legacy CUA-only assignment remains supported');
+    assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_assigned_display')), 'legacy assignment does not invent a virtual display');
     fs.chmodSync(assignmentPath, 0o644);
     await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, { ...common, sessionId: 'session-1' });
     assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_agent_workspace')), 'shared or group-readable route configuration fails closed');
+    assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_assigned_display')), 'shared or group-readable config cannot attach display context');
   } finally {
     if (socketServer) await new Promise(resolve => socketServer.close(resolve));
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('assigned display context validates its CUA session and reports advisory bounds', () => {
+  const display = assignedDisplay(['--agent-id', 'only-chat', '--display-id', '101', '--cua-session', 'only-chat:session-1', '--x', '-1280', '--y', '0', '--width', '1280', '--height', '800']);
+  assert.equal(display.displayID, 101);
+  assert.equal(display.cuaSession, 'only-chat:session-1');
+  assert.equal(display.frameEnforced, false);
+  assert.throws(() => assignedDisplay(['--agent-id', 'only-chat', '--display-id', '0', '--cua-session', 'only-chat:session-1', '--x', '0', '--y', '0', '--width', '1280', '--height', '800']));
 });
 
 test('Codex account profiles are not reused across email identities', () => {
