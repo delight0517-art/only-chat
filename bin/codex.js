@@ -23,6 +23,16 @@ const args = process.argv.slice(2);
 const command = args[0] || '';
 const GOAL_TURN_TOOL_LIMIT = 24;
 const GOAL_TURN_TIMEOUT_MS = 240_000;
+const MUTATING_TOOL_NAMES = new Set([
+  'exec_command', 'bash', 'write_file', 'edit_file', 'apply_patch',
+  'google_drive_create', 'google_drive_update', 'gmail_send',
+  'notion_create_page', 'notion_update_page', 'notion_append_blocks', 'notion_api_write', 'notion_mcp_call_tool',
+  'notion_rea_open', 'notion_rea_navigate', 'notion_rea_act',
+  'browser_open', 'browser_navigate', 'browser_act', 'browser_recipe', 'browser_history',
+  'embedded_3f_navigate', 'embedded_3f_act', 'embedded_3f_history', 'vault_get_credential',
+  'browser_workspace_snapshot', 'browser_workspace_restore', 'browser_workspace_focus', 'browser_workspace_open',
+  'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_send', 'task_registry_ack', 'task_registry_record_check', 'joint_development_create'
+]);
 
 function readableModelName(modelId) {
   const names = {
@@ -127,6 +137,38 @@ function readFileText(value, depth = 0) {
 function isTodoEvidenceRequest(prompt) {
   return /\bTODO-[A-Za-z0-9_-]+\b/i.test(String(prompt || ''))
     && /(?:완료\s*여부|미완료|체크(?:박스)?\s*(?:상태|한\s*줄)|상태|complete|completed|done|status|정확한\s*(?:요구사항|원문|내용)|acceptance[-\s]*(?:checks?|criteria)|exact\s+(?:requirements|source|text))/i.test(String(prompt || ''));
+}
+
+function isTodoListEvidenceRequest(prompt) {
+  const text = String(prompt || '');
+  return !/\bTODO-[A-Za-z0-9_-]+\b/i.test(text)
+    && /(?:TODO|투두|체크박스)/i.test(text)
+    && /(?:미완료|unchecked|incomplete|open)/i.test(text)
+    && /(?:찾아|선정|항목|목록|first|top|list)/i.test(text);
+}
+
+function groundTodoListAnswer(prompt, readFileResults = []) {
+  const evidence = readFileResults.map(readFileText).filter(Boolean).join('\n');
+  const rows = [...evidence.matchAll(/^\s*-\s+\[ \]\s+\*\*(TODO-[A-Za-z0-9_-]+)\.\s*([^*\n]+)\*\*:?[^\n]*/gmi)];
+  if (!rows.length) return evidence.trim()
+    ? 'Only Chat read_file 반환 범위에서 미완료 TODO 체크박스를 찾지 못했습니다. 이 범위만으로 목록이 없다고 판단할 수 없습니다.'
+    : 'Only Chat read_file 근거가 없어 미완료 TODO를 확인하지 못했습니다.';
+  const limit = /(?:하나|한\s*개|one\b|single\b)/i.test(String(prompt || '')) ? 1 : 5;
+  const bounded = /\[Only Chat read_file bounded output: omitted \d+ middle lines/i.test(evidence);
+  const label = bounded ? '반환된 읽기 범위에서' : 'read_file 원문에서';
+  return `Only Chat ${label} 확인한 미완료 TODO (최대 ${limit}개):\n${rows.slice(0, limit).map(match => match[0].trim().slice(0, 1400)).join('\n')}`;
+}
+
+function isSourceReadEvidenceRequest(prompt) {
+  const text = String(prompt || '');
+  return /\bread_file\b/i.test(text)
+    || /(?:read|reading|읽|확인).{0,40}(?:파일|소스|줄|lines?|\.[a-z0-9]{1,8}\b)/i.test(text);
+}
+
+function groundSourceReadAnswer(results = []) {
+  const content = results.map(readFileText).filter(Boolean).join('\n').trim();
+  if (!content) return null;
+  return `Only Chat read_file 실제 결과:\n${content.slice(0, 4000)}${content.length > 4000 ? '\n(첫 4000자만 표시)' : ''}`;
 }
 
 function groundTodoSectionAnswer(prompt, answer, readFileResults = []) {
@@ -549,15 +591,17 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const reader = response.body?.getReader();
   if (!reader) throw new Error('Only Chat did not return a readable event stream.');
   const decoder = new TextDecoder();
-  let buffer = '', resolvedSessionId = null, responseText = '', pendingToolMarker = '', error = null, completed = false, toolCalls = 0, successfulTools = 0, failedTools = 0;
+  let buffer = '', resolvedSessionId = null, responseText = '', pendingToolMarker = '', error = null, completed = false, toolCalls = 0, successfulTools = 0, failedTools = 0, failedMutatingTools = 0;
   const todoEvidenceRequest = isTodoEvidenceRequest(prompt);
+  const todoListEvidenceRequest = isTodoListEvidenceRequest(prompt);
   const embeddedThreefStatusRequest = isEmbeddedThreefStatusRequest(prompt);
   const embeddedThreefReadRequest = isEmbeddedThreefReadRequest(prompt);
   const embeddedThreefNavigateRequest = isEmbeddedThreefNavigateRequest(prompt);
   const embeddedThreefHistoryRequest = isEmbeddedThreefHistoryRequest(prompt);
   const taskRegistryListRequest = isTaskRegistryListRequest(prompt);
   const taskRegistryReadRequest = isTaskRegistryReadRequest(prompt);
-  const evidenceGroundedRequest = todoEvidenceRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || embeddedThreefNavigateRequest || embeddedThreefHistoryRequest || taskRegistryListRequest || taskRegistryReadRequest;
+  const sourceReadRequest = isSourceReadEvidenceRequest(prompt);
+  const evidenceGroundedRequest = todoEvidenceRequest || todoListEvidenceRequest || sourceReadRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || embeddedThreefNavigateRequest || embeddedThreefHistoryRequest || taskRegistryListRequest || taskRegistryReadRequest;
   const readFileResults = [];
   const toolFailureResults = [];
   const embeddedThreefStatusResults = [];
@@ -616,7 +660,10 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           const result = event.result?.result;
           const detail = safeToolError(result);
           const failed = result?.ok === false || result?.blocked === true || Boolean(detail);
-          if (failed) failedTools++;
+          if (failed) {
+            failedTools++;
+            if (MUTATING_TOOL_NAMES.has(tool)) failedMutatingTools++;
+          }
           else successfulTools++;
           if (failed) toolFailureResults.push({
             name: tool,
@@ -668,10 +715,12 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
     reader.releaseLock();
   }
   if (!error && pendingToolMarker) error = { category: 'invalid_provider_output' };
-  const execution = { toolCalls, successfulTools, failedTools };
+  const execution = { toolCalls, successfulTools, failedTools, failedMutatingTools };
   if (error) {
-    const recoveredResponse = error.category === 'invalid_provider_output'
+    const recoveredResponse = (error.category === 'invalid_provider_output' || sourceReadRequest)
       ? groundTodoSectionAnswer(prompt, responseText, readFileResults)
+        ?? (todoListEvidenceRequest ? groundTodoListAnswer(prompt, readFileResults) : null)
+        ?? (sourceReadRequest && readFileResults.length ? groundSourceReadAnswer(readFileResults) : null)
         ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
         ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
         ?? (embeddedThreefNavigateRequest ? groundEmbeddedThreefNavigateAnswer(embeddedThreefNavigateResults) : null)
@@ -688,7 +737,21 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
     }
     return { ok: false, ...error, sessionId: resolvedSessionId, response: responseText, execution };
   }
+  if (sourceReadRequest && readFileResults.length === 0) {
+    return {
+      ok: false,
+      category: failedTools > 0 ? 'tool_execution_failed' : 'read_evidence_missing',
+      sessionId: resolvedSessionId,
+      response: failedTools > 0 ? groundToolFailureAnswer(toolFailureResults) : 'Only Chat read_file 도구 결과가 없어 요청한 파일 내용을 확인하지 못했습니다.',
+      execution
+    };
+  }
+  if (failedMutatingTools > 0) {
+    return { ok: false, category: 'tool_execution_failed', sessionId: resolvedSessionId, response: responseText, execution };
+  }
   const groundedResponse = groundTodoSectionAnswer(prompt, responseText, readFileResults)
+    ?? (todoListEvidenceRequest ? groundTodoListAnswer(prompt, readFileResults) : null)
+    ?? (sourceReadRequest && readFileResults.length ? groundSourceReadAnswer(readFileResults) : null)
     ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
     ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
     ?? (embeddedThreefNavigateRequest ? groundEmbeddedThreefNavigateAnswer(embeddedThreefNavigateResults) : null)
@@ -837,6 +900,12 @@ async function main() {
   switch (command) {
     case 'chat':
     case 'goal': {
+      if (args.slice(1).some(arg => arg === '--help' || arg === '-h')) {
+        console.log(command === 'goal'
+          ? '사용법: my-codex goal --duration 3h [--fixed-duration] [--model MODEL] [--tool-profile file-read|file-edit] [--approve-tool edit_file] [--approve-workspace-write ABSOLUTE_PATH] "Goal"'
+          : '사용법: my-codex chat [--model MODEL] [--tool-profile file-read|file-edit] [--approve-tool edit_file] [--approve-workspace-write ABSOLUTE_PATH] "요청"');
+        break;
+      }
       const options = parseChatCommand(args.slice(1));
       const baseUrl = process.env.ONLY_CHAT_URL || 'http://127.0.0.1:8899';
       if (command === 'goal') {

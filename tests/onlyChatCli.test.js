@@ -1,9 +1,17 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const { parseGoalDuration, parseChatCommand, safeToolError, loadOnlyChatWorkspaceContext, formatLockEvidenceSummary, formatOnlyChatWorkspaceContext, streamOnlyChatTurn, runOnlyChatGoal } = require('../bin/codex.js');
 
 async function main() {
+  for (const command of ['chat', 'goal']) {
+    const help = spawnSync(process.execPath, [require.resolve('../bin/codex.js'), command, '--help'], {
+      encoding: 'utf8', env: { ...process.env, ONLY_CHAT_URL: 'http://127.0.0.1:1' }
+    });
+    assert.equal(help.status, 0, `${command} --help exits without connecting to Only Chat`);
+    assert.match(help.stdout, new RegExp(`my-codex ${command}`));
+  }
   assert.equal(parseGoalDuration('3h'), 10_800_000);
   assert.throws(() => parseGoalDuration('4h'), /1분에서 3시간/);
   assert.throws(() => parseGoalDuration('0m'), /1분에서 3시간/);
@@ -379,6 +387,73 @@ async function main() {
   assert.equal(countedTools.execution.toolCalls, 1);
   assert.equal(countedTools.execution.successfulTools, 1);
   assert.equal(countedTools.execution.failedTools, 0);
+
+  const failedToolOutput = [];
+  const failedToolTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_failed_tool', prompt: 'edit the TODO',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_failed_tool' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'edit-1', name: 'edit_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'edit-1', name: 'edit_file' }, result: { ok: false, error: 'Target string not found' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'TODO updated successfully.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => failedToolOutput.push(text)
+  });
+  assert.equal(failedToolTurn.ok, false, 'a completed model turn cannot override a failed edit tool');
+  assert.equal(failedToolTurn.category, 'tool_execution_failed');
+  assert.equal(failedToolTurn.execution.failedTools, 1);
+  assert.match(failedToolOutput.join(''), /도구 실패: edit_file/);
+
+  const unverifiedReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_unverified_read',
+    prompt: 'Read bin/codex.js lines 890-902 exactly with read_file.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_unverified_read' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'I read those lines and they say the CLI is ready.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  });
+  assert.equal(unverifiedReadTurn.ok, false, 'model claims cannot replace a read_file result');
+  assert.equal(unverifiedReadTurn.category, 'read_evidence_missing');
+  assert.match(unverifiedReadTurn.response, /도구 결과가 없어/);
+
+  const verifiedReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_verified_read',
+    prompt: 'Read bin/codex.js lines 890-902 exactly with read_file.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_verified_read' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-1', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-1', name: 'read_file' }, result: { ok: true, content: 'const verifiedSource = true;' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The file contains invented content.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  });
+  assert.equal(verifiedReadTurn.ok, true);
+  assert.match(verifiedReadTurn.response, /const verifiedSource = true;/);
+  assert.doesNotMatch(verifiedReadTurn.response, /invented content/);
+
+  const todoListOutput = [];
+  const todoListTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_list',
+    prompt: 'TODO_ROADMAP.md에서 미완료 TODO 중 소스 작업 가능한 항목 하나를 찾아라.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_todo_list' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'todo-list', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'todo-list', name: 'read_file' }, result: { ok: true, content: '- [ ] **TODO-REAL-01. Real source item**: verified details\n- [ ] **TODO-REAL-02. Another source item**: more details' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'TODO-FAKE-99 is the safest task.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => todoListOutput.push(text)
+  });
+  assert.equal(todoListTurn.ok, true);
+  assert.match(todoListTurn.response, /TODO-REAL-01\. Real source item/);
+  assert.doesNotMatch(todoListTurn.response, /TODO-FAKE-99/);
+  assert.ok(todoListOutput.join('').includes('TODO-REAL-01'));
 
   const groundedTodoOutput = [];
   const groundedTodoTurn = await streamOnlyChatTurn({
