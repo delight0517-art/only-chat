@@ -131,7 +131,7 @@ function readFileText(value, depth = 0) {
   if (typeof value !== 'object' || value.error || value.blocked || value.isError) return '';
   if (typeof value.content === 'string') return value.content;
   if (Array.isArray(value.content)) return readFileText(value.content, depth + 1);
-  return typeof value.result === 'string' ? value.result : '';
+  return typeof value.result === 'string' ? value.result : readFileText(value.result, depth + 1);
 }
 
 function isTodoEvidenceRequest(prompt) {
@@ -177,12 +177,42 @@ function isSourceAnalysisRequest(prompt) {
   return /\b(?:analy[sz]e|analysis|diagnos(?:e|is)|review)\b|분석|진단/i.test(String(prompt || ''));
 }
 
+function requestedSourcePaths(prompt, workspaceRoot) {
+  const matches = [...String(prompt || '').matchAll(/(?:^|\s)([\w./-]+\.[A-Za-z][A-Za-z0-9]{0,7})(?=$|[\s,;])/g)];
+  return [...new Set(matches.map(match => path.resolve(workspaceRoot || process.cwd(), match[1])))];
+}
+
+function codexReadPath(call, workspaceRoot, requestedPaths) {
+  if (call?.name !== 'exec_command') return null;
+  let command = String(call.args?.command || '').trim();
+  const shellWrapper = /^(?:\/bin\/)?(?:zsh|bash|sh)\s+-lc\s+(?:"([^"]+)"|'([^']+)')$/.exec(command);
+  if (shellWrapper) command = shellWrapper[1] || shellWrapper[2];
+  // Accept only direct, shell-free file display commands. Chaining, redirects,
+  // substitutions, pipelines, command options beyond numeric sed ranges, and
+  // unrequested paths can never establish evidence.
+  const match = /^(?:cat\s+([\w./-]+)|sed\s+-n\s+'\d+(?:,\d+)?p'\s+([\w./-]+)|head\s+-n\s+\d+\s+([\w./-]+))$/.exec(command);
+  if (!match) return null;
+  const target = path.resolve(workspaceRoot || process.cwd(), match[1] || match[2] || match[3]);
+  return requestedPaths.includes(target) && Boolean(path.relative(workspaceRoot || process.cwd(), target))
+    && !path.relative(workspaceRoot || process.cwd(), target).startsWith(`..${path.sep}`) ? target : null;
+}
+
+function successfulCodexRead(call, result, workspaceRoot, requestedPaths) {
+  return result?.exitCode === 0 && typeof result?.stdout === 'string' && Boolean(result.stdout.trim())
+    && Boolean(codexReadPath(call, workspaceRoot, requestedPaths));
+}
+
 function validateSourceAnalysisResponse(prompt, answer, results = []) {
   if (!results.map(readFileText).some(Boolean)) {
     return { passed: false, missing: [], response: 'Only Chat 분석을 뒷받침하는 성공한 read_file 결과가 없습니다.' };
   }
-  const requested = [...String(prompt || '').matchAll(/(?:^|\s)([\w./-]+\.[A-Za-z][A-Za-z0-9]{0,7})(?=$|[\s,;])/g)]
-    .map(match => path.basename(match[1]));
+  const requested = [...new Set([...String(prompt || '').matchAll(/(?:^|\s)([\w./-]+\.[A-Za-z][A-Za-z0-9]{0,7})(?=$|[\s,;])/g)]
+    .map(match => path.basename(match[1])))];
+  const missingReads = [...new Set([...String(prompt || '').matchAll(/(?:^|\s)([\w./-]+\.[A-Za-z][A-Za-z0-9]{0,7})(?=$|[\s,;])/g)]
+    .map(match => path.basename(match[1])))].filter(name => !results.some(item => item.path && path.basename(item.path) === name));
+  if (missingReads.length) {
+    return { passed: false, missing: missingReads, response: `Only Chat 분석 미완료: 요청한 파일 중 실제 읽기 근거가 없는 파일이 있습니다: ${missingReads.join(', ')}.` };
+  }
   const missing = [...new Set(requested)].filter(name => !String(answer || '').toLowerCase().includes(name.toLowerCase()));
   if (missing.length) {
     return {
@@ -630,6 +660,8 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const sourceAnalysisRequest = sourceReadRequest && isSourceAnalysisRequest(prompt);
   const evidenceGroundedRequest = todoEvidenceRequest || todoListEvidenceRequest || sourceReadRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || embeddedThreefNavigateRequest || embeddedThreefHistoryRequest || taskRegistryListRequest || taskRegistryReadRequest;
   const readFileResults = [];
+  let activeToolCall = null;
+  let activeToolOutput = '';
   const toolFailureResults = [];
   const embeddedThreefStatusResults = [];
   const embeddedThreefReadResults = [];
@@ -674,6 +706,8 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
         }
         if (event.type === 'tool_start') {
           toolCalls++;
+          activeToolCall = event.call || null;
+          activeToolOutput = '';
           write(`\n[도구: ${event.call?.name || '알 수 없음'}]\n`);
           if (toolCalls > maxToolCalls) {
             error = { category: 'tool_call_limit', limit: maxToolCalls };
@@ -681,12 +715,23 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
             break;
           }
         }
+        if (event.type === 'tool_output' && activeToolCall?.name === 'exec_command' && typeof event.text === 'string') {
+          activeToolOutput = (activeToolOutput + event.text).slice(-32_000);
+        }
         if (event.type === 'tool_end') {
           const call = event.result?.call || event.call;
           const tool = /^[a-z][a-z0-9_]{0,63}$/i.test(String(call?.name || '')) ? call.name : '알 수 없는 도구';
-          const result = event.result?.result;
+          const rawResult = event.result?.result;
+          // Codex streams stdout through tool_output while its completed event can
+          // omit stdout. The server strips the output channel, so only recover it
+          // when the result has no stderr and confirms exit code 0.
+          const result = tool === 'exec_command' && rawResult?.exitCode === 0 && !rawResult.stderr
+            && !rawResult.stdout && activeToolCall?.id === call?.id && activeToolOutput
+            ? { ...rawResult, stdout: activeToolOutput }
+            : rawResult;
           const detail = safeToolError(result);
-          const failed = result?.ok === false || result?.blocked === true || Boolean(detail);
+          const failed = result?.ok === false || result?.blocked === true || Boolean(detail)
+            || ((tool === 'exec_command' || tool === 'bash') && result?.exitCode !== undefined && result.exitCode !== 0);
           if (failed) {
             failedTools++;
             if (MUTATING_TOOL_NAMES.has(tool)) failedMutatingTools++;
@@ -696,7 +741,10 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
             name: tool,
             detail: detail || redactToolMessage(result?.stderr || result?.error || result?.message || '')
           });
-          if (!failed && call?.name === 'read_file') readFileResults.push(result);
+          if (!failed && call?.name === 'read_file') readFileResults.push({ path: call.args?.path, result });
+          if (!failed && successfulCodexRead(call, result, workspaceContext?.workspaceRoot, requestedSourcePaths(prompt, workspaceContext?.workspaceRoot))) {
+            readFileResults.push({ path: codexReadPath(call, workspaceContext?.workspaceRoot, requestedSourcePaths(prompt, workspaceContext?.workspaceRoot)), result: result.stdout });
+          }
           if (!failed && call?.name === 'embedded_3f_status') embeddedThreefStatusResults.push(result);
           if (call?.name === 'embedded_3f_read') embeddedThreefReadResults.push(result);
           if (call?.name === 'embedded_3f_navigate') embeddedThreefNavigateResults.push(result);
@@ -704,6 +752,8 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           if (call?.name === 'task_registry_list') taskRegistryListResults.push(result);
           if (call?.name === 'task_registry_read') taskRegistryReadResults.push(result);
           write(`[도구 ${failed ? '실패' : '완료'}: ${tool}${detail ? ` · ${detail}` : ''}]\n`);
+          activeToolCall = null;
+          activeToolOutput = '';
         }
         if (event.type === 'tool_approval_required') {
           const isExactWorkspaceWrite = event.name === 'codex_cli_workspace_write_scope'

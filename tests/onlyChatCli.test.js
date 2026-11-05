@@ -443,9 +443,9 @@ async function main() {
     fetchImpl: async () => new Response([
       `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_source_analysis' })}\n\n`,
       `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file' }, result: { ok: true, content: 'RAW HEALTH SOURCE MUST NOT REPLACE ANALYSIS' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file', args: { path: 'Sources/AutoWiFi/HealthProbe.swift' } }, result: { ok: true, content: 'RAW HEALTH SOURCE MUST NOT REPLACE ANALYSIS' } } })}\n\n`,
       `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-quality', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-quality', name: 'read_file' }, result: { ok: true, content: 'RAW NETWORK SOURCE MUST NOT REPLACE ANALYSIS' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-quality', name: 'read_file', args: { path: 'Sources/AutoWiFi/NetworkQualityProbe.swift' } }, result: { ok: true, content: 'RAW NETWORK SOURCE MUST NOT REPLACE ANALYSIS' } } })}\n\n`,
       `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift starts a new path monitor. NetworkQualityProbe.swift reports typed failures.' })}\n\n`,
       `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
       'data: [DONE]\n\n'
@@ -462,9 +462,9 @@ async function main() {
     fetchImpl: async () => new Response([
       `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_incomplete_source_analysis' })}\n\n`,
       `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file' }, result: { ok: true, content: 'health source' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file', args: { path: 'Sources/AutoWiFi/HealthProbe.swift' } }, result: { ok: true, content: 'health source' } } })}\n\n`,
       `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-quality', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-quality', name: 'read_file' }, result: { ok: true, content: 'network source' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-quality', name: 'read_file', args: { path: 'Sources/AutoWiFi/NetworkQualityProbe.swift' } }, result: { ok: true, content: 'network source' } } })}\n\n`,
       `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift was inspected; no other file was discussed.' })}\n\n`,
       `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
       'data: [DONE]\n\n'
@@ -481,7 +481,7 @@ async function main() {
     fetchImpl: async () => new Response([
       `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_ungrounded_english_source_analysis' })}\n\n`,
       `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file' }, result: { ok: true, content: 'actual source evidence' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file', args: { path: 'Sources/AutoWiFi/HealthProbe.swift' } }, result: { ok: true, content: 'actual source evidence' } } })}\n\n`,
       `data: ${JSON.stringify({ type: 'message_delta', delta: 'Generic state machine discussion without any requested filenames.' })}\n\n`,
       `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
       'data: [DONE]\n\n'
@@ -489,8 +489,38 @@ async function main() {
   });
   assert.equal(ungroundedEnglishSourceAnalysis.ok, false, 'natural English source-analysis requests must not bypass evidence coverage');
   assert.equal(ungroundedEnglishSourceAnalysis.category, 'source_analysis_incomplete');
-  assert.match(ungroundedEnglishSourceAnalysis.response, /HealthProbe\.swift/);
+  assert.match(ungroundedEnglishSourceAnalysis.response, /NetworkQualityProbe\.swift/);
   assert.match(ungroundedEnglishSourceAnalysis.response, /Hysteresis\.swift/);
+
+  const codexCommandReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_codex_command_read',
+    prompt: 'Analyze Sources/AutoWiFi/HealthProbe.swift from the workspace source.',
+    workspaceContext: { workspaceRoot: '/workspace/autowifi' },
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_codex_command_read' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'cat-health', name: 'exec_command', args: { command: '/bin/zsh -lc "cat Sources/AutoWiFi/HealthProbe.swift"' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_output', text: 'struct HealthProbe { let verified = true }' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'cat-health', name: 'exec_command', args: { command: '/bin/zsh -lc "cat Sources/AutoWiFi/HealthProbe.swift"' } }, result: { exitCode: 0, stdout: '', stderr: '' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift defines the measured throughput probe.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`, 'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  });
+  assert.equal(codexCommandReadTurn.ok, true, 'a successful direct Codex cat of a requested workspace file is source evidence');
+  assert.match(codexCommandReadTurn.response, /measured throughput probe/);
+
+  const unsafeCodexCommandReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_unsafe_codex_command_read',
+    prompt: 'Analyze Sources/AutoWiFi/HealthProbe.swift from the workspace source.',
+    workspaceContext: { workspaceRoot: '/workspace/autowifi' },
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_unsafe_codex_command_read' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'unsafe-cat', name: 'exec_command', args: { command: 'cat Sources/AutoWiFi/HealthProbe.swift && touch marker' } }, result: { exitCode: 0, stdout: 'struct HealthProbe {}', stderr: '' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift defines the measured throughput probe.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`, 'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  });
+  assert.equal(unsafeCodexCommandReadTurn.ok, false, 'shell commands are never accepted as read evidence');
+  assert.equal(unsafeCodexCommandReadTurn.category, 'read_evidence_missing');
 
   const todoListOutput = [];
   const todoListTurn = await streamOnlyChatTurn({
