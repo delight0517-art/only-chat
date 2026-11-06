@@ -1334,7 +1334,7 @@ class AgentEngine {
     if (this.isolated) {
       if (options.fullAccess === true) throw new Error('격리 실행에서는 Full access를 사용할 수 없습니다.');
       if (!this.providerAdapter) throw new Error('Provider calls require an injected synthetic adapter in isolated mode.');
-      return this.providerAdapter(tier, history, streamingHooks, { reasoningEffort });
+      return this.providerAdapter(tier, history, streamingHooks, { sessionId: this.currentSession?.sessionId, workspaceDir: this.workspaceDir, approvalPolicy: options.approvalPolicy, allowedTools: options.allowedTools, reasoningEffort });
     }
     if (!this.providerAdapter) {
       throw new Error(`No live provider adapter is configured for '${tier.provider || tier.id}'. Refusing to return a simulated answer.`);
