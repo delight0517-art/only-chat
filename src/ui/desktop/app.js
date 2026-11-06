@@ -4906,7 +4906,7 @@ function renderWorkbenchTasks() {
           const key = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
           const response = await fetch(`/api/task-registry/tasks/${encodeURIComponent(row.key)}/resume`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ownerChatId: row.creatorChatId, idempotencyKey: `ui-resume-${key}` })
+            body: JSON.stringify({ ownerChatId: resumerChatId, idempotencyKey: `ui-resume-${key}` })
           });
           const result = await response.json();
           if (!response.ok || !result.accepted) throw new Error(presentTaskResumeFailure(result));
