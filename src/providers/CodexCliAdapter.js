@@ -376,7 +376,7 @@ class CodexCliAdapter {
         args.splice(args.length - 3, 0,
           '-c', 'mcp_servers.onlychat_agent_workspace.enabled=true',
           '-c', `mcp_servers.onlychat_agent_workspace.command=${JSON.stringify(spaceO)}`,
-          '-c', 'mcp_servers.onlychat_agent_workspace.args=["mcp"]');
+          '-c', 'mcp_servers.onlychat_agent_workspace.args=["mcp","--cleanup-on-eof"]');
       }
       if (agentWorkspaceSocket) {
         args.splice(args.length - 3, 0,
