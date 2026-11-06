@@ -4875,7 +4875,7 @@ function renderWorkbenchTasks() {
     summary.append(flow);
     summary.append(workbenchText('span', 'workbench-next', `다음 · ${row.next || '다음 단계 기록 필요'}`));
     if (row.blocker) summary.append(workbenchText('span', 'workbench-blocker workbench-next', `막힘 · ${row.blocker}`));
-    summary.append(workbenchText('span', 'workbench-next', `요청 채팅 ${workbenchChatLabel(row.sourceChatId)} · 담당/보고 채팅 ${workbenchChatLabel(row.owner || row.lastUpdatedByChatId || row.sourceChatId)} · 임대 ${row.leaseExpiresAt ? `만료 ${new Date(row.leaseExpiresAt).toLocaleString()}` : row.owner ? '만료 시각 미확인' : '현재 임대 없음'}`));
+    summary.append(workbenchText('span', 'workbench-next', `요청 채팅 ${workbenchChatLabel(row.sourceChatId)} · 담당 채팅 ${row.owner ? workbenchChatLabel(row.owner) : '미배정'} · 마지막 기록 채팅 ${row.lastUpdatedByChatId ? workbenchChatLabel(row.lastUpdatedByChatId) : '미기록'} · 임대 ${row.leaseExpiresAt ? `만료 ${new Date(row.leaseExpiresAt).toLocaleString()}` : row.owner ? '만료 시각 미확인' : '현재 임대 없음'}`));
     summary.append(workbenchText('span', 'workbench-proof-count', `검토 근거 ${row.evidence.length}개`));
     const detail = workbenchText('div', 'workbench-task-detail', '');
     detail.append(workbenchText('p', '', `요청 출처 · ${workbenchChatLabel(row.sourceChatId)} · 기기 ${row.sourceHostId || '확인 필요'} · 등록 ${row.createdAt ? new Date(row.createdAt).toLocaleString() : '시각 미확인'}`));
