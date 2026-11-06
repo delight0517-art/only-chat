@@ -795,7 +795,8 @@ class TaskRegistryStore {
       }
       if (task.ownerChatId && Date.parse(task.leaseExpiresAt) > nowMs && task.ownerChatId !== normalized.ownerChatId) {
         const result = { accepted: false, reason: 'owned_by_other_chat', taskKey: task.taskKey,
-          ownerChatId: task.ownerChatId, leaseExpiresAt: task.leaseExpiresAt, status: task.status, revision: task.revision };
+          ownerChatId: task.ownerChatId, leaseExpiresAt: task.leaseExpiresAt,
+          blockingTask: blockingTaskDetails(task, task.leasePaths || task.paths), status: task.status, revision: task.revision };
         this._remember(state, replay, result);
         this._saveState(state);
         return result;
@@ -1025,7 +1026,8 @@ class TaskRegistryStore {
       if (task.creatorChatId !== ownerChatId) return reject('creator_chat_mismatch');
       if (!['blocked', 'claimed', 'executing'].includes(task.status)) return reject(`task_${task.status}`, { status: task.status });
       if (task.ownerChatId && task.leaseExpiresAt && Date.parse(task.leaseExpiresAt) > nowMs) {
-        return reject('task_still_leased', { status: task.status, ownerChatId: task.ownerChatId, leaseExpiresAt: task.leaseExpiresAt });
+        return reject('task_still_leased', { status: task.status, ownerChatId: task.ownerChatId,
+          leaseExpiresAt: task.leaseExpiresAt, blockingTask: blockingTaskDetails(task, task.leasePaths || task.paths) });
       }
       const progress = task.executionProgress || initialExecutionProgress(taskKey, task.execution, task.createdAt);
       const retryable = progress.filter(item => item.status !== 'completed');
