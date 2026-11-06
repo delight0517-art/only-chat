@@ -363,6 +363,13 @@ class CodexCliAdapter {
       if (trustedDeveloperInstructions) args.splice(args.length - 3, 0, '-c', `developer_instructions=${JSON.stringify(trustedDeveloperInstructions)}`);
       if (agentWorkspaceRoute) {
         args.splice(args.length - 3, 0, '-c', 'mcp_servers.onlychat_agent_workspace.required=true');
+        if (Array.isArray(context.allowedTools)) {
+          const guestTools = context.allowedTools
+            .filter(name => /^guest_[a-z][a-z0-9_]{0,57}$/.test(name))
+            .map(name => name.slice('guest_'.length));
+          args.splice(args.length - 3, 0,
+            '-c', `mcp_servers.onlychat_agent_workspace.enabled_tools=${JSON.stringify(guestTools)}`);
+        }
       }
       if (usesSpaceO) {
         const spaceO = path.join(os.homedir(), '.local', 'bin', 'spaceo');
@@ -557,15 +564,18 @@ class CodexCliAdapter {
 
     if (item.type === 'mcp_tool_call') {
       const id = String(item.id || `${item.server || 'mcp'}:${item.tool || 'tool'}`);
+      const name = item.server === 'onlychat_agent_workspace'
+        && /^[a-z][a-z0-9_]{0,57}$/.test(item.tool || '')
+        ? `guest_${item.tool}` : `MCP · ${item.server || '도구'}/${item.tool || '호출'}`;
       let call = activeTools.get(id);
       if (event.type === 'item.started') {
         if (call) return;
-        call = { id, name: `MCP · ${item.server || '도구'}/${item.tool || '호출'}`, args: {} };
+        call = { id, name, args: {} };
         activeTools.set(id, call);
         hooks.onToolStart?.(call);
         return;
       }
-      call ||= { id, name: `MCP · ${item.server || '도구'}/${item.tool || '호출'}`, args: {} };
+      call ||= { id, name, args: {} };
       const failed = item.status === 'failed' || Boolean(item.error);
       hooks.onToolEnd?.({ call, result: failed ? { error: 'MCP tool call failed' } : { completed: true } });
       activeTools.delete(id);

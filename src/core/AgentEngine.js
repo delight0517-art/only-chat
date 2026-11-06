@@ -894,6 +894,7 @@ class AgentEngine {
         }, {
           reasoningEffort,
           signal: callbacks.signal,
+          allowedTools: executorMode ? callbacks.allowedTools : null,
           approvalPolicy: this.tools.approvalPolicy,
           fullAccess: callbacks.fullAccess === true,
           routerModelSelection,
@@ -1345,6 +1346,7 @@ class AgentEngine {
       approvalPolicy: options.approvalPolicy,
       fullAccess: options.fullAccess === true,
       embeddedThreefMcp: options.embeddedThreefMcp || null,
+      allowedTools: options.allowedTools,
       requestWorkspaceWriteApproval: options.requestWorkspaceWriteApproval,
       signal: options.signal
     });
