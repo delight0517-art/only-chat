@@ -7,7 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { CodexCliAdapter } = require('../src/providers/CodexCliAdapter.js');
 
-test('only the explicitly assigned conversation uses SpaceO without the Mac screen bridge', {
+test('default and explicitly assigned conversations use SpaceO without the Mac screen bridge', {
   skip: process.platform !== 'darwin'
 }, async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-spaceo-'));
@@ -33,7 +33,7 @@ test('only the explicitly assigned conversation uses SpaceO without the Mac scre
       });
     await invoke('mac-chat');
     assert.ok(options.includes('mcp_servers.onlychat_agent_workspace.required=true'));
-    assert.ok(options.includes('mcp_servers.onlychat_agent_workspace.args=["mcp"]'));
+    assert.ok(options.includes('mcp_servers.onlychat_agent_workspace.args=["mcp","--cleanup-on-eof"]'));
     assert.ok(options.includes('mcp_servers.onlychat_agent_workspace.command='
       + JSON.stringify(path.join(os.homedir(), '.local', 'bin', 'spaceo'))));
     assert.ok(options.some(arg => arg.startsWith('developer_instructions=') && arg.includes('SpaceO')));
@@ -41,8 +41,9 @@ test('only the explicitly assigned conversation uses SpaceO without the Mac scre
     assert.ok(!options.some(arg => arg.startsWith('mcp_servers.onlychat_mac_screen.')));
 
     await invoke('unassigned');
-    assert.ok(!options.some(arg => arg.startsWith('mcp_servers.onlychat_agent_workspace.')));
-    assert.equal(bridge.enabled, true);
+    assert.ok(options.includes('mcp_servers.onlychat_agent_workspace.required=true'));
+    assert.ok(options.includes('mcp_servers.onlychat_agent_workspace.args=["mcp","--cleanup-on-eof"]'));
+    assert.equal(bridge, null, 'the default SpaceO route never falls back to the Mac screen bridge');
 
     await invoke('mac-chat', 'no-tools');
     assert.ok(!options.some(arg => arg.startsWith('mcp_servers.onlychat_agent_workspace.')));
