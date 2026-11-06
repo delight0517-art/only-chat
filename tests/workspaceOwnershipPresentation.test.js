@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { test } = require('node:test');
-const { presentWorkspaceOwnership } = require('../src/ui/desktop/workspaceOwnershipPresentation.js');
+const { presentWorkspaceOwnership, presentTaskResumeFailure } = require('../src/ui/desktop/workspaceOwnershipPresentation.js');
 
 test('browser-like VM publishes the helper on window without CommonJS', () => {
   const context = { window: {} };
@@ -86,4 +86,27 @@ test('free workspace execution lease is not presented as repository unlock', () 
   assert.match(output.leaseText, /작업공간의 실행 임대가 없습니다/);
   assert.match(output.leaseText, /저장소 전체 잠금 상태를 뜻하지는 않습니다/);
   assert.match(output.gitText, /커밋되지 않은 변경 경로 1개/);
+});
+
+test('task lease conflicts identify request source, last reporter, owner, expiry and path', () => {
+  const blockingTask = {
+    taskKey: 'other-task', title: 'Blocking work', sourceChatId: 'request-chat', sourceHostId: 'source-host',
+    lastUpdatedByChatId: 'report-chat', lastUpdatedByHostId: 'report-host', lastUpdatedAt: '2026-11-03T03:00:00Z',
+    ownerChatId: 'owner-chat', leaseExpiresAt: '2026-11-03T03:15:00Z', paths: ['src/shared.js']
+  };
+  const owned = presentTaskResumeFailure({ reason: 'owned_by_other_chat', ownerChatId: 'owner-chat',
+    leaseExpiresAt: blockingTask.leaseExpiresAt, blockingTask });
+  assert.match(owned, /요청 채팅 request-chat/);
+  assert.match(owned, /요청 기기 source-host/);
+  assert.match(owned, /마지막 기록 채팅 report-chat/);
+  assert.match(owned, /기록 기기 report-host/);
+  assert.match(owned, /담당 채팅 owner-chat/);
+  assert.match(owned, /잠금 경로 src\/shared\.js/);
+  assert.match(owned, /임대/);
+
+  const pathConflict = presentTaskResumeFailure({ reason: 'path_scope_conflict', blockingTaskKey: 'other-task',
+    blockingTask, paths: ['src/shared.js'] });
+  assert.match(pathConflict, /요청 채팅 request-chat/);
+  assert.match(pathConflict, /마지막 기록 채팅 report-chat/);
+  assert.match(pathConflict, /겹치지 않는 경로의 작업은 계속 진행할 수 있습니다/);
 });

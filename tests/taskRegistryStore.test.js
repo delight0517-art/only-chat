@@ -115,6 +115,16 @@ test('creates durable tasks and replays idempotent create and claim requests', a
     assert.equal(claim.accepted, true);
     assert.deepEqual(await store.claimTask(claimInput), claim);
 
+    const rejected = await store.claimTask({ taskKey: 'slice-1', ownerChatId: 'other-chat', idempotencyKey: 'claim-other' });
+    assert.equal(rejected.reason, 'owned_by_other_chat');
+    assert.equal(rejected.blockingTask.sourceChatId, 'creator-chat');
+    assert.equal(rejected.blockingTask.lastUpdatedByChatId, 'chat-a');
+    assert.equal(rejected.blockingTask.ownerChatId, 'chat-a');
+    assert.equal(rejected.blockingTask.sourceHostId, store.hostId);
+    assert.equal(rejected.blockingTask.lastUpdatedByHostId, store.hostId);
+    assert.ok(Number.isFinite(Date.parse(rejected.blockingTask.lastUpdatedAt)));
+    assert.ok(Number.isFinite(Date.parse(rejected.blockingTask.leaseExpiresAt)));
+
     const reopened = new TaskRegistryStore({ dataDir });
     assert.equal(reopened.getTask('slice-1').ownerChatId, 'chat-a');
     assert.equal(fs.statSync(reopened.filePath).mode & 0o777, 0o600);
@@ -348,6 +358,51 @@ test('permits disjoint scopes and lets an expired lease be reclaimed without imp
     assert.equal(takeover.previousStatus, 'claimed');
     assert.equal(store.getTask('task-a').status, 'claimed');
     assert.equal(store.getTask('task-a').ownerChatId, 'chat-c');
+  });
+});
+
+test('partial resume preserves blocker provenance while queuing a disjoint executor', async () => {
+  await withFixture(async ({ repo, dataDir }) => {
+    let now = Date.parse('2026-11-03T00:00:00.000Z');
+    const store = new TaskRegistryStore({ dataDir, clock: () => now });
+    const execution = { kind: 'executor-plan', summary: 'Continue independent work', tasks: [
+      { title: 'Shared path', prompt: 'Update the shared file.', files: ['src/shared.js'], allowedTools: ['read_file'] },
+      { title: 'Independent path', prompt: 'Continue the unrelated file.', files: ['src/independent.js'], allowedTools: ['read_file'] }
+    ] };
+    await store.createTask(taskInput(repo, { taskKey: 'partial-resume', creatorChatId: 'request-chat', paths: ['src'],
+      execution, idempotencyKey: 'create-partial-resume' }));
+    await store.claimTask({ taskKey: 'partial-resume', ownerChatId: 'request-chat', idempotencyKey: 'claim-partial-resume' });
+    await store.recordExecutorProgress({ taskKey: 'partial-resume', ownerChatId: 'request-chat', executorId: 'partial-resume-1',
+      status: 'running', idempotencyKey: 'shared-start' });
+    await store.recordExecutorProgress({ taskKey: 'partial-resume', ownerChatId: 'request-chat', executorId: 'partial-resume-1',
+      status: 'blocked', reason: 'Previous chat stopped here.', idempotencyKey: 'shared-blocked' });
+
+    now += 3 * 60_000;
+    await store.createTask(taskInput(repo, { taskKey: 'path-owner', title: 'Other chat work', creatorChatId: 'other-source-chat',
+      paths: ['src/shared.js'], idempotencyKey: 'create-path-owner' }));
+    const blockerClaim = await store.claimTask({ taskKey: 'path-owner', ownerChatId: 'other-owner-chat', idempotencyKey: 'claim-path-owner' });
+    assert.equal(blockerClaim.accepted, true, 'blocked child paths must not remain leased by the parent plan');
+
+    const resumed = await store.resumeExecutorPlan({ taskKey: 'partial-resume', ownerChatId: 'request-chat', idempotencyKey: 'resume-partial' });
+    assert.equal(resumed.accepted, true);
+    assert.deepEqual(resumed.tasks.map(item => item.id), ['partial-resume-2']);
+    assert.equal(resumed.blockedExecutors.length, 1);
+    const blocker = resumed.blockedExecutors[0].blockingTasks[0];
+    assert.equal(blocker.sourceChatId, 'other-source-chat');
+    assert.equal(blocker.lastUpdatedByChatId, 'other-owner-chat');
+    assert.equal(blocker.ownerChatId, 'other-owner-chat');
+    assert.equal(blocker.sourceHostId, store.hostId);
+    assert.equal(blocker.lastUpdatedByHostId, store.hostId);
+    assert.equal(blocker.paths[0], 'src/shared.js ↔ src/shared.js');
+
+    const reopened = new TaskRegistryStore({ dataDir, clock: () => now });
+    const record = reopened.getTask('partial-resume');
+    const savedReason = record.executionProgress[0].reason;
+    assert.match(savedReason, /요청 채팅 other-source-chat/);
+    assert.match(savedReason, /마지막 기록 채팅 other-owner-chat/);
+    assert.match(savedReason, /담당 채팅 other-owner-chat/);
+    assert.match(savedReason, /충돌 경로 src\/shared\.js/);
+    assert.deepEqual(record.leasePaths, ['src/independent.js']);
   });
 });
 

@@ -57,8 +57,8 @@ test('workbench preserves bounded executor outcomes for durable review', () => {
     history: [{ attempt: 0, status: 'queued', result: '', reason: '', error: '', updatedAt: '2026-11-03T02:59:00Z' }], updatedAt: '2026-11-03T03:00:00Z' }];
   const row = presentWorkbenchTasks([task('manager', { executionProgress: progress })], now).rows[0];
   assert.deepEqual(row.executionProgress, [{ title: 'Core slice', status: 'blocked', attempt: 1,
-    result: '<script>not markup</script>', reason: '승인 대기', error: '',
-    history: [{ attempt: 0, status: 'queued', result: '', reason: '', error: '' }] }]);
+    sessionId: '', updatedAt: '2026-11-03T03:00:00Z', result: '<script>not markup</script>', reason: '승인 대기', error: '',
+    history: [{ attempt: 0, status: 'queued', sessionId: '', updatedAt: '2026-11-03T02:59:00Z', result: '', reason: '', error: '' }] }]);
   assert.equal(JSON.stringify(row).includes('task-1'), false);
 });
 
@@ -105,10 +105,14 @@ test('collapsed work cards expose next action and blocker safely and preserve di
   const unsafeText = '<img src=x onerror=alert(1)>';
   const context = vm.createContext({
     document: { getElementById: id => ids[id], createElement: tag => new Element(tag) },
-    workbenchSnapshot: presentWorkbenchTasks([task('card', { status: 'blocked', checkpoint: { nextAction: unsafeText, blocker: '수신 확인 대기', evidenceRefs: ['receipt.md'] }, executionProgress: [
+    workbenchSnapshot: presentWorkbenchTasks([task('card', { status: 'blocked', ownerChatId: null, creatorChatId: 'request-chat',
+      lastUpdatedByChatId: 'report-chat', sourceHostId: 'source-host', lastUpdatedByHostId: 'report-host',
+      checkpoint: { nextAction: unsafeText, blocker: '수신 확인 대기', evidenceRefs: ['receipt.md'] }, executionProgress: [
       { id: 'card-1', title: 'UI 수정', status: 'blocked', attempt: 2, reason: '승인 필요', error: '', result: unsafeText,
         history: [{ attempt: 1, status: 'blocked', reason: '이전 차단', error: '', result: unsafeText, updatedAt: '2026-11-03T02:59:00Z' }], updatedAt: '2026-11-03T03:00:00Z' }
     ] })], now),
+    workbenchChatLabel: chatId => chatId || '채팅 출처 미확인',
+    createTaskMailboxConversation: () => null,
     workbenchFilter: 'open', workbenchReadAt: now
   });
   vm.runInContext(`${helper}\n${renderer}\nrenderWorkbenchTasks();`, context);
@@ -118,10 +122,11 @@ test('collapsed work cards expose next action and blocker safely and preserve di
   const text = summary.children.map(node => node.textContent).join('\n');
   assert.match(text, /다음 · <img src=x onerror=alert\(1\)>/);
   assert.match(text, /막힘 · 수신 확인 대기/);
+  assert.match(text, /요청 채팅 request-chat · 담당 채팅 미배정 · 마지막 기록 채팅 report-chat/);
   assert.match(text, /검토 근거 1개/);
   const workerDetail = card.children[1].children.find(node => node.className === 'workbench-executor-result');
-  assert.equal(workerDetail.children[0].textContent, 'UI 수정 · blocked · 시도 2회');
-  assert.equal(workerDetail.children[1].children[0].textContent, '이전 시도 1 · blocked');
+  assert.match(workerDetail.children[0].textContent, /^UI 수정 · blocked · 시도 2회 · 출처 미확인 · 기록 /);
+  assert.match(workerDetail.children[1].children[0].textContent, /^이전 시도 1 · blocked · 출처 미확인 · 기록 /);
   assert.equal(workerDetail.children[1].children[1].textContent, '차단 사유 · 이전 차단');
   assert.equal(workerDetail.children[1].children[2].textContent, unsafeText);
   assert.equal(workerDetail.children[1].children[2].tagName, 'pre');
