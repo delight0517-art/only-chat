@@ -21,8 +21,49 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var serverRestartWorkItem: DispatchWorkItem?
     private var appIsTerminating = false
     private var serverDiagnosticsHandle: FileHandle?
-    private let port = (Bundle.main.object(forInfoDictionaryKey: "OnlyChatServerPort") as? Int)
-        ?? Int(ProcessInfo.processInfo.environment["ONLY_CHAT_PORT"] ?? "") ?? 8899
+    private static var isolatedRuntimeRequested: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return (Bundle.main.object(forInfoDictionaryKey: "OnlyChatIsolatedPreview") as? Bool == true)
+            || environment["SPACEO_AGENT_SESSION"] == "1"
+            || environment["ONLY_CHAT_ISOLATED"] == "1"
+    }
+
+    private static var isolatedDataDirectory: String? {
+        let environment = ProcessInfo.processInfo.environment
+        let path: String?
+        if isolatedRuntimeRequested, let value = environment["ONLY_CHAT_DATA_DIR"], !value.isEmpty {
+            path = value
+        } else if Bundle.main.object(forInfoDictionaryKey: "OnlyChatIsolatedPreview") as? Bool == true,
+                  let value = Bundle.main.object(forInfoDictionaryKey: "OnlyChatPreviewDataDirectory") as? String,
+                  !value.isEmpty {
+            path = value
+        } else {
+            return nil
+        }
+
+        guard let path else { return nil }
+        let temporaryRoot = URL(fileURLWithPath: "/tmp", isDirectory: true).standardizedFileURL.path
+        let profile = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
+        guard profile.hasPrefix(temporaryRoot.hasSuffix("/") ? temporaryRoot : temporaryRoot + "/") else {
+            return nil
+        }
+        return profile
+    }
+
+    private static var selectedPort: Int? {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["SPACEO_AGENT_SESSION"] == "1" {
+            guard let value = Int(environment["ONLY_CHAT_PORT"] ?? ""),
+                  (1...65_535).contains(value) else { return nil }
+            return value
+        }
+        if let value = Int(environment["ONLY_CHAT_PORT"] ?? ""), (1...65_535).contains(value) {
+            return value
+        }
+        return Bundle.main.object(forInfoDictionaryKey: "OnlyChatServerPort") as? Int ?? 8899
+    }
+
+    private let port = OnlyChatApp.selectedPort ?? 8899
     private let audioEngine = AVAudioEngine()
     private var speechTask: SFSpeechRecognitionTask?
     private var speechRequest: SFSpeechAudioBufferRecognitionRequest?
@@ -31,13 +72,20 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var speechStartGeneration: UInt64 = 0
 
     static func main() {
-        if let bundleIdentifier = Bundle.main.bundleIdentifier,
-           let existing = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
-            .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }) {
-            _ = existing.activate(options: [.activateAllWindows])
-            exit(EXIT_SUCCESS)
+        if !isolatedRuntimeRequested {
+            if let bundleIdentifier = Bundle.main.bundleIdentifier,
+               let existing = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+                .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }) {
+                _ = existing.activate(options: [.activateAllWindows])
+                exit(EXIT_SUCCESS)
+            }
+            guard claimSingleInstanceLock() else { exit(EXIT_SUCCESS) }
+        } else if isolatedDataDirectory == nil || selectedPort == nil {
+            // An isolated app without its own temp data directory could silently fall back
+            // to the user's live workspace or fixed production port, so refuse before startup.
+            fputs("SpaceO isolated Only Chat needs ONLY_CHAT_DATA_DIR inside /tmp and a valid ONLY_CHAT_PORT.\n", stderr)
+            exit(EXIT_FAILURE)
         }
-        guard claimSingleInstanceLock() else { exit(EXIT_SUCCESS) }
         let app = NSApplication.shared
         let delegate = OnlyChatApp()
         app.delegate = delegate
@@ -584,12 +632,21 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private func probeForExistingServer(root: URL, completion: @escaping (Bool) -> Void) {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/status")!, timeoutInterval: 2)
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        let expectedWorkspacePath: String
+        if Self.isolatedRuntimeRequested, let dataDirectory = Self.isolatedDataDirectory {
+            expectedWorkspacePath = URL(fileURLWithPath: dataDirectory, isDirectory: true)
+                .appendingPathComponent("workspace", isDirectory: true).standardizedFileURL.path
+        } else {
+            expectedWorkspacePath = root.standardizedFileURL.path
+        }
         URLSession.shared.dataTask(with: request) { data, response, _ in
             let status = response as? HTTPURLResponse
             let payload = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             let isCompatible = status?.statusCode == 200
                 && payload?["routerIntegrationRevision"] as? String == "2026-11-05-v1"
-                && payload?["workspaceDir"] as? String == root.path
+                && (payload?["workspaceDir"] as? String).map {
+                    URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL.path
+                } == expectedWorkspacePath
             DispatchQueue.main.async { completion(isCompatible) }
         }.resume()
     }
@@ -612,20 +669,20 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             "-e",
             "const path=require('node:path');const {DesktopServer}=require('./src/ui/desktop/server.js');const options={port:Number(process.env.PORT)||8899};if(process.env.ONLY_CHAT_ISOLATED==='1')options.isolated=true;if(process.env.ONLY_CHAT_DATA_DIR){options.dataDir=process.env.ONLY_CHAT_DATA_DIR;options.workspaceDir=path.join(options.dataDir,'workspace');}const server=new DesktopServer(options);process.on('SIGTERM',()=>{const httpServer=server.server;server.stop();httpServer?.closeAllConnections?.();process.exitCode=75;});server.start().then(({url})=>console.log('Only Chat ready: '+url)).catch(error=>{console.error(error);server.stop();process.exitCode=1;});"
         ]
+        let isolatedPreview = Self.isolatedRuntimeRequested
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
         environment["PORT"] = String(port)
-        if let resources = Bundle.main.resourceURL {
+        if !isolatedPreview, let resources = Bundle.main.resourceURL {
             environment["ONLY_CHAT_KEYCHAIN_HELPER"] = resources.appendingPathComponent("OnlyChatCredentialBridge").path
         }
-        let isolatedPreview = Bundle.main.object(forInfoDictionaryKey: "OnlyChatIsolatedPreview") as? Bool == true
         environment["ONLY_CHAT_NATIVE_MAC_SCREEN_CONTROL"] = isolatedPreview ? "0" : "1"
         if isolatedPreview {
             environment["ONLY_CHAT_ISOLATED"] = "1"
             environment["TMPDIR"] = "/tmp"
-            if let profile = Bundle.main.object(forInfoDictionaryKey: "OnlyChatPreviewDataDirectory") as? String, !profile.isEmpty {
-                environment["ONLY_CHAT_DATA_DIR"] = profile
-            }
+            environment["ONLY_CHAT_DATA_DIR"] = Self.isolatedDataDirectory
+            environment.removeValue(forKey: "ONLY_CHAT_KEYCHAIN_HELPER")
+            environment.removeValue(forKey: "ONLY_CHAT_GOOGLE_TOKEN_FILE")
         }
         process.environment = environment
         if let logPath = Bundle.main.object(forInfoDictionaryKey: "OnlyChatDiagnosticLogPath") as? String,
@@ -714,6 +771,25 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         webView.evaluateJavaScript("document.querySelector('.mac-titlebar .traffic-lights')?.remove()")
+        if Self.isolatedRuntimeRequested {
+            // Focus the isolated agent's composer on its fresh, per-session workspace. Its
+            // window cannot steal the user's display, and pre-focus lets SpaceO deliver text
+            // through the app's focused WKWebView field instead of an unfocused PID fallback.
+            webView.evaluateJavaScript(
+                "(() => { const field = document.getElementById('composerInput'); if (!field) return { found: false, focused: false }; field.focus({ preventScroll: true }); return { found: true, focused: document.activeElement === field }; })()"
+            ) { result, error in
+                // Log only structural state. Never log composer contents, account data, or URLs.
+                let state = result as? [String: Any]
+                let found = (state?["found"] as? Bool) == true
+                let focused = (state?["focused"] as? Bool) == true
+                NSLog(
+                    "SpaceO isolated composer focus: found=%d focused=%d evaluationError=%d",
+                    found ? 1 : 0,
+                    focused ? 1 : 0,
+                    error == nil ? 0 : 1
+                )
+            }
+        }
     }
 
     @available(macOS 12.3, *)
