@@ -16,7 +16,7 @@ const MAX_LEASE_MINUTES = 60;
 const tools = [
   {
     name: 'workspace_lease_status',
-    description: 'Read agent-coord edit/integration/deploy leases for Only Chat’s selected Git repository. Optionally pass the exact relative files you plan to edit to get path-level conflicts. Results apply only to this repository and this lease registry; they do not report other lock systems, active writers, or app runtime state. A lease on one path does not block unrelated paths. Lease status is advisory; never edit a path owned by another task.',
+    description: 'Read agent-coord edit/integration/deploy leases for Only Chat’s selected Git repository. Optionally pass the exact relative files you plan to edit to get path-level conflicts. Results apply only to this repository and this lease registry; they do not report other lock systems, active writers, or app runtime state. A lease on one path does not block unrelated paths. For a commit, check the exact staged paths and pass them to agent-coord claim --mode integrate --paths. An unrelated edit lease is not a Git lock. Lease status is advisory; never edit a path owned by another task.',
     inputSchema: { type: 'object', properties: { paths: { type: 'array', minItems: 1, maxItems: MAX_PATHS, items: { type: 'string', minLength: 1, maxLength: 256 } } }, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   },
