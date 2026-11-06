@@ -894,6 +894,8 @@ class AgentEngine {
         }, {
           reasoningEffort,
           signal: callbacks.signal,
+          ...(executorMode && !callbacks.toolProfile && allowedTools?.size === 1 && allowedTools.has('guest_list_windows')
+            ? { toolProfile: 'guest-window-read' } : {}),
           allowedTools: executorMode ? callbacks.allowedTools : null,
           approvalPolicy: this.tools.approvalPolicy,
           fullAccess: callbacks.fullAccess === true,
