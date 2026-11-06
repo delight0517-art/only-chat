@@ -566,7 +566,8 @@ class CodexCliAdapter {
         return;
       }
       call ||= { id, name: `MCP · ${item.server || '도구'}/${item.tool || '호출'}`, args: {} };
-      hooks.onToolEnd?.({ call, result: { completed: true } });
+      const failed = item.status === 'failed' || Boolean(item.error);
+      hooks.onToolEnd?.({ call, result: failed ? { error: 'MCP tool call failed' } : { completed: true } });
       activeTools.delete(id);
       return;
     }
