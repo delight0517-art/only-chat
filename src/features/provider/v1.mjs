@@ -143,7 +143,7 @@ function normalizeBaseUrl(value = DEFAULT_BASE_URL) {
   return url.toString().replace(/\/$/, '');
 }
 
-function parseToolCalls(items) {
+function parseToolCalls(items, allowGuestWindowRead = false) {
   if (!Array.isArray(items)) return [];
   const seenIds = new Set();
   return items.map((item, index) => {
@@ -153,7 +153,7 @@ function parseToolCalls(items) {
     if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Router returned invalid tool arguments.');
     const name = fn.name || item?.name;
     if (typeof name !== 'string' || !name) throw new Error('Router returned a tool call without a name.');
-    if (!TOOL_NAMES.includes(name)) throw new Error('Router requested a tool unavailable to the Account Router provider.');
+    if (!TOOL_NAMES.includes(name) && !(allowGuestWindowRead && name === 'guest_list_windows')) throw new Error('Router requested a tool unavailable to the Account Router provider.');
     if (item.id !== undefined && (typeof item.id !== 'string' || !item.id.trim())) {
       throw new Error('Router returned an invalid tool call ID.');
     }
@@ -216,7 +216,8 @@ function createAccountRouterAdapter(options = {}) {
     if (!message || (typeof message.content !== 'string' && !Array.isArray(message.tool_calls))) {
       throw new Error('AI Account Router returned an invalid chat completion.');
     }
-    const toolCalls = parseToolCalls(message.tool_calls);
+    const toolCalls = parseToolCalls(message.tool_calls,
+      context.toolProfile !== 'no-tools' && context.allowedTools?.includes('guest_list_windows'));
     const content = typeof message.content === 'string' ? message.content : '';
     if (content) hooks.onMessageDelta?.(content);
     const routing = body.router && typeof body.router.accountId === 'string'
