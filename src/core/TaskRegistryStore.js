@@ -98,6 +98,25 @@ function overlappingPathDetails(left, right) {
   return [...new Set(overlaps)];
 }
 
+function blockingTaskDetails(task, paths) {
+  return {
+    taskKey: task.taskKey,
+    title: task.title,
+    sourceChatId: task.creatorChatId || '',
+    sourceHostId: task.sourceHostId || '',
+    lastUpdatedByChatId: task.lastUpdatedByChatId || '',
+    lastUpdatedByHostId: task.lastUpdatedByHostId || '',
+    lastUpdatedAt: task.lastUpdatedAt || task.updatedAt || '',
+    ownerChatId: task.ownerChatId || '',
+    leaseExpiresAt: task.leaseExpiresAt || '',
+    paths
+  };
+}
+
+function blockingTaskSummary(task) {
+  return `작업 ${task.taskKey} (${task.title || '제목 미기록'}) · 요청 채팅 ${task.creatorChatId || '미기록'} · 요청 기기 ${task.sourceHostId || '미기록'} · 마지막 기록 채팅 ${task.lastUpdatedByChatId || '미기록'} · 마지막 기록 기기 ${task.lastUpdatedByHostId || '미기록'} · 마지막 기록 시각 ${task.lastUpdatedAt || task.updatedAt || '미기록'} · 담당 채팅 ${task.ownerChatId || '미기록'} · 임대 만료 ${task.leaseExpiresAt || '미기록'}`;
+}
+
 function normalizeLeasePaths(paths) {
   if (!Array.isArray(paths) || paths.length > 100) throw new TypeError('leasePaths must contain at most 100 repository-relative paths');
   return paths.length ? normalizePaths(paths) : [];
@@ -789,7 +808,8 @@ class TaskRegistryStore {
         const conflictPaths = overlappingPathDetails(conflict.leasePaths || conflict.paths, candidatePaths);
         const result = { accepted: false, reason: 'path_scope_conflict', taskKey: task.taskKey,
           blockingTaskKey: conflict.taskKey, ownerChatId: conflict.ownerChatId,
-          leaseExpiresAt: conflict.leaseExpiresAt, paths: conflictPaths, revision: conflict.revision };
+          leaseExpiresAt: conflict.leaseExpiresAt, paths: conflictPaths,
+          blockingTask: blockingTaskDetails(conflict, conflictPaths), revision: conflict.revision };
         this._remember(state, replay, result);
         this._saveState(state);
         return result;
@@ -1021,14 +1041,10 @@ class TaskRegistryStore {
           && other.repositoryPath === task.repositoryPath && other.ownerChatId
           && Date.parse(other.leaseExpiresAt) > nowMs && pathsOverlap(other.leasePaths || other.paths, planned.files));
         if (conflicts.length) {
-          const blockingTasks = conflicts.map(other => ({
-            taskKey: other.taskKey,
-            ownerChatId: other.ownerChatId,
-            leaseExpiresAt: other.leaseExpiresAt,
-            paths: overlappingPathDetails(other.leasePaths || other.paths, planned.files)
-          }));
+          const blockingTasks = conflicts.map(other => blockingTaskDetails(
+            other, overlappingPathDetails(other.leasePaths || other.paths, planned.files)));
           const reason = blockingTasks.map(other =>
-            `작업 ${other.taskKey} · 채팅 ${other.ownerChatId} · 만료 ${other.leaseExpiresAt} · 경로 ${other.paths.join(', ') || '범위 확인 필요'}`
+            `${blockingTaskSummary(conflicts.find(task => task.taskKey === other.taskKey))} · 충돌 경로 ${other.paths.join(', ') || '범위 확인 필요'}`
           ).join(' | ').slice(0, 2000);
           if (item.reason !== reason) {
             const hasAttemptData = item.attempt > 0 || item.status !== 'queued' || item.sessionId || item.result || item.reason || item.error || item.executionEvidence;

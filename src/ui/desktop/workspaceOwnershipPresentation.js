@@ -69,7 +69,19 @@ function presentTaskResumeFailure(result = {}) {
     ? new Date(result.leaseExpiresAt).toLocaleString() : '만료 시각 미확인';
   if (result.reason === 'path_scope_conflict') {
     const paths = Array.isArray(result.paths) ? result.paths.filter(item => typeof item === 'string' && item) : [];
-    return `경로 충돌 · 작업 ${result.blockingTaskKey || '출처 미확인'} · ${owner} · 임대 ${expiresAt}${paths.length ? ` · 충돌 경로 ${paths.join(', ')}` : ''}. 겹치지 않는 경로의 작업은 계속 진행할 수 있습니다.`;
+    const blockingTask = result.blockingTask || result.blockedExecutors?.flatMap(item => item.blockingTasks || [])[0];
+    const source = blockingTask && [
+      `요청 채팅 ${blockingTask.sourceChatId || '미기록'}`,
+      `마지막 기록 채팅 ${blockingTask.lastUpdatedByChatId || '미기록'}`,
+      `기기 ${blockingTask.lastUpdatedByHostId || blockingTask.sourceHostId || '미기록'}`,
+      `기록 시각 ${blockingTask.lastUpdatedAt && Number.isFinite(Date.parse(blockingTask.lastUpdatedAt))
+        ? new Date(blockingTask.lastUpdatedAt).toLocaleString() : '미기록'}`
+    ].join(' · ');
+    const blockerTitle = blockingTask?.title ? ` (${blockingTask.title})` : '';
+    const blockerOwner = blockingTask?.ownerChatId || owner.replace(/^담당 채팅 /u, '');
+    const blockerExpiry = blockingTask?.leaseExpiresAt && Number.isFinite(Date.parse(blockingTask.leaseExpiresAt))
+      ? new Date(blockingTask.leaseExpiresAt).toLocaleString() : expiresAt;
+    return `경로 충돌 · 작업 ${result.blockingTaskKey || blockingTask?.taskKey || '출처 미확인'}${blockerTitle} · ${source || owner} · 담당 채팅 ${blockerOwner || '출처 미확인'} · 임대 ${blockerExpiry}${paths.length ? ` · 충돌 경로 ${paths.join(', ')}` : ''}. 겹치지 않는 경로의 작업은 계속 진행할 수 있습니다.`;
   }
   if (result.reason === 'task_still_leased' || result.reason === 'owned_by_other_chat') {
     return `이 작업은 ${owner}가 담당 중입니다 · 임대 ${expiresAt}. 다른 작업은 각 경로 소유권을 확인해 계속 진행할 수 있습니다.`;
