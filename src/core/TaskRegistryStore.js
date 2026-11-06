@@ -406,6 +406,7 @@ class TaskRegistryStore {
         || taskKeys.has(task.taskKey) || !TASK_STATUSES.has(task.status)
         || !Number.isSafeInteger(task.revision) || task.revision < 1
         || (task.sourceHostId !== undefined && !HOST_ID.test(task.sourceHostId))
+        || (task.lastUpdatedByHostId !== undefined && !HOST_ID.test(task.lastUpdatedByHostId))
         || (task.lastUpdatedByChatId !== undefined && (typeof task.lastUpdatedByChatId !== 'string'
           || !task.lastUpdatedByChatId.trim() || task.lastUpdatedByChatId.length > 256))
         || (task.lastUpdatedAt !== undefined && !Number.isFinite(Date.parse(task.lastUpdatedAt)))
@@ -668,6 +669,7 @@ class TaskRegistryStore {
         createdAt: now,
         updatedAt: now,
         lastUpdatedByChatId: normalized.creatorChatId,
+        lastUpdatedByHostId: this.hostId,
         lastUpdatedAt: now
       };
       if (normalized.execution !== undefined) task.execution = normalized.execution;
@@ -726,7 +728,7 @@ class TaskRegistryStore {
         checkpoint: { nextAction: 'Shared conversation only; no local repository claim.', blocker: '', evidenceRefs: [] },
         createdAt: envelope.createdAt,
         updatedAt: now,
-        lastUpdatedByChatId: envelope.creatorChatId,
+        lastUpdatedByHostId: this.hostId,
         lastUpdatedAt: now
       };
       state.tasks.push(task);
@@ -798,6 +800,7 @@ class TaskRegistryStore {
       task.leaseExpiresAt = leaseExpiresAt;
       task.leasePaths = candidatePaths;
       task.lastUpdatedByChatId = normalized.ownerChatId;
+      task.lastUpdatedByHostId = this.hostId;
       task.lastUpdatedAt = new Date(nowMs).toISOString();
       if (task.status === 'planned' || task.status === 'blocked') task.status = 'claimed';
       task.revision += 1;
@@ -864,6 +867,7 @@ class TaskRegistryStore {
         evidenceRefs
       };
       task.lastUpdatedByChatId = normalized.ownerChatId;
+      task.lastUpdatedByHostId = this.hostId;
       task.lastUpdatedAt = updatedAt;
       if (normalized.status === 'blocked' || normalized.status === 'completed' || normalized.status === 'failed') {
         task.ownerChatId = null;
@@ -939,6 +943,7 @@ class TaskRegistryStore {
       executor.updatedAt = new Date(nowMs).toISOString();
       task.executionProgress = progress;
       task.lastUpdatedByChatId = ownerChatId;
+      task.lastUpdatedByHostId = this.hostId;
       task.lastUpdatedAt = executor.updatedAt;
 
       if (status === 'running' && task.status === 'claimed') {
@@ -1068,6 +1073,7 @@ class TaskRegistryStore {
         task.leaseExpiresAt = null;
         task.leasePaths = [];
         task.lastUpdatedByChatId = ownerChatId;
+        task.lastUpdatedByHostId = this.hostId;
         task.lastUpdatedAt = now;
         task.checkpoint = {
           nextAction: '충돌 경로의 임대가 끝나면 저장된 미완료 하위 작업만 다시 재개합니다. 겹치지 않는 경로의 다른 작업은 계속할 수 있습니다.',
@@ -1090,6 +1096,7 @@ class TaskRegistryStore {
         return task.execution.tasks[index].files;
       }));
       task.lastUpdatedByChatId = ownerChatId;
+      task.lastUpdatedByHostId = this.hostId;
       task.lastUpdatedAt = now;
       task.checkpoint = {
         nextAction: `잠금 없는 미완료 하위 작업 ${queuedItems.length}개를 대기열에 넣습니다.`,

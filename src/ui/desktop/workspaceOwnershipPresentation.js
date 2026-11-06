@@ -140,6 +140,7 @@ function presentWorkbenchTasks(tasks, now = Date.now()) {
       sourceHostId: typeof task.sourceHostId === 'string' ? task.sourceHostId : '',
       createdAt: validTimestamp(task.createdAt),
       lastUpdatedByChatId: typeof task.lastUpdatedByChatId === 'string' ? task.lastUpdatedByChatId : '',
+      lastUpdatedByHostId: typeof task.lastUpdatedByHostId === 'string' ? task.lastUpdatedByHostId : '',
       lastUpdatedAt: validTimestamp(task.lastUpdatedAt) || validTimestamp(task.updatedAt),
       leaseExpiresAt: validTimestamp(task.leaseExpiresAt),
       next: typeof task.checkpoint?.nextAction === 'string' ? task.checkpoint.nextAction : '',
