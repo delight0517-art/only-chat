@@ -196,7 +196,11 @@ function groundSourceReadAnswer(results = []) {
 }
 
 function isSourceAnalysisRequest(prompt) {
-  return /\b(?:analy[sz]e|analysis|diagnos(?:e|is)|review)\b|분석|진단/i.test(String(prompt || ''));
+  const text = String(prompt || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .split(/(?:명령|command)\s*:/i, 1)[0]
+    .replace(/https?:\/\/\S+|\b(?:127\.0\.0\.1|localhost):\d+\S*/gi, ' ');
+  return /\b(?:analy[sz]e|analysis|diagnos(?:e|is)|review|explain|describe|what|why|how)\b|분석|진단|설명|무엇|왜|어떻게/i.test(text);
 }
 
 function requestedSourcePaths(prompt, workspaceRoot) {
@@ -245,6 +249,12 @@ function validateSourceAnalysisResponse(prompt, answer, results = []) {
   }
   if (!String(answer || '').trim()) {
     return { passed: false, missing: [], response: 'Only Chat 분석 미완료: 읽기 도구는 성공했지만 종합 답변이 비어 있습니다.' };
+  }
+  const evidenceText = results.map(readFileText).filter(Boolean).join('\n');
+  const exactQuotes = [...String(answer || '').matchAll(/["'“”][^"'“”\n]{12,160}["'“”]/g)]
+    .map(match => match[0].slice(1, -1));
+  if (!exactQuotes.some(quote => evidenceText.includes(quote))) {
+    return { passed: false, missing: [], response: 'Only Chat 분석 미완료: 성공한 파일 읽기 결과와 일치하는 정확한 인용문이 답변에 없습니다.' };
   }
   return { passed: true, missing: [], response: String(answer).trim() };
 }
@@ -679,7 +689,8 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const taskRegistryListRequest = isTaskRegistryListRequest(prompt);
   const taskRegistryReadRequest = isTaskRegistryReadRequest(prompt);
   const fileMutationRequest = isExplicitFileMutationRequest(prompt);
-  const sourceReadRequest = isSourceReadEvidenceRequest(prompt);
+  const sourceReadRequest = isSourceReadEvidenceRequest(prompt)
+    || (isSourceAnalysisRequest(prompt) && requestedSourcePaths(prompt, workspaceContext?.workspaceRoot).length > 0);
   const sourceAnalysisRequest = sourceReadRequest && isSourceAnalysisRequest(prompt);
   const evidenceGroundedRequest = todoEvidenceRequest || todoListEvidenceRequest || sourceReadRequest || fileMutationRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || embeddedThreefNavigateRequest || embeddedThreefHistoryRequest || taskRegistryListRequest || taskRegistryReadRequest;
   const readFileResults = [];
