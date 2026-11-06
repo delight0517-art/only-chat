@@ -1051,7 +1051,12 @@ class AgentEngine {
 
               let toolResult;
               try {
-                toolResult = await this._executeToolCall(call, onToolOutput);
+                if (executorMode && allowedTools?.has('guest_list_windows') && call.name === 'guest_list_windows') {
+                  const { readGuestWindows } = require('../connectors/GuestWindowReader');
+                  toolResult = await readGuestWindows(this.currentSession.sessionId, { dataDir: this.dataDir, signal: callbacks.signal });
+                } else {
+                  toolResult = await this._executeToolCall(call, onToolOutput);
+                }
               } catch (toolErr) {
                 toolResult = { error: toolErr.message };
               }

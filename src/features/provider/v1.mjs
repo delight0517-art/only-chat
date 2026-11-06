@@ -181,7 +181,18 @@ function createAccountRouterAdapter(options = {}) {
         body: JSON.stringify({
           model: tier?.model || 'auto',
           messages: history,
-          tools: toolDefinitions(context.approvalPolicy),
+          tools: Array.isArray(context.allowedTools)
+            ? [
+                ...toolDefinitions(context.approvalPolicy).filter(tool => context.allowedTools.includes(tool.function.name)),
+                ...(context.toolProfile !== 'no-tools' && context.allowedTools.includes('guest_list_windows')
+                  ? [{ type: 'function', function: {
+                      name: 'guest_list_windows',
+                      description: 'List windows on this session’s assigned isolated SSH guest.',
+                      parameters: { type: 'object', properties: {}, additionalProperties: false }
+                    } }]
+                  : [])
+              ]
+            : toolDefinitions(context.approvalPolicy),
           tool_choice: 'auto',
           stream: false
         }),
