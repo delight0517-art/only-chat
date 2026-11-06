@@ -57,6 +57,15 @@ test('loopback API shares task records between chat owners with idempotent write
     const chatB = await request(app.port, '/api/task-registry/tasks/cross-chat-check/claim', 'POST', { ownerChatId: 'chat-b', idempotencyKey: 'claim-b' });
     assert.equal(chatB.status, 409);
     assert.equal(chatB.body.reason, 'owned_by_other_chat');
+    assert.equal(chatB.body.blockingTask.sourceChatId, 'chat-origin');
+    assert.equal(chatB.body.blockingTask.sourceHostId, app.taskRegistryStore.hostId);
+    assert.equal(chatB.body.blockingTask.lastUpdatedByChatId, 'chat-a');
+    assert.equal(chatB.body.blockingTask.lastUpdatedByHostId, app.taskRegistryStore.hostId);
+    assert.ok(Number.isFinite(Date.parse(chatB.body.blockingTask.leaseExpiresAt)));
+    const ownerReadback = await request(app.port, '/api/task-registry/tasks/cross-chat-check');
+    assert.equal(ownerReadback.body.task.creatorChatId, 'chat-origin');
+    assert.equal(ownerReadback.body.task.ownerChatId, 'chat-a');
+    assert.equal(ownerReadback.body.task.lastUpdatedByChatId, 'chat-a');
 
     const checkpoint = await request(app.port, '/api/task-registry/tasks/cross-chat-check/checkpoint', 'POST', {
       ownerChatId: 'chat-a', idempotencyKey: 'checkpoint-1', status: 'executing', nextAction: 'Check the recorded source', evidenceRefs: ['commit:base']
