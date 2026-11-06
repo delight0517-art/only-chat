@@ -75,6 +75,57 @@ test('shows resume only when an executor plan has incomplete work and no current
   assert.equal(complete.canResume, false);
 });
 
+test('workbench resume assigns the current chat and preserves the original requester', async () => {
+  class Element {
+    constructor(tag) { this.tagName = tag; this.children = []; this.dataset = {}; this.attributes = {}; this.textContent = ''; this.listeners = {}; }
+    append(...nodes) { this.children.push(...nodes); }
+    replaceChildren(...nodes) { this.children = nodes; }
+    setAttribute(key, value) { this.attributes[key] = value; }
+    addEventListener(type, listener) { this.listeners[type] = listener; }
+    querySelectorAll(selector) {
+      assert.equal(selector, 'details[open]');
+      return this.children.filter(child => child.tagName === 'details' && child.open);
+    }
+  }
+  const ids = Object.fromEntries(['workbenchTasks', 'workbenchAppCount', 'workbenchActiveCount', 'workbenchAttentionCount', 'workbenchReadStatus']
+    .map(id => [id, new Element('div')]));
+  const app = fs.readFileSync(require.resolve('../src/ui/desktop/app.js'), 'utf8');
+  const helper = app.slice(app.indexOf('function workbenchText('), app.indexOf('\nfunction initWorkbench('));
+  const renderer = app.slice(app.indexOf('function renderWorkbenchTasks('), app.indexOf('\nfunction renderWorkbenchModules('));
+  const originalRequester = 'request-chat';
+  const currentChat = 'current-chat';
+  let requestUrl = '';
+  let requestBody = null;
+  const row = task('resume-from-current-chat', { status: 'blocked', ownerChatId: null, leaseExpiresAt: null,
+    creatorChatId: originalRequester, execution: { kind: 'executor-plan' }, executionProgress: [
+      { title: 'UI slice', status: 'blocked', attempt: 1, sessionId: '', updatedAt: '2026-11-03T03:00:00Z', result: '', reason: 'Earlier chat stopped.', error: '', history: [] }
+    ] });
+  const context = vm.createContext({
+    document: { getElementById: id => ids[id], createElement: tag => new Element(tag) },
+    window: { crypto: { randomUUID: () => 'resume-request-id' } },
+    fetch: async (url, options) => {
+      requestUrl = url;
+      requestBody = JSON.parse(options.body);
+      return { ok: true, json: async () => ({ accepted: true, queuedCount: 1 }) };
+    },
+    currentSessionId: currentChat,
+    workbenchSnapshot: presentWorkbenchTasks([row], now),
+    workbenchChatLabel: chatId => chatId || '채팅 출처 미확인',
+    createTaskMailboxConversation: () => null,
+    workbenchFilter: 'all', workbenchReadAt: now,
+    refreshWorkbench: async () => {}
+  });
+  vm.runInContext(`${helper}\n${renderer}\nrenderWorkbenchTasks();`, context);
+  const card = ids.workbenchTasks.children[0];
+  const resumeButton = card.children[1].children.find(node => node.tagName === 'button');
+  assert.equal(resumeButton.textContent, '이 채팅이 이어받아 미완료 작업 재개');
+  await resumeButton.listeners.click({ preventDefault() {}, stopPropagation() {} });
+  assert.equal(requestUrl, '/api/task-registry/tasks/resume-from-current-chat/resume');
+  assert.equal(requestBody.ownerChatId, currentChat);
+  assert.notEqual(requestBody.ownerChatId, originalRequester);
+  assert.match(card.children[1].children.find(node => node.className === 'workbench-resume-status').textContent, /재개했습니다/);
+});
+
 test('phase highlights only the recorded state and withholds stale or unsupported progress', () => {
   for (const [status, phase] of Object.entries({ planned: 0, claimed: 0, executing: 1, verifying: 2, reviewing: 2, integrating: 3, completed: 3 })) {
     const row = presentWorkbenchTasks([task(status, { status, checkpoint: { evidenceRefs: ['receipt.md'] } })], now).rows[0];

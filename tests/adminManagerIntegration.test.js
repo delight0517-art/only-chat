@@ -124,18 +124,18 @@ async function main() {
       executorId: 'manager-resume-fixture-2', status: 'running', idempotencyKey: 'resume-fixture-start-2' });
     await taskRegistryStore.recordExecutorProgress({ taskKey: 'manager-resume-fixture', ownerChatId: managerSessionId,
       executorId: 'manager-resume-fixture-2', status: 'completed', idempotencyKey: 'resume-fixture-done-2', result: 'Already done.' });
-    const deniedResume = await engine.resumeManagerPlan({ taskKey: 'manager-resume-fixture', ownerChatId: 'different-chat', idempotencyKey: 'resume-fixture-denied' });
-    assert.equal(deniedResume.reason, 'creator_chat_mismatch');
-    const resumed = await engine.resumeManagerPlan({ taskKey: 'manager-resume-fixture', ownerChatId: managerSessionId, idempotencyKey: 'resume-fixture-ok' });
+    const resumed = await engine.resumeManagerPlan({ taskKey: 'manager-resume-fixture', ownerChatId: 'different-chat', idempotencyKey: 'resume-fixture-ok' });
     assert.equal(resumed.accepted, true);
     assert.equal(resumed.queuedCount, 1);
+    assert.equal(taskRegistryStore.getTask('manager-resume-fixture').creatorChatId, managerSessionId);
+    assert.equal(taskRegistryStore.getTask('manager-resume-fixture').lastUpdatedByChatId, 'different-chat');
     assert.deepEqual(enqueued.map(task => task.id), ['manager-resume-fixture-1']);
     assert.equal(taskRegistryStore.getTask('manager-resume-fixture').executionProgress[0].history[0].result, 'Keep this result.');
     assert.equal(taskRegistryStore.getTask('manager-resume-fixture').executionProgress[1].status, 'completed');
     engine.dispatcher.emit('worker_started', { task: enqueued[0] });
     await engine.managerProgressQueues.get('manager-resume-fixture');
     const enqueueCountAfterResume = enqueueCalls;
-    const replayedResume = await engine.resumeManagerPlan({ taskKey: 'manager-resume-fixture', ownerChatId: managerSessionId, idempotencyKey: 'resume-fixture-ok' });
+    const replayedResume = await engine.resumeManagerPlan({ taskKey: 'manager-resume-fixture', ownerChatId: 'different-chat', idempotencyKey: 'resume-fixture-ok' });
     assert.equal(replayedResume.replayed, true);
     assert.equal(enqueueCalls, enqueueCountAfterResume, 'replayed resume must not enqueue duplicate workers');
     engine.dispatcher.emit('worker_completed', { task: enqueued[0], result: { sessionId: 'retry-session', result: 'Retry complete.', executionEvidence: null } });

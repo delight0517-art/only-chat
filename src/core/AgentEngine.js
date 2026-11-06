@@ -329,7 +329,6 @@ class AgentEngine {
     if (!registry || typeof registry.resumeExecutorPlan !== 'function') return { accepted: false, reason: 'task_registry_unavailable' };
     const saved = registry.getTask(taskKey);
     if (!saved) return { accepted: false, reason: 'task_not_found' };
-    if (saved.creatorChatId !== ownerChatId) return { accepted: false, reason: 'creator_chat_mismatch' };
     const isAlreadyQueued = task => task?.registryTaskKey === taskKey;
     if (this.dispatcher.queue.some(isAlreadyQueued)
       || [...this.dispatcher.activeWorkers.values()].some(worker => isAlreadyQueued(worker.task))) {

@@ -4890,10 +4890,12 @@ function renderWorkbenchTasks() {
     if (row.owner && row.leasePaths.length) detail.append(workbenchText('p', '', `현재 임대 경로 · ${row.leasePaths.join(', ')}`));
     detail.append(workbenchText('p', '', `검토 근거 · ${row.evidence.length}개`));
     for (const ref of row.evidence) detail.append(workbenchText('p', 'workbench-evidence', ref));
-    if (row.canResume && row.creatorChatId) {
+    const resumerChatId = typeof currentSessionId === 'string' && currentSessionId
+      && !currentSessionId.startsWith('session_') ? currentSessionId : '';
+    if (row.canResume && resumerChatId) {
       const resume = document.createElement('button');
       resume.type = 'button';
-      resume.textContent = '저장된 계획에서 미완료 작업 재개';
+      resume.textContent = '이 채팅이 이어받아 미완료 작업 재개';
       const resumeStatus = workbenchText('small', 'workbench-resume-status', '');
       resume.addEventListener('click', async event => {
         event.preventDefault();

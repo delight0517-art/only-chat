@@ -272,30 +272,35 @@ test('resumes only incomplete executors, preserves attempt history, and recovers
         result: index === 2 ? 'Partial UI notes to retain.' : `Finished ${index}.`, reason: index === 2 ? 'Approval unavailable.' : '' });
     }
     assert.equal(store.getTask('resume-plan').status, 'blocked');
-    const wrongOwner = await store.resumeExecutorPlan({ taskKey: 'resume-plan', ownerChatId: 'other', idempotencyKey: 'resume-wrong-owner' });
-    assert.equal(wrongOwner.reason, 'creator_chat_mismatch');
-
-    const resumed = await store.resumeExecutorPlan({ taskKey: 'resume-plan', ownerChatId: 'creator', idempotencyKey: 'resume-blocked-plan' });
+    const resumed = await store.resumeExecutorPlan({ taskKey: 'resume-plan', ownerChatId: 'resume-chat', idempotencyKey: 'resume-blocked-plan' });
     assert.equal(resumed.accepted, true);
+    assert.equal(resumed.ownerChatId, 'resume-chat');
     assert.deepEqual(resumed.tasks.map(item => item.id), ['resume-plan-2']);
     const afterResume = store.getTask('resume-plan');
+    assert.equal(afterResume.creatorChatId, 'creator');
+    assert.equal(afterResume.lastUpdatedByChatId, 'resume-chat');
     assert.equal(afterResume.executionProgress[0].status, 'completed');
     assert.equal(afterResume.executionProgress[2].status, 'completed');
     assert.equal(afterResume.executionProgress[1].status, 'queued');
     assert.equal(afterResume.executionProgress[1].history[0].result, 'Partial UI notes to retain.');
     assert.equal(afterResume.executionProgress[1].history[0].reason, 'Approval unavailable.');
-    const duplicate = await store.resumeExecutorPlan({ taskKey: 'resume-plan', ownerChatId: 'creator', idempotencyKey: 'resume-blocked-plan' });
+
+    const duplicate = await store.resumeExecutorPlan({ taskKey: 'resume-plan', ownerChatId: 'resume-chat', idempotencyKey: 'resume-blocked-plan' });
     assert.equal(duplicate.replayed, true);
     assert.equal((await store.resumeExecutorPlan({ taskKey: 'resume-plan', ownerChatId: 'creator', idempotencyKey: 'resume-while-live' })).reason, 'task_still_leased');
 
-    await store.recordExecutorProgress({ taskKey: 'resume-plan', ownerChatId: 'creator', executorId: 'resume-plan-2', status: 'running', idempotencyKey: 'resume-second-start', sessionId: 'session-retry' });
+    await store.recordExecutorProgress({ taskKey: 'resume-plan', ownerChatId: 'resume-chat', executorId: 'resume-plan-2', status: 'running', idempotencyKey: 'resume-second-start', sessionId: 'session-retry' });
     now += 16 * 60_000;
-    const lateResult = await store.recordExecutorProgress({ taskKey: 'resume-plan', ownerChatId: 'creator', executorId: 'resume-plan-2', status: 'completed', idempotencyKey: 'resume-second-late-result', result: 'Late result' });
+    const lateResult = await store.recordExecutorProgress({ taskKey: 'resume-plan', ownerChatId: 'resume-chat', executorId: 'resume-plan-2', status: 'completed', idempotencyKey: 'resume-second-late-result', result: 'Late result' });
     assert.equal(lateResult.reason, 'claim_not_held');
-    const recovered = await store.resumeExecutorPlan({ taskKey: 'resume-plan', ownerChatId: 'creator', idempotencyKey: 'resume-expired-running' });
+    const recovered = await store.resumeExecutorPlan({ taskKey: 'resume-plan', ownerChatId: 'resume-chat', idempotencyKey: 'resume-expired-running' });
     assert.equal(recovered.accepted, true);
     assert.deepEqual(recovered.tasks.map(item => item.id), ['resume-plan-2']);
     const recoveredRecord = new TaskRegistryStore({ dataDir, clock: () => now }).getTask('resume-plan');
+    assert.equal(recoveredRecord.creatorChatId, 'creator');
+    assert.equal(recoveredRecord.ownerChatId, 'resume-chat');
+    assert.equal(recoveredRecord.lastUpdatedByChatId, 'resume-chat');
+    assert.equal(recoveredRecord.lastUpdatedByHostId, store.hostId);
     assert.deepEqual(recoveredRecord.executionProgress[1].history.map(entry => entry.status), ['blocked', 'interrupted']);
     assert.equal(recoveredRecord.executionProgress[1].history[0].result, 'Partial UI notes to retain.');
   });

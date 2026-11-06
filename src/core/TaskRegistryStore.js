@@ -1023,7 +1023,6 @@ class TaskRegistryStore {
       };
       if (!task) return reject('task_not_found');
       if (!task.execution) return reject('execution_plan_missing');
-      if (task.creatorChatId !== ownerChatId) return reject('creator_chat_mismatch');
       if (!['blocked', 'claimed', 'executing'].includes(task.status)) return reject(`task_${task.status}`, { status: task.status });
       if (task.ownerChatId && task.leaseExpiresAt && Date.parse(task.leaseExpiresAt) > nowMs) {
         return reject('task_still_leased', { status: task.status, ownerChatId: task.ownerChatId,
