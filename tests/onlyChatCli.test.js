@@ -550,6 +550,25 @@ async function main() {
   assert.match(incompleteSourceAnalysis.response, /NetworkQualityProbe\.swift/);
   assert.doesNotMatch(incompleteSourceAnalysis.response, /health source|network source/);
 
+  const exactSourceQuote = 'await window.api.updateSettings(patch);\nconst actual = await window.api.getSettings();';
+  const exactSourceQuoteTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_exact_source_quote',
+    prompt: 'Read renderer/dashboard/schedule.js lines 65-78 and return only the verbatim source lines that call window.api.updateSettings and window.api.getSettings. Do not explain.',
+    toolProfile: 'file-read',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_exact_source_quote' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-schedule', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-schedule', name: 'read_file', args: { path: 'renderer/dashboard/schedule.js', start_line: 65, end_line: 78 } }, result: { ok: true, content: exactSourceQuote } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'Requested source read completed.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`, 'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(exactSourceQuoteTurn.ok, true, 'a negated "Do not explain" instruction is not a source-analysis request');
+  assert.match(exactSourceQuoteTurn.response, /Only Chat read_file 실제 결과:[\s\S]*renderer\/dashboard\/schedule\.js/);
+  assert.match(exactSourceQuoteTurn.response, /await window\.api\.updateSettings\(patch\)/);
+  assert.match(exactSourceQuoteTurn.response, /await window\.api\.getSettings\(\)/);
+
   const longEnglishSourcePrompt = 'Analyze the Auto WiFi throughput recovery path using actual workspace files. Read and cite every exact file below: Sources/AutoWiFi/HealthProbe.swift, Sources/AutoWiFi/NetworkQualityProbe.swift, Sources/AutoWiFi/Persistence.swift, Sources/Algorithms/Hysteresis.swift, Tests/AlgorithmsRunner/Runner.swift.';
   const ungroundedEnglishSourceAnalysis = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_ungrounded_english_source_analysis', prompt: longEnglishSourcePrompt,

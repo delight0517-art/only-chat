@@ -190,7 +190,11 @@ function groundSuccessfulMutationAnswer(count) {
 }
 
 function groundSourceReadAnswer(results = []) {
-  const content = results.map(readFileText).filter(Boolean).join('\n').trim();
+  const sections = results.map(item => {
+    const content = readFileText(item).trim();
+    return content ? `${item.path || '(경로 미확인)'}\n${content}` : '';
+  }).filter(Boolean);
+  const content = sections.join('\n\n');
   if (!content) return null;
   return `Only Chat read_file 실제 결과:\n${content.slice(0, 4000)}${content.length > 4000 ? '\n(첫 4000자만 표시)' : ''}`;
 }
@@ -199,7 +203,9 @@ function isSourceAnalysisRequest(prompt) {
   const text = String(prompt || '')
     .replace(/```[\s\S]*?```/g, ' ')
     .split(/(?:명령|command)\s*:/i, 1)[0]
-    .replace(/https?:\/\/\S+|\b(?:127\.0\.0\.1|localhost):\d+\S*/gi, ' ');
+    .replace(/https?:\/\/\S+|\b(?:127\.0\.0\.1|localhost):\d+\S*/gi, ' ')
+    .replace(/\b(?:do\s+not|don['’]t|never)\s+(?:analy[sz]e|diagnose|review|explain|describe)\b/gi, ' ')
+    .replace(/(?:분석|진단|검토|설명)(?:하지\s*마(?:세요|라)?|하지\s*말아\s*(?:주세요|라)?)/g, ' ');
   return /\b(?:analy[sz]e|analysis|diagnos(?:e|is)|review|explain|describe|what|why|how)\b|분석|진단|설명|무엇|왜|어떻게/i.test(text);
 }
 
