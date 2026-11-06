@@ -311,7 +311,7 @@ class CodexCliAdapter {
     if (usesSpaceO) {
       trustedDeveloperInstructions += '\n\n이 대화의 Mac 앱 작업은 onlychat_agent_workspace의 SpaceO 전용 세션에서만 수행하세요. 빈 세션을 먼저 만들고 격리 상태와 대상 앱의 창 소유권을 확인하세요. 세션 생성이나 격리 검증이 실패하면 작업을 멈추고 다른 화면 제어 경로로 전환하지 마세요.';
     }
-    const screenBridge = approvalPolicy === 'read-only' || context.toolProfile === 'no-tools' || usesSpaceO
+    const screenBridge = approvalPolicy === 'read-only' || context.toolProfile === 'no-tools' || agentWorkspaceRoute
       ? null : this.macScreenBridge?.();
     const agentWorkspaceSocket = agentWorkspaceRoute?.socketPath || null;
     if (fullAccess || approvalPolicy === 'on-request') {
