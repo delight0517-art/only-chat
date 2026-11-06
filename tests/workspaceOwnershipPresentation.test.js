@@ -28,12 +28,16 @@ test('workspace and Git statuses are presented without exposing private API fiel
   const output = presentWorkspaceOwnership({
     workspaceLease: {
       state: 'held', sameHost: true, pid: 1234, startedAt: '2026-10-30T01:00:00.000Z',
-      workspace: '/private/path', sessionId: 'secret-session', token: 'secret-token'
+      workspace: '/private/path', sourceChatId: 'source-chat-123', sessionId: 'secret-session', token: 'secret-token',
+      releaseCondition: 'operation_completion_or_verified_process_death'
     },
     gitStatus: { available: false, error: 'raw git error' }
   });
-  assert.equal(output.leaseText, '이 Mac에서 작업 중입니다.');
+  assert.match(output.leaseText, /이 작업공간의 실행 임대/);
+  assert.match(output.leaseText, /개별 경로 잠금 및 통합 준비 상태와 별도/);
   assert.match(output.leaseDetail, /PID 1234/);
+  assert.match(output.leaseDetail, /출처 채팅 source-chat-123/);
+  assert.match(output.leaseDetail, /고정 만료 시각 없음/);
   assert.equal(output.gitText, 'Git 상태를 확인할 수 없습니다.');
   assert.equal(JSON.stringify(output).includes('/private/path'), false);
   assert.equal(JSON.stringify(output).includes('secret-session'), false);
@@ -61,6 +65,25 @@ test('unavailable or unknown Git status remains distinct from a clean status', (
 });
 
 test('foreign-host lease is explicitly not judged stale and unknown data stays unknown', () => {
-  assert.match(presentWorkspaceOwnership({ workspaceLease: { state: 'held', sameHost: false } }).leaseText, /오래된 잠금인지 판단할 수 없습니다/);
-  assert.equal(presentWorkspaceOwnership({ workspaceLease: { state: 'unknown', sameHost: null } }).leaseText, '작업 상태를 알 수 없습니다.');
+  const foreign = presentWorkspaceOwnership({ workspaceLease: { state: 'held', sameHost: false,
+    releaseCondition: 'owner_operation_completion_or_explicit_owner_release' } });
+  assert.match(foreign.leaseText, /이 작업공간의 실행 임대/);
+  assert.match(foreign.leaseText, /개별 경로 잠금과도 별도/);
+  assert.match(foreign.leaseDetail, /원격 소유자의 실행 완료 또는 명시적 해제/);
+  const unknown = presentWorkspaceOwnership({ workspaceLease: { state: 'unknown', sameHost: null, reason: 'lock_unreadable' } });
+  assert.equal(unknown.leaseText, '작업 상태를 알 수 없습니다.');
+  assert.match(unknown.leaseDetail, /출처 확인 불가/);
+  assert.match(unknown.leaseDetail, /lock_unreadable/);
+});
+
+test('free workspace execution lease is not presented as repository unlock', () => {
+  const output = presentWorkspaceOwnership({
+    pathLocks: { available: true, scope: 'active_in_process_paths', locks: [{ file: '/repo/a.js', taskId: 'task-a' }] },
+    workspaceLease: { state: 'free', sameHost: null },
+    gitStatus: { available: true, uncommitted: ['src/b.js'] }
+  });
+  assert.match(output.pathLockText, /개별 경로 잠금 1개/);
+  assert.match(output.leaseText, /작업공간의 실행 임대가 없습니다/);
+  assert.match(output.leaseText, /저장소 전체 잠금 상태를 뜻하지는 않습니다/);
+  assert.match(output.gitText, /커밋되지 않은 변경 경로 1개/);
 });

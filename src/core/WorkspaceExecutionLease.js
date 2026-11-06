@@ -77,8 +77,25 @@ class WorkspaceExecutionLease {
     }
   }
 
+  _ownerStatus(owner, state, sameHost) {
+    return {
+      state,
+      sameHost,
+      sourceChatId: typeof owner.sessionId === 'string' && owner.sessionId.trim() && owner.sessionId.length <= 256
+        ? owner.sessionId : null,
+      host: owner.host,
+      pid: Number.isSafeInteger(owner.pid) && owner.pid > 0 ? owner.pid : null,
+      startedAt: typeof owner.startedAt === 'string' && Number.isFinite(Date.parse(owner.startedAt))
+        ? owner.startedAt : null,
+      leaseExpiresAt: null,
+      releaseCondition: sameHost === true
+        ? 'operation_completion_or_verified_process_death'
+        : 'owner_operation_completion_or_explicit_owner_release'
+    };
+  }
+
   getStatus(workspaceDir) {
-    const unknown = { state: 'unknown', sameHost: null };
+    const unknown = reason => ({ state: 'unknown', sameHost: null, reason });
     try {
       const lockPath = path.join(this.lockRoot, `${this._workspaceKey(workspaceDir)}.lock`);
       let raw;
@@ -86,31 +103,31 @@ class WorkspaceExecutionLease {
         raw = fs.readFileSync(lockPath, 'utf8');
       } catch (error) {
         if (error.code === 'ENOENT') return { state: 'free', sameHost: null };
-        return unknown;
+        return unknown('lock_unreadable');
       }
 
       let owner;
-      try { owner = JSON.parse(raw); } catch (_) { return unknown; }
+      try { owner = JSON.parse(raw); } catch (_) { return unknown('lock_record_invalid_json'); }
       if (!owner || typeof owner !== 'object' || Array.isArray(owner) || typeof owner.host !== 'string' || !owner.host) {
-        return unknown;
+        return unknown('owner_host_missing');
       }
-      if (owner.host !== os.hostname()) return { state: 'held', sameHost: false };
-      if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0) return unknown;
+      if (owner.host !== os.hostname()) return this._ownerStatus(owner, 'held', false);
+      if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0) return unknown('owner_pid_unavailable');
       const startedAt = typeof owner.startedAt === 'string' && Number.isFinite(Date.parse(owner.startedAt))
         ? owner.startedAt : null;
-      if (!startedAt) return unknown;
+      if (!startedAt) return unknown('owner_start_time_unavailable');
 
       try {
         process.kill(owner.pid, 0);
-        if (this._isStaleOwner(owner)) return { state: 'stale', sameHost: true, pid: owner.pid, startedAt };
-        return { state: 'held', sameHost: true, pid: owner.pid, startedAt };
+        if (this._isStaleOwner(owner)) return this._ownerStatus(owner, 'stale', true);
+        return this._ownerStatus(owner, 'held', true);
       } catch (error) {
-        if (error.code === 'EPERM') return { state: 'held', sameHost: true, pid: owner.pid, startedAt };
-        if (error.code === 'ESRCH') return { state: 'stale', sameHost: true, pid: owner.pid, startedAt };
-        return unknown;
+        if (error.code === 'EPERM') return this._ownerStatus(owner, 'held', true);
+        if (error.code === 'ESRCH') return this._ownerStatus(owner, 'stale', true);
+        return unknown('owner_process_status_unavailable');
       }
     } catch (_) {
-      return unknown;
+      return unknown('workspace_lease_status_failed');
     }
   }
 

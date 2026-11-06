@@ -86,6 +86,33 @@ function pathsOverlap(left, right) {
   }));
 }
 
+function overlappingPathDetails(left, right) {
+  const overlaps = [];
+  for (const a of left) for (const b of right) {
+    if (a === '.' || b === '.') overlaps.push('.');
+    else {
+      const ak = pathKey(a), bk = pathKey(b);
+      if (ak === bk || ak.startsWith(`${bk}/`) || bk.startsWith(`${ak}/`)) overlaps.push(`${a} ↔ ${b}`);
+    }
+  }
+  return [...new Set(overlaps)];
+}
+
+function normalizeLeasePaths(paths) {
+  if (!Array.isArray(paths) || paths.length > 100) throw new TypeError('leasePaths must contain at most 100 repository-relative paths');
+  return paths.length ? normalizePaths(paths) : [];
+}
+
+function taskLeasePaths(task) {
+  if (['blocked', 'failed', 'completed'].includes(task.status)) return [];
+  if (Array.isArray(task.executionProgress) && task.executionProgress.some(item => ['queued', 'running'].includes(item.status))) {
+    const paths = task.executionProgress.flatMap((item, index) => ['queued', 'running'].includes(item.status)
+      ? task.execution?.tasks[index]?.files || [] : []);
+    return normalizeLeasePaths(paths);
+  }
+  return task.paths;
+}
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -379,6 +406,10 @@ class TaskRegistryStore {
         || taskKeys.has(task.taskKey) || !TASK_STATUSES.has(task.status)
         || !Number.isSafeInteger(task.revision) || task.revision < 1
         || (task.sourceHostId !== undefined && !HOST_ID.test(task.sourceHostId))
+        || (task.lastUpdatedByChatId !== undefined && (typeof task.lastUpdatedByChatId !== 'string'
+          || !task.lastUpdatedByChatId.trim() || task.lastUpdatedByChatId.length > 256))
+        || (task.lastUpdatedAt !== undefined && !Number.isFinite(Date.parse(task.lastUpdatedAt)))
+        || (task.leasePaths !== undefined && JSON.stringify(normalizeLeasePaths(task.leasePaths)) !== JSON.stringify(task.leasePaths))
         || !Array.isArray(task.paths)
         || (conversationOnly
           ? task.repositoryPath !== null || task.baseSha !== null || task.paths.length !== 0
@@ -635,7 +666,9 @@ class TaskRegistryStore {
         revision: 1,
         checkpoint: { nextAction: normalized.nextAction, blocker: '', evidenceRefs: [] },
         createdAt: now,
-        updatedAt: now
+        updatedAt: now,
+        lastUpdatedByChatId: normalized.creatorChatId,
+        lastUpdatedAt: now
       };
       if (normalized.execution !== undefined) task.execution = normalized.execution;
       const executionProgress = initialExecutionProgress(normalized.taskKey, normalized.execution, now);
@@ -692,7 +725,9 @@ class TaskRegistryStore {
         revision: 1,
         checkpoint: { nextAction: 'Shared conversation only; no local repository claim.', blocker: '', evidenceRefs: [] },
         createdAt: envelope.createdAt,
-        updatedAt: now
+        updatedAt: now,
+        lastUpdatedByChatId: envelope.creatorChatId,
+        lastUpdatedAt: now
       };
       state.tasks.push(task);
       this._saveState(state);
@@ -744,13 +779,15 @@ class TaskRegistryStore {
         this._saveState(state);
         return result;
       }
+      const candidatePaths = task.status === 'blocked' ? task.paths : taskLeasePaths(task);
       const conflict = state.tasks.find(other => other.taskKey !== task.taskKey
         && other.repositoryPath === task.repositoryPath && other.ownerChatId
-        && Date.parse(other.leaseExpiresAt) > nowMs && pathsOverlap(other.paths, task.paths));
+        && Date.parse(other.leaseExpiresAt) > nowMs && pathsOverlap(other.leasePaths || other.paths, candidatePaths));
       if (conflict) {
+        const conflictPaths = overlappingPathDetails(conflict.leasePaths || conflict.paths, candidatePaths);
         const result = { accepted: false, reason: 'path_scope_conflict', taskKey: task.taskKey,
           blockingTaskKey: conflict.taskKey, ownerChatId: conflict.ownerChatId,
-          leaseExpiresAt: conflict.leaseExpiresAt, paths: conflict.paths, revision: conflict.revision };
+          leaseExpiresAt: conflict.leaseExpiresAt, paths: conflictPaths, revision: conflict.revision };
         this._remember(state, replay, result);
         this._saveState(state);
         return result;
@@ -759,6 +796,9 @@ class TaskRegistryStore {
       const leaseExpiresAt = new Date(nowMs + normalized.leaseMs).toISOString();
       task.ownerChatId = normalized.ownerChatId;
       task.leaseExpiresAt = leaseExpiresAt;
+      task.leasePaths = candidatePaths;
+      task.lastUpdatedByChatId = normalized.ownerChatId;
+      task.lastUpdatedAt = new Date(nowMs).toISOString();
       if (task.status === 'planned' || task.status === 'blocked') task.status = 'claimed';
       task.revision += 1;
       task.updatedAt = new Date(nowMs).toISOString();
@@ -816,18 +856,22 @@ class TaskRegistryStore {
       if (task.status !== normalized.status && !allowed?.has(normalized.status)) throw new Error(`invalid task transition: ${task.status} -> ${normalized.status}`);
       const evidenceRefs = [...new Set([...(task.checkpoint?.evidenceRefs || []), ...normalized.evidenceRefs])].slice(-20);
       if (normalized.status === 'completed') verifyCompletionIntegration(task, evidenceRefs);
+      const updatedAt = new Date(nowMs).toISOString();
       task.status = normalized.status;
       task.checkpoint = {
         nextAction: normalized.nextAction,
         blocker: normalized.blocker,
         evidenceRefs
       };
+      task.lastUpdatedByChatId = normalized.ownerChatId;
+      task.lastUpdatedAt = updatedAt;
       if (normalized.status === 'blocked' || normalized.status === 'completed' || normalized.status === 'failed') {
         task.ownerChatId = null;
         task.leaseExpiresAt = null;
+        task.leasePaths = [];
       }
       task.revision += 1;
-      task.updatedAt = new Date(nowMs).toISOString();
+      task.updatedAt = updatedAt;
       const result = { updated: true, task: clone(task) };
       this._remember(state, replay, result);
       this._saveState(state);
@@ -894,10 +938,13 @@ class TaskRegistryStore {
       executor.status = status;
       executor.updatedAt = new Date(nowMs).toISOString();
       task.executionProgress = progress;
+      task.lastUpdatedByChatId = ownerChatId;
+      task.lastUpdatedAt = executor.updatedAt;
 
       if (status === 'running' && task.status === 'claimed') {
         task.status = 'executing';
-        task.checkpoint = { nextAction: '하위 작업을 실행 중입니다. 모든 결과를 기록한 뒤 검토 단계로 이동합니다.', blocker: '', evidenceRefs: [] };
+        task.checkpoint = { nextAction: '하위 작업을 실행 중입니다. 모든 결과를 기록한 뒤 검토 단계로 이동합니다.',
+          blocker: task.checkpoint?.blocker || '', evidenceRefs: [] };
       }
       const allTerminal = progress.length > 0 && progress.every(item => ['completed', 'blocked', 'failed'].includes(item.status));
       if (allTerminal && task.status === 'executing') {
@@ -918,6 +965,7 @@ class TaskRegistryStore {
           };
         }
       }
+      task.leasePaths = taskLeasePaths(task);
       task.revision += 1;
       task.updatedAt = new Date(nowMs).toISOString();
       const response = { updated: true, task: clone(task) };
@@ -954,16 +1002,47 @@ class TaskRegistryStore {
       if (task.ownerChatId && task.leaseExpiresAt && Date.parse(task.leaseExpiresAt) > nowMs) {
         return reject('task_still_leased', { status: task.status, ownerChatId: task.ownerChatId, leaseExpiresAt: task.leaseExpiresAt });
       }
-      const conflict = state.tasks.find(other => other.taskKey !== task.taskKey
-        && other.repositoryPath === task.repositoryPath && other.ownerChatId
-        && Date.parse(other.leaseExpiresAt) > nowMs && pathsOverlap(other.paths, task.paths));
-      if (conflict) return reject('path_scope_conflict', { blockingTaskKey: conflict.taskKey });
-
       const progress = task.executionProgress || initialExecutionProgress(taskKey, task.execution, task.createdAt);
       const retryable = progress.filter(item => item.status !== 'completed');
       if (!retryable.length) return reject('no_incomplete_executors', { status: task.status });
       const now = new Date(nowMs).toISOString();
+      const queuedItems = [];
+      const blockedExecutors = [];
       for (const item of retryable) {
+        const index = Number(item.id.slice(`${taskKey}-`.length)) - 1;
+        const planned = task.execution.tasks[index];
+        if (!planned) return reject('executor_plan_record_mismatch', { executorId: item.id });
+        const conflicts = state.tasks.filter(other => other.taskKey !== task.taskKey
+          && other.repositoryPath === task.repositoryPath && other.ownerChatId
+          && Date.parse(other.leaseExpiresAt) > nowMs && pathsOverlap(other.leasePaths || other.paths, planned.files));
+        if (conflicts.length) {
+          const blockingTasks = conflicts.map(other => ({
+            taskKey: other.taskKey,
+            ownerChatId: other.ownerChatId,
+            leaseExpiresAt: other.leaseExpiresAt,
+            paths: overlappingPathDetails(other.leasePaths || other.paths, planned.files)
+          }));
+          const reason = blockingTasks.map(other =>
+            `작업 ${other.taskKey} · 채팅 ${other.ownerChatId} · 만료 ${other.leaseExpiresAt} · 경로 ${other.paths.join(', ') || '범위 확인 필요'}`
+          ).join(' | ').slice(0, 2000);
+          if (item.reason !== reason) {
+            const hasAttemptData = item.attempt > 0 || item.status !== 'queued' || item.sessionId || item.result || item.reason || item.error || item.executionEvidence;
+            if (hasAttemptData) {
+              item.history ||= [];
+              item.history.push({ attempt: item.attempt, status: item.status === 'running' ? 'interrupted' : item.status,
+                sessionId: item.sessionId, result: item.result, reason: item.reason, error: item.error,
+                executionEvidence: item.executionEvidence, updatedAt: item.updatedAt });
+            }
+          }
+          item.status = 'blocked';
+          item.reason = reason;
+          item.error = '';
+          item.result = '';
+          item.executionEvidence = null;
+          item.updatedAt = now;
+          blockedExecutors.push({ id: item.id, title: planned.title, reason, blockingTasks });
+          continue;
+        }
         const hasAttemptData = item.attempt > 0 || item.status !== 'queued' || item.sessionId || item.result || item.reason || item.error || item.executionEvidence;
         if (hasAttemptData) {
           item.history ||= [];
@@ -978,21 +1057,54 @@ class TaskRegistryStore {
         item.error = '';
         item.executionEvidence = null;
         item.updatedAt = now;
+        queuedItems.push(item);
       }
       task.executionProgress = progress;
+      if (!queuedItems.length) {
+        const firstBlocker = blockedExecutors[0]?.blockingTasks?.[0] || {};
+        const blocker = blockedExecutors.map(item => `${item.title}: ${item.reason}`).join('\n').slice(0, 1900);
+        task.status = 'blocked';
+        task.ownerChatId = null;
+        task.leaseExpiresAt = null;
+        task.leasePaths = [];
+        task.lastUpdatedByChatId = ownerChatId;
+        task.lastUpdatedAt = now;
+        task.checkpoint = {
+          nextAction: '충돌 경로의 임대가 끝나면 저장된 미완료 하위 작업만 다시 재개합니다. 겹치지 않는 경로의 다른 작업은 계속할 수 있습니다.',
+          blocker, evidenceRefs: []
+        };
+        task.revision += 1;
+        task.updatedAt = now;
+        const response = { accepted: false, reason: 'path_scope_conflict', taskKey, status: task.status,
+          blockingTaskKey: firstBlocker.taskKey, ownerChatId: firstBlocker.ownerChatId,
+          leaseExpiresAt: firstBlocker.leaseExpiresAt, paths: firstBlocker.paths || [], blockedExecutors };
+        this._remember(state, replay, response);
+        this._saveState(state);
+        return response;
+      }
       task.status = 'claimed';
       task.ownerChatId = ownerChatId;
       task.leaseExpiresAt = new Date(nowMs + leaseMs).toISOString();
-      task.checkpoint = { nextAction: '저장된 계획에서 미완료 실행자만 다시 대기열에 넣습니다.', blocker: '', evidenceRefs: [] };
+      task.leasePaths = normalizeLeasePaths(queuedItems.flatMap(item => {
+        const index = Number(item.id.slice(`${taskKey}-`.length)) - 1;
+        return task.execution.tasks[index].files;
+      }));
+      task.lastUpdatedByChatId = ownerChatId;
+      task.lastUpdatedAt = now;
+      task.checkpoint = {
+        nextAction: `잠금 없는 미완료 하위 작업 ${queuedItems.length}개를 대기열에 넣습니다.`,
+        blocker: blockedExecutors.map(item => `${item.title}: ${item.reason}`).join('\n').slice(0, 1900),
+        evidenceRefs: []
+      };
       task.revision += 1;
       task.updatedAt = now;
-      const tasks = retryable.map(item => {
+      const tasks = queuedItems.map(item => {
         const index = Number(item.id.slice(`${taskKey}-`.length)) - 1;
         const planned = task.execution.tasks[index];
         return { id: item.id, title: planned.title, prompt: planned.prompt, files: planned.files, allowedTools: planned.allowedTools };
       });
       const response = { accepted: true, taskKey, ownerChatId, leaseExpiresAt: task.leaseExpiresAt,
-        status: task.status, revision: task.revision, tasks };
+        status: task.status, revision: task.revision, queuedCount: tasks.length, blockedExecutors, tasks };
       this._remember(state, replay, response);
       this._saveState(state);
       return response;

@@ -27,18 +27,24 @@ test('workspace lease status is read-only and classifies free, local, foreign, s
 
     const start = new Date().toISOString();
     writeLease(lockRoot, workspace, { token: 'secret-token', sessionId: 'secret-session', workspace: '/secret/path', pid: process.pid, host: os.hostname(), startedAt: start });
-    assert.deepEqual(lease.getStatus(workspace), { state: 'held', sameHost: true, pid: process.pid, startedAt: start });
+    assert.deepEqual(lease.getStatus(workspace), { state: 'held', sameHost: true, sourceChatId: 'secret-session',
+      host: os.hostname(), pid: process.pid, startedAt: start, leaseExpiresAt: null,
+      releaseCondition: 'operation_completion_or_verified_process_death' });
 
     writeLease(lockRoot, workspace, { token: 'secret-token', sessionId: 'secret-session', pid: 2, host: 'another-host', startedAt: start });
-    assert.deepEqual(lease.getStatus(workspace), { state: 'held', sameHost: false });
+    assert.deepEqual(lease.getStatus(workspace), { state: 'held', sameHost: false, sourceChatId: 'secret-session',
+      host: 'another-host', pid: 2, startedAt: start, leaseExpiresAt: null,
+      releaseCondition: 'owner_operation_completion_or_explicit_owner_release' });
 
     const deadPid = 2147483647;
     writeLease(lockRoot, workspace, { token: 'secret-token', sessionId: 'secret-session', workspace: '/secret/path', pid: deadPid, host: os.hostname(), startedAt: start });
-    assert.deepEqual(lease.getStatus(workspace), { state: 'stale', sameHost: true, pid: deadPid, startedAt: start });
+    assert.deepEqual(lease.getStatus(workspace), { state: 'stale', sameHost: true, sourceChatId: 'secret-session',
+      host: os.hostname(), pid: deadPid, startedAt: start, leaseExpiresAt: null,
+      releaseCondition: 'operation_completion_or_verified_process_death' });
     assert.equal(fs.readdirSync(lockRoot).length, 1, 'status reads must not reclaim stale lock files');
 
     fs.writeFileSync(path.join(lockRoot, `${lease._workspaceKey(workspace)}.lock`), '{bad json');
-    assert.deepEqual(lease.getStatus(workspace), { state: 'unknown', sameHost: null });
+    assert.deepEqual(lease.getStatus(workspace), { state: 'unknown', sameHost: null, reason: 'lock_record_invalid_json' });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -62,7 +68,12 @@ test('ownership API includes a safe workspace lease snapshot and preserves exist
     await app._handleRequest(req, res);
     assert.equal(res.statusCode, 200);
     const response = JSON.parse(body);
-    assert.deepEqual(response.workspaceLease, { state: 'free', sameHost: null });
+    assert.equal(response.workspaceLease.state, 'free');
+    assert.equal(response.workspaceLease.sameHost, null);
+    assert.equal(response.workspaceLease.scope, 'workspace_execution');
+    assert.equal(response.workspaceLease.workspaceWide, true);
+    assert.equal(response.workspaceLease.repositoryWide, false);
+    assert.ok(Number.isFinite(Date.parse(response.workspaceLease.readAt)));
     assert.ok(Array.isArray(response.locks));
     assert.ok(Array.isArray(response.uncommitted));
     assert.deepEqual(response.gitStatus, { available: false, error: 'git_status_unavailable' });

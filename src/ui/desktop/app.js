@@ -15,7 +15,10 @@ const {
   mapSessionDropDestination: mapSessionDropDestinationModel
 } = window.sessionDropMapping;
 const sessionMetadataGuard = createSessionMetadataGuardModel();
-const { presentWorkspaceOwnership: presentWorkspaceOwnershipModel } = window.workspaceOwnershipPresentation;
+const {
+  presentWorkspaceOwnership: presentWorkspaceOwnershipModel,
+  presentTaskResumeFailure
+} = window.workspaceOwnershipPresentation;
 
 let currentSessionId = null;
 let currentCodexThreadId = null;
@@ -2891,6 +2894,7 @@ async function loadSessions() {
     const status = document.getElementById('sessionListStatus');
     if (status) status.textContent = '';
     renderFilteredSessions();
+    if (workbenchSnapshot) renderWorkbenchTasks();
   } catch (err) {
     if (requestId === sessionsLoadRequestId) {
       console.warn('Failed to load sessions:', err);
@@ -4800,7 +4804,7 @@ async function refreshWorkbench() {
           const data = await readWorkbenchSnapshot('/api/ownership');
           const presented = presentWorkspaceOwnershipModel(data);
           state.textContent = presented.gitText;
-          detail.textContent = [priorityStatus?.sessionWorkspaceDir || priorityStatus?.workspaceDir, presented.pathLockText, presented.leaseText].filter(Boolean).join(' · ');
+          detail.textContent = [priorityStatus?.sessionWorkspaceDir || priorityStatus?.workspaceDir, presented.pathLockText, presented.leaseText, presented.leaseDetail].filter(Boolean).join(' · ');
         } catch (_) {
           state.textContent = '작업공간 상태를 확인할 수 없습니다.';
           detail.textContent = '새로고침하거나 원본·변경 화면에서 확인하세요.';
@@ -4813,6 +4817,19 @@ async function refreshWorkbench() {
     button.disabled = false;
     document.getElementById('workbenchPanel').setAttribute('aria-busy', 'false');
   }
+}
+
+function workbenchChatLabel(chatId) {
+  if (typeof chatId !== 'string' || !chatId.trim()) return '채팅 출처 미확인';
+  const data = cachedUnifiedData;
+  const sessions = [
+    ...(Array.isArray(data?.internal) ? data.internal : []),
+    ...(Array.isArray(data?.unified?.pinned) ? data.unified.pinned : []),
+    ...(Array.isArray(data?.unified?.sections) ? data.unified.sections.flatMap(group => group.items || []) : []),
+    ...(Array.isArray(data?.unified?.projects) ? data.unified.projects.flatMap(group => group.items || []) : [])
+  ];
+  const session = sessions.find(item => (item.id || item.sessionId) === chatId);
+  return session?.title ? `${session.title} (${chatId})` : `제목 확인 불가 (${chatId})`;
 }
 
 function renderWorkbenchTasks() {
@@ -4858,11 +4875,19 @@ function renderWorkbenchTasks() {
     summary.append(flow);
     summary.append(workbenchText('span', 'workbench-next', `다음 · ${row.next || '다음 단계 기록 필요'}`));
     if (row.blocker) summary.append(workbenchText('span', 'workbench-blocker workbench-next', `막힘 · ${row.blocker}`));
+    summary.append(workbenchText('span', 'workbench-next', `요청 채팅 ${workbenchChatLabel(row.sourceChatId)} · 담당/보고 채팅 ${workbenchChatLabel(row.owner || row.lastUpdatedByChatId)} · 임대 ${row.leaseExpiresAt ? `만료 ${new Date(row.leaseExpiresAt).toLocaleString()}` : row.owner ? '만료 시각 미확인' : '현재 임대 없음'}`));
     summary.append(workbenchText('span', 'workbench-proof-count', `검토 근거 ${row.evidence.length}개`));
     const detail = workbenchText('div', 'workbench-task-detail', '');
-    detail.append(workbenchText('p', '', `담당 채팅 · ${row.owner || '미배정'}`));
+    detail.append(workbenchText('p', '', `요청 출처 · ${workbenchChatLabel(row.sourceChatId)} · 기기 ${row.sourceHostId || '확인 필요'} · 등록 ${row.createdAt ? new Date(row.createdAt).toLocaleString() : '시각 미확인'}`));
+    detail.append(workbenchText('p', '', `마지막 기록 · ${row.lastUpdatedByChatId ? workbenchChatLabel(row.lastUpdatedByChatId) : '기존 기록에는 작성 채팅이 저장되지 않음'} · ${row.lastUpdatedAt ? new Date(row.lastUpdatedAt).toLocaleString() : '시각 미확인'}`));
+    if (row.owner) {
+      detail.append(workbenchText('p', '', `현재 담당 채팅 · ${workbenchChatLabel(row.owner)} · 임대 만료 ${row.leaseExpiresAt ? new Date(row.leaseExpiresAt).toLocaleString() : '만료 시각 확인 필요'}`));
+    } else {
+      detail.append(workbenchText('p', '', `현재 담당 채팅 · 없음 · ${row.leaseExpiresAt ? `마지막 임대 만료 ${new Date(row.leaseExpiresAt).toLocaleString()}` : '현재 실행 임대 없음'}`));
+    }
     detail.append(workbenchText('p', '', `원본 · ${row.repository || '기록 없음'}`));
     if (row.paths.length) detail.append(workbenchText('p', '', `변경 범위 · ${row.paths.join(', ')}`));
+    if (row.owner && row.leasePaths.length) detail.append(workbenchText('p', '', `현재 임대 경로 · ${row.leasePaths.join(', ')}`));
     detail.append(workbenchText('p', '', `검토 근거 · ${row.evidence.length}개`));
     for (const ref of row.evidence) detail.append(workbenchText('p', 'workbench-evidence', ref));
     if (row.canResume && row.creatorChatId) {
@@ -4882,9 +4907,15 @@ function renderWorkbenchTasks() {
             body: JSON.stringify({ ownerChatId: row.creatorChatId, idempotencyKey: `ui-resume-${key}` })
           });
           const result = await response.json();
-          if (!response.ok || !result.accepted) throw new Error(result.reason || result.error || '재개 요청을 접수하지 못했습니다.');
-          resumeStatus.textContent = result.replayed ? '이 요청은 이미 접수된 재개입니다.' : `저장된 계획의 미완료 실행자 ${result.queuedCount}개를 다시 대기열에 넣었습니다.`;
+          if (!response.ok || !result.accepted) throw new Error(presentTaskResumeFailure(result));
+          const queuedCount = Number.isSafeInteger(result.queuedCount) ? result.queuedCount : 0;
           await refreshWorkbench();
+          const refreshed = workbenchSnapshot?.rows.find(item => item.key === row.key);
+          const waitingOnOtherChat = refreshed?.executionProgress.filter(item => item.status === 'blocked'
+            && /작업 .+채팅 .+만료 /u.test(item.reason)) || [];
+          resumeStatus.textContent = result.replayed ? '이 요청은 이미 접수된 재개입니다.'
+            : `잠금 없는 미완료 작업 ${queuedCount}개를 재개했습니다.${waitingOnOtherChat.length
+              ? ` 겹치는 경로의 ${waitingOnOtherChat.length}개는 담당 채팅과 만료 시각을 기록해 대기 중이며, 나머지는 계속 실행합니다.` : ''}`;
         } catch (error) {
           resumeStatus.textContent = error.message;
           resume.disabled = false;
@@ -4894,10 +4925,10 @@ function renderWorkbenchTasks() {
     }
     for (const executor of row.executionProgress) {
       const worker = workbenchText('section', 'workbench-executor-result', '');
-      worker.append(workbenchText('strong', '', `${executor.title} · ${executor.status} · 시도 ${executor.attempt}회`));
+      worker.append(workbenchText('strong', '', `${executor.title} · ${executor.status} · 시도 ${executor.attempt}회 · ${executor.sessionId ? workbenchChatLabel(executor.sessionId) : '출처 미확인'} · 기록 ${executor.updatedAt ? new Date(executor.updatedAt).toLocaleString() : '시각 미확인'}`));
       for (const previous of executor.history) {
         const prior = workbenchText('div', 'workbench-executor-attempt', '');
-        prior.append(workbenchText('strong', '', `이전 시도 ${previous.attempt} · ${previous.status}`));
+        prior.append(workbenchText('strong', '', `이전 시도 ${previous.attempt} · ${previous.status} · ${previous.sessionId ? workbenchChatLabel(previous.sessionId) : '출처 미확인'} · 기록 ${previous.updatedAt ? new Date(previous.updatedAt).toLocaleString() : '시각 미확인'}`));
         if (previous.reason) prior.append(workbenchText('p', '', `차단 사유 · ${previous.reason}`));
         if (previous.error) prior.append(workbenchText('p', '', `오류 · ${previous.error}`));
         if (previous.result) prior.append(workbenchText('pre', '', previous.result));
