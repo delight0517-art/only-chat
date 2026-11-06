@@ -309,7 +309,7 @@ class CodexCliAdapter {
       ? this._agentWorkspaceRoute(context.sessionId) : null;
     const usesSpaceO = agentWorkspaceRoute?.transport === 'spaceo';
     if (usesSpaceO) {
-      trustedDeveloperInstructions += '\n\n이 대화의 Mac 앱 작업은 onlychat_agent_workspace의 SpaceO 전용 세션에서만 수행하세요. 빈 세션을 먼저 만들고 격리 상태와 대상 앱의 창 소유권을 확인하세요. 세션 생성이나 격리 검증이 실패하면 작업을 멈추고 다른 화면 제어 경로로 전환하지 마세요.';
+      trustedDeveloperInstructions += '\n\n이 대화의 Mac 앱 작업은 onlychat_agent_workspace의 SpaceO 전용 세션에서만 수행하세요. 화면 작업마다 이 연결에서 preset=exclusive인 빈 세션을 하나 만들고, 그 세션 ID로 격리 상태와 대상 앱의 창 소유권을 확인하세요. 작업을 완료하거나 중단하면 그 세션 ID로 spaceo_session_destroy를 호출하고 결과를 확인하세요. 세션 생성이나 격리 검증이 실패하면 작업을 멈추고 다른 화면 제어 경로로 전환하지 마세요.';
     }
     const screenBridge = approvalPolicy === 'read-only' || context.toolProfile === 'no-tools' || agentWorkspaceRoute
       ? null : this.macScreenBridge?.();
