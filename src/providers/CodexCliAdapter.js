@@ -302,6 +302,8 @@ class CodexCliAdapter {
     const workspaceDir = path.resolve(context.workspaceDir || process.cwd());
     if (!['on-request', 'never', 'read-only'].includes(approvalPolicy)) throw new Error('지원하지 않는 도구 승인 정책입니다.');
     const fullAccess = context.fullAccess === true;
+    const exposeSpaceOMaintenance = process.platform === 'darwin' && approvalPolicy === 'on-request'
+      && context.toolProfile !== 'no-tools';
     if (fullAccess && approvalPolicy === 'read-only') throw new Error('읽기 전용 승인 정책에서는 Full access를 사용할 수 없습니다.');
     const agentWorkspaceRoute = process.platform === 'darwin' && approvalPolicy !== 'read-only' && context.toolProfile !== 'no-tools'
       ? this._agentWorkspaceRoute(context.sessionId) : null;
@@ -327,6 +329,7 @@ class CodexCliAdapter {
         if (process.platform === 'darwin') {
           reason += ' Only Chat의 35Closer 도구로 대기 중 전원 요청을 등록하거나 취소할 수 있으며, 실제 절전·깨우기는 35Closer 앱에서 별도 승인이 필요합니다.';
         }
+        if (exposeSpaceOMaintenance) reason += ' 사용자가 요청한 SpaceO 데몬 재시작을 세션 종료 후 실행할 수 있습니다.';
         if (screenBridge?.enabled === true) reason += ' 사용자가 켠 Mac 화면 제어로 화면을 읽거나 조작할 수도 있습니다.';
         if (agentWorkspaceSocket) reason += ' 이 Only Chat 대화에 배정된 워크스테이션의 앱을 읽고 조작할 수 있습니다.';
         approved = await approve({
@@ -396,6 +399,13 @@ class CodexCliAdapter {
           '-c', 'mcp_servers.onlychat_35closer.enabled=true',
           '-c', `mcp_servers.onlychat_35closer.command=${JSON.stringify(process.execPath)}`,
           '-c', `mcp_servers.onlychat_35closer.args=${JSON.stringify([path.join(this.projectRoot, 'src/connectors/OnlyChat35CloserMcpServer.js')])}`);
+      }
+      if (exposeSpaceOMaintenance) {
+        const maintenance = path.join(this.projectRoot, 'src/connectors/OnlyChatSpaceOMaintenanceMcpServer.js');
+        args.splice(args.length - 3, 0,
+          '-c', 'mcp_servers.onlychat_spaceo_maintenance.enabled=true',
+          '-c', `mcp_servers.onlychat_spaceo_maintenance.command=${JSON.stringify(process.execPath)}`,
+          '-c', `mcp_servers.onlychat_spaceo_maintenance.args=${JSON.stringify([maintenance])}`);
       }
       const flutterCache = fullAccess ? null : flutterCacheFor(workspaceDir, prompt);
       if (flutterCache) {
