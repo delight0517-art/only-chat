@@ -26,12 +26,21 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return (Bundle.main.object(forInfoDictionaryKey: "OnlyChatIsolatedPreview") as? Bool == true)
             || environment["SPACEO_AGENT_SESSION"] == "1"
             || environment["ONLY_CHAT_ISOLATED"] == "1"
+            || CommandLine.arguments.contains("--spaceo-agent-session")
+    }
+
+    private static func launchArgument(_ name: String) -> String? {
+        let prefix = "\(name)="
+        return CommandLine.arguments.first(where: { $0.hasPrefix(prefix) })
+            .map { String($0.dropFirst(prefix.count)) }
     }
 
     private static var isolatedDataDirectory: String? {
         let environment = ProcessInfo.processInfo.environment
         let path: String?
-        if isolatedRuntimeRequested, let value = environment["ONLY_CHAT_DATA_DIR"], !value.isEmpty {
+        if isolatedRuntimeRequested,
+           let value = launchArgument("--only-chat-data-dir") ?? environment["ONLY_CHAT_DATA_DIR"],
+           !value.isEmpty {
             path = value
         } else if Bundle.main.object(forInfoDictionaryKey: "OnlyChatIsolatedPreview") as? Bool == true,
                   let value = Bundle.main.object(forInfoDictionaryKey: "OnlyChatPreviewDataDirectory") as? String,
@@ -52,8 +61,9 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     private static var selectedPort: Int? {
         let environment = ProcessInfo.processInfo.environment
-        if environment["SPACEO_AGENT_SESSION"] == "1" {
-            guard let value = Int(environment["ONLY_CHAT_PORT"] ?? ""),
+        if environment["SPACEO_AGENT_SESSION"] == "1"
+            || CommandLine.arguments.contains("--spaceo-agent-session") {
+            guard let value = Int(launchArgument("--only-chat-port") ?? environment["ONLY_CHAT_PORT"] ?? ""),
                   (1...65_535).contains(value) else { return nil }
             return value
         }
