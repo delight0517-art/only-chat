@@ -936,12 +936,22 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
           ? '통합 가드: 충돌 없음' : '통합 가드: 통합 대기';
         write(`[Only Chat 상태 확인: ${workspaceContext.activeBacklog.length}개 미완료 backlog · ${leaseSummary} · ${integrationSummary}]\n`);
       }
-      result = await streamOnlyChatTurn({ baseUrl, sessionId, prompt: nextPrompt, model, approveTools, approveWorkspaceWrite, workspaceContext, toolProfile, fetchImpl, write, signal: activeSignal, maxToolCalls: GOAL_TURN_TOOL_LIMIT, timeoutMs: GOAL_TURN_TIMEOUT_MS });
+      result = await streamOnlyChatTurn({ baseUrl, sessionId, prompt: nextPrompt, model, approveTools, approveCommands, approveWorkspaceWrite, workspaceContext, toolProfile, fetchImpl, write, signal: activeSignal, maxToolCalls: GOAL_TURN_TOOL_LIMIT, timeoutMs: GOAL_TURN_TIMEOUT_MS });
     } catch (error) {
       if (now() >= deadline) break;
       throw error;
     }
     if (result.sessionId) sessionId = result.sessionId;
+    const successfulChanges = Number(result.execution?.successfulFileChangeTools || 0)
+      + Number(result.execution?.successfulMutatingTools || 0);
+    if (successfulChanges > 0) {
+      substantiveProgress += successfulChanges;
+      blockerProgress.clear();
+      stalledSince = null;
+      stalledFingerprint = '';
+      stalledReason = '';
+      lastSubstantiveProgressAt = now();
+    }
     if (!result.ok) {
       if (fixedDuration && ['tool_call_limit', 'turn_timeout'].includes(result.category)) {
         consecutiveInterruptedTurns++;
@@ -950,13 +960,15 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
         write(`\n[회차 제한 도달 · ${result.category} · 다음 하위 작업으로 계속]\n`);
         if (consecutiveInterruptedTurns >= 5) {
           const blockedReason = `회차 ${iteration - consecutiveInterruptedTurns + 1}–${iteration} 도구/시간 제한 5회 연속`;
+          if (!recordBlocker(blockedReason)) {
+            return stopForStall(`같은 도구/시간 제한이 변경된 재시도 뒤 다시 발생했습니다: ${blockedReason}`, { response: result.response });
+          }
           blockedSteps.push(blockedReason);
           consecutiveInterruptedTurns = 0;
           interruptedTurns.length = 0;
           write('\n[하위 작업 보류 · 제한된 회차가 5번 연속 이어짐 · 다른 작업으로 계속]\n');
           if (blockedSteps.length >= 5) {
-            write('\n[중단: 서로 다른 하위 작업 5개가 연속으로 막혀 더 진행하지 않았습니다.]\n');
-            return { ...result, category: 'goal_no_progress', reason: blockedReason, blockedSteps, sessionId, iteration, deadline };
+            return stopForStall(`서로 다른 하위 작업 5개가 막혔습니다: ${blockedReason}`, { ...result, sessionId, iteration, deadline });
           }
         }
         continue;
@@ -969,12 +981,6 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
     const normalizedResponse = result.response.trim().replace(/\s+/g, ' ').toLowerCase();
     const completionClaim = /(?:goal\s+complete|no\s+(?:remaining|further)\s+(?:actionable\s+)?tasks?|nothing\s+left\s+to\s+do|all\s+(?:tasks|work)\s+(?:are\s+)?complete|목표.{0,12}완료|남은\s*작업.{0,12}없|더\s*이상.{0,12}(?:할\s*일|작업).{0,8}없|모두\s*완료)/i.test(normalizedResponse);
     const noToolTurn = (result.execution?.toolCalls || 0) === 0 && (result.execution?.successfulTools || 0) === 0;
-    if (!fixedDuration && noToolTurn && normalizedResponse && normalizedResponse === previousNoToolResponse) {
-      const reason = '같은 도구 없는 응답이 반복되어 진행 증거가 없습니다.';
-      write(`\n[Goal 정지: ${reason}]\n`);
-      return { ok: false, category: 'goal_no_progress', reason, sessionId, iteration, deadline, response: result.response };
-    }
-    previousNoToolResponse = noToolTurn ? normalizedResponse : '';
     if (fixedDuration && noToolTurn && completionClaim && previousNoToolCompletionClaim) {
       repeatedNoProgress++;
     } else {
@@ -989,28 +995,36 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
     const stepBlockedMatch = /^\s*GOAL_STEP_BLOCKED\s*:\s*(.+?)\s*$/m.exec(result.response);
     if (fixedDuration && stepBlockedMatch) {
       const reason = redactToolMessage(stepBlockedMatch[1]) || '하위 작업이 진행 불가 상태입니다.';
+      if (!recordBlocker(reason)) return stopForStall(`같은 근본 원인이 한 번의 변경된 재시도 후 다시 발생했습니다: ${reason}`, { response: result.response });
       blockedSteps.push(reason);
       write(`\n[하위 작업 보류 · ${reason} · 다음 작업 탐색]\n`);
       if (blockedSteps.length >= 5) {
-        write('\n[중단: 서로 다른 하위 작업 5개가 연속으로 막혀 더 진행하지 않았습니다.]\n');
-        return { ok: false, category: 'goal_no_progress', reason, blockedSteps, sessionId, iteration, deadline };
+        return stopForStall(`서로 다른 하위 작업 5개가 막혔습니다: ${reason}`, { response: result.response });
       }
       continue;
     }
     const blockedMatch = /^\s*GOAL_BLOCKED(?:\s*:\s*(.+?))?\s*$/m.exec(result.response);
     if (blockedMatch) {
       const reason = redactToolMessage(blockedMatch[1] || '') || '새로 진행할 안전한 작업이 없습니다.';
-      write(`\n[중단: ${reason}]\n`);
-      return { ok: false, category: 'goal_blocked', reason, sessionId, iteration, deadline, response: result.response };
+      recordBlocker(reason);
+      return stopForStall(`Goal 전체가 차단되었습니다: ${reason}`, { response: result.response });
     }
+    if (noToolTurn && normalizedResponse && normalizedResponse === previousNoToolResponse) {
+      const reason = '같은 도구 없는 응답이 반복되어 진행 증거가 없습니다.';
+      if (stalledSince == null) recordBlocker(reason);
+      return stopForStall(reason, { response: result.response });
+    }
+    previousNoToolResponse = noToolTurn ? normalizedResponse : '';
     if (!fixedDuration && /^\s*GOAL_COMPLETE\s*$/m.test(result.response)) return { ok: true, sessionId, iteration, deadline, completedEarly: true };
   }
-  write(`\n[정해진 시간이 끝났습니다 · 반복 ${iteration}회 · 세션 ${sessionId}]\n`);
-  return { ok: true, sessionId, iteration, deadline, completedEarly: false };
+  const reason = '요청한 시간이 끝났지만 Goal 완료가 검증되지 않았습니다.';
+  const nextAction = '중단 지점에서 완료된 변경과 남은 작업을 확인한 뒤 이어서 진행하세요.';
+  write(`\n[정해진 시간이 끝났습니다 · 미완료 · 반복 ${iteration}회 · 세션 ${sessionId} · 다음 조치: ${nextAction}]\n`);
+  return { ok: false, category: 'goal_time_limit', reason, sessionId, iteration, deadline, completedEarly: false, checkpoint: checkpoint(nextAction) };
 }
 
 function parseChatCommand(commandArgs) {
-  const options = { model: 'auto', approveTools: [], approveWorkspaceWrite: null, toolProfile: null };
+  const options = { model: 'auto', approveTools: [], approveCommands: [], approveWorkspaceWrite: null, toolProfile: null, executeCommandFallback: false, jsonOutput: false };
   const positional = [];
   for (let i = 0; i < commandArgs.length; i++) {
     const arg = commandArgs[i];
