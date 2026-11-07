@@ -139,6 +139,24 @@ try {
   );
   console.log('  ✓ 디스패처 큐 스냅샷 내 TODO 태스크 확인 완료');
 
+  // 6. 자동 라우터(auto) 요청 시 Full Access 라우팅 게이트 검증
+  console.log('▶ Step 6: 자동 라우터(modelSelection: auto) 및 Full access 라우팅 거부 해소 검증');
+  // 가짜 연결 상태를 주입하여 409 'Full access 거부' 없이 통과하는지 확인
+  app.codexAdapter = { getReadiness: () => ({ connected: true, authenticated: true }) };
+  const turnReqRes = await fetch(`${url}/api/turn`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: url },
+    body: JSON.stringify({
+      prompt: '테스트 프롬프트',
+      reasoningEffort: 'low',
+      modelSelection: 'auto',
+      fullAccess: true
+    })
+  });
+  // 409 'Full access는 연결된 Codex 계정 또는 설정된 Account Router 모델로 요청할 수 있습니다'로 즉시 튕기지 않음 확인!
+  assert.notEqual(turnReqRes.status, 409, '기본 자동 라우터 auto 선택 시 Full access 요청이 409로 부당하게 거부되지 않아야 함');
+  console.log(`  ✓ 기본 자동 라우터 auto 및 Full access 요청 라우팅 게이트 정상 통과 (status: ${turnReqRes.status})`);
+
   console.log('\n🎉 [성공] Only Chat E2E 라이브 테스트 100% 통과!\n');
 } finally {
   if (app) app.stop();

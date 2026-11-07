@@ -91,15 +91,22 @@ function createServer(options = {}) {
   });
 
   function repoIdentity() {
-    const root = path.resolve(String(execImpl('git', ['-C', workspaceDir, 'rev-parse', '--show-toplevel'], {
+    let resolvedWorkspace = path.resolve(workspaceDir);
+    try { resolvedWorkspace = fs.realpathSync(resolvedWorkspace); } catch (_) {}
+    let root = path.resolve(String(execImpl('git', ['-C', workspaceDir, 'rev-parse', '--show-toplevel'], {
       cwd: workspaceDir, encoding: 'utf8', timeout: 2000, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'ignore']
     })).trim());
-    if (root !== workspaceDir) throw new Error('Lease operations require the selected workspace to be the Git repository root.');
+    try { root = fs.realpathSync(root); } catch (_) {}
+    if (root !== resolvedWorkspace && !resolvedWorkspace.startsWith(root + path.sep)) {
+      throw new Error('Lease operations require the selected workspace to be inside a Git repository.');
+    }
     const commonDir = String(execImpl('git', ['-C', workspaceDir, 'rev-parse', '--git-common-dir'], {
       cwd: workspaceDir, encoding: 'utf8', timeout: 2000, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'ignore']
     })).trim();
     if (!commonDir) throw new Error('Git repository identity is unavailable.');
-    return { root, repo: path.resolve(workspaceDir, commonDir) };
+    let repoPath = path.resolve(workspaceDir, commonDir);
+    try { repoPath = fs.realpathSync(repoPath); } catch (_) {}
+    return { root, repo: repoPath };
   }
 
   function validatePaths(values) {

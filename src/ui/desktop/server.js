@@ -2291,6 +2291,15 @@ class DesktopServer {
         } catch (_) {
           accountRouterModelAllowed = false;
         }
+      } else if (normalizedModelSelection === 'auto') {
+        try {
+          const routerChain = await (await this.engine._getAccountRouterAdapter()).getChain();
+          accountRouterModelAllowed = routerChain?.enabled === true && Array.isArray(routerChain.accounts)
+            && routerChain.accounts.some(account => account.enabled !== false && account.provider
+              && !['demo', 'unconfigured'].includes(account.provider));
+        } catch (_) {
+          accountRouterModelAllowed = false;
+        }
       }
       if (isFreeRouterModel && body.managerMode !== true && body.fullAccess !== true) {
         try {
@@ -2319,7 +2328,8 @@ class DesktopServer {
               && tier.health?.isThrottled !== true)
               .sort((a, b) => (Number(a.tier) || Number.MAX_SAFE_INTEGER) - (Number(b.tier) || Number.MAX_SAFE_INTEGER))[0];
         const codexConnected = selectedTier?.provider === 'codex' && this.codexAdapter?.getReadiness(selectedTier).connected === true;
-        if (this.approvalPolicy === 'read-only' || (!codexConnected && !accountRouterModelAllowed)) {
+        const routerConnected = selectedTier?.provider === 'account-router' && accountRouterModelAllowed;
+        if (this.approvalPolicy === 'read-only' || (!codexConnected && !accountRouterModelAllowed && !routerConnected)) {
           res.writeHead(409, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: this.approvalPolicy === 'read-only'
             ? '읽기 전용 정책에서는 Full access를 사용할 수 없습니다.'
