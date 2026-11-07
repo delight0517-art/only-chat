@@ -869,14 +869,14 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             expectedWorkspacePath = URL(fileURLWithPath: dataDirectory, isDirectory: true)
                 .appendingPathComponent("workspace", isDirectory: true).standardizedFileURL.path
         } else {
-            expectedWorkspacePath = root.standardizedFileURL.path
+            expectedWorkspacePath = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         }
         URLSession.shared.dataTask(with: request) { data, response, _ in
             let status = response as? HTTPURLResponse
             let payload = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             let isCompatible = status?.statusCode == 200
                 && payload?["routerIntegrationRevision"] as? String == "2026-11-05-v1"
-                && (payload?["workspaceDir"] as? String).map {
+                && (payload?["defaultWorkspaceDir"] as? String).map {
                     URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL.path
                 } == expectedWorkspacePath
             DispatchQueue.main.async { completion(isCompatible) }
