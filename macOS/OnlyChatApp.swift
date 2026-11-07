@@ -146,6 +146,47 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: """
+            (() => {
+              if (location.hostname !== '127.0.0.1' || location.port !== '8898') return;
+              let reported = false;
+              const show = (kind, detail) => {
+                if (reported) return;
+                reported = true;
+                const message = `Only Chat diagnostic: ${kind}: ${String(detail).slice(0, 500)}`;
+                console.error(message);
+                const render = () => {
+                  const panel = document.createElement('pre');
+                  panel.id = 'onlyChatRuntimeDiagnostic';
+                  panel.textContent = message;
+                  panel.style.cssText = 'position:fixed;z-index:2147483647;top:8px;left:8px;right:8px;max-height:30vh;overflow:auto;padding:12px;background:#5c1720;color:white;font:12px/1.4 monospace;white-space:pre-wrap;border:2px solid #ff8b8b;border-radius:8px';
+                  document.documentElement.append(panel);
+                };
+                if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', render, { once: true });
+                else render();
+              };
+              window.addEventListener('error', event => {
+                if (event instanceof ErrorEvent && (event.error || event.message)) {
+                  show('JavaScript error', `${event.message} at ${event.filename}:${event.lineno}:${event.colno}`);
+                }
+              }, true);
+              window.addEventListener('unhandledrejection', event => {
+                show('unhandled promise rejection', event.reason?.stack || event.reason);
+              }, true);
+              document.addEventListener('DOMContentLoaded', () => {
+                setTimeout(() => {
+                  const loader = document.querySelector('#sessionList .nav-item-text')?.textContent || '';
+                  if (!reported && loader.includes('세션 목록을 불러오는 중')) {
+                    show('bootstrap incomplete', `app.js loaded=${[...document.scripts].some(script => script.src.endsWith('/app.js'))}; sessionList=${loader}`);
+                  }
+                }, 2500);
+              }, { once: true });
+            })();
+            """,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
         configuration.userContentController.add(self, name: "speech")
         configuration.userContentController.add(self, name: "browserPanel")
         configuration.userContentController.add(self, name: "macScreen")
