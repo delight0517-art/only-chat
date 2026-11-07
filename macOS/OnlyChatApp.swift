@@ -603,13 +603,13 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 }
                 guard let frontmostInfo,
                       let processNumber = frontmostInfo[kCGWindowOwnerPID as String] as? NSNumber,
-                      let windowNumber = frontmostInfo[kCGWindowNumber as String] as? NSNumber,
-                      let cgTitle = (frontmostInfo[kCGWindowName as String] as? String) ?? "" else {
+                      let windowNumber = frontmostInfo[kCGWindowNumber as String] as? NSNumber else {
                     self.currentWindowPreviewTargets.removeAll()
                     self.sendCurrentWindowPreviewResult(id: id, result: ["error": "미리보기할 다른 앱 창이 현재 화면에 없습니다."])
                     return
                 }
 
+                let cgTitle = (frontmostInfo[kCGWindowName as String] as? String) ?? ""
                 let processID = processNumber.int32Value
                 let windowID = CGWindowID(windowNumber.uint32Value)
                 let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
