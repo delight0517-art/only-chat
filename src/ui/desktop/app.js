@@ -17,7 +17,7 @@ const {
 const sessionMetadataGuard = createSessionMetadataGuardModel();
 const {
   presentWorkspaceOwnership: presentWorkspaceOwnershipModel,
-  presentTaskResumeFailure
+  presentTaskResumeFailure: presentTaskResumeFailureModel
 } = window.workspaceOwnershipPresentation;
 
 let currentSessionId = null;
@@ -5153,7 +5153,7 @@ function renderWorkbenchTasks() {
             body: JSON.stringify({ ownerChatId: resumerChatId, idempotencyKey: `ui-resume-${key}` })
           });
           const result = await response.json();
-          if (!response.ok || !result.accepted) throw new Error(presentTaskResumeFailure(result));
+          if (!response.ok || !result.accepted) throw new Error(presentTaskResumeFailureModel(result));
           const queuedCount = Number.isSafeInteger(result.queuedCount) ? result.queuedCount : 0;
           await refreshWorkbench();
           const refreshed = workbenchSnapshot?.rows.find(item => item.key === row.key);
