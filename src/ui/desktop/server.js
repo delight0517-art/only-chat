@@ -89,7 +89,13 @@ class DesktopServer {
       const realRelative = path.relative(fs.realpathSync(tempRoot), fs.realpathSync(this.dataDir));
       if (!realRelative || realRelative === '..' || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) throw new Error('Isolated profile resolves outside the system temporary folder.');
     }
-    this.workspaceDir = path.resolve(options.workspaceDir || (this.isolated ? path.join(this.dataDir, 'workspace') : process.cwd()));
+    const requestedWorkspaceDir = options.workspaceDir;
+    const legacyChatWorkspaceDir = path.join(os.homedir(), 'Documents', 'Only Chat');
+    const defaultWorkspaceDir = !this.isolated && requestedWorkspaceDir
+      && path.resolve(requestedWorkspaceDir) === legacyChatWorkspaceDir
+      ? os.homedir()
+      : requestedWorkspaceDir || (this.isolated ? path.join(this.dataDir, 'workspace') : os.homedir());
+    this.workspaceDir = path.resolve(defaultWorkspaceDir);
     if (this.isolated) {
       const relative = path.relative(this.dataDir, this.workspaceDir);
       if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('Isolated workspace must stay inside the temporary profile.');
