@@ -18,7 +18,7 @@ function makeServer({ platform = 'darwin', calls = [], stdout = '' } = {}) {
 
 test('SpaceO maintenance connector advertises only bounded allowlisted tools', () => {
   assert.deepEqual(tools.map(item => item.name), [
-    'spaceo_status', 'spaceo_set_reconfiguration_mode', 'spaceo_restart'
+    'spaceo_status', 'spaceo_set_reconfiguration_mode', 'spaceo_restart', 'spaceo_trim_idle_displays'
   ]);
   for (const item of tools) assert.equal(item.inputSchema.additionalProperties, false);
   assert.deepEqual(tools[1].inputSchema.properties.mode.enum, ['automatic', 'operatorOverride']);
@@ -93,6 +93,16 @@ test('restart reports a digest mismatch and non-macOS hosts refuse without execu
   result = await server.handle({ id: 1, method: 'tools/call', params: { name: 'spaceo_status', arguments: {} } });
   assert.equal(result.result.isError, true);
   assert.deepEqual(calls, []);
+});
+
+test('trim idle displays invokes spaceo pool trim --operator --json', async () => {
+  const calls = [];
+  const server = makeServer({ calls, stdout: '{"ok":true,"displays":[]}\n' });
+  const result = await server.handle({ id: 1, method: 'tools/call', params: { name: 'spaceo_trim_idle_displays', arguments: {} } });
+  assert.deepEqual(JSON.parse(result.result.content[0].text), { ok: true, displays: [] });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].file, '/home/test/.local/bin/spaceo');
+  assert.deepEqual(calls[0].args, ['pool', 'trim', '--operator', '--json']);
 });
 
 test('connector implements initialize, ping and unknown-method replies', async () => {

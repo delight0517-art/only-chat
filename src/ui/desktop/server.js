@@ -269,6 +269,7 @@ class DesktopServer {
         const url = `http://127.0.0.1:${this.port}`;
         this._startQuotaRefresh();
         if (this.schedulesEnabled) this.scheduleService.start();
+        this._trimIdleSpaceODisplays();
         Promise.resolve().then(() => this.resumeInterruptedTurn()).catch(error => {
           console.error('[DesktopServer] Interrupted-turn recovery failed:', error);
         });
@@ -339,10 +340,21 @@ class DesktopServer {
     return turnEngine;
   }
 
+  _trimIdleSpaceODisplays() {
+    if (process.platform !== 'darwin' || this.isolated) return;
+    try {
+      const spaceO = path.join(os.homedir(), '.local', 'bin', 'spaceo');
+      if (fs.existsSync(spaceO)) {
+        execFile(spaceO, ['pool', 'trim', '--operator', '--json'], { timeout: 5000 }, () => {});
+      }
+    } catch (_) {}
+  }
+
   _decrementActiveTurns() {
     this.activeTurns = Math.max(0, this.activeTurns - 1);
     if (this.activeTurns === 0) {
       try { this.hub?.flushPendingMutations?.(); } catch (_) {}
+      this._trimIdleSpaceODisplays();
     }
   }
 
@@ -415,6 +427,7 @@ class DesktopServer {
       waiter.resolve({ error: 'Only Chat 서버가 종료되었습니다.' });
     }
     this.macScreenCommands = [];
+    this._trimIdleSpaceODisplays();
   }
 
   _startQuotaRefresh() {

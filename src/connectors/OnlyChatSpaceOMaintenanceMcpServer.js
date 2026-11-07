@@ -13,7 +13,8 @@ const tools = [
     type: 'object', properties: { mode: { type: 'string', enum: ['automatic', 'operatorOverride'] } },
     required: ['mode'], additionalProperties: false
   } },
-  { name: 'spaceo_restart', description: 'Restart only the SpaceO daemon after existing SpaceO sessions finish. Use only when the user requested a SpaceO restart.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }
+  { name: 'spaceo_restart', description: 'Restart only the SpaceO daemon after existing SpaceO sessions finish. Use only when the user requested a SpaceO restart.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'spaceo_trim_idle_displays', description: 'Trim all idle virtual displays from the SpaceO display pool so they do not capture the mouse pointer.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }
 ];
 
 function defaultRunCommand(file, args, options) {
@@ -52,6 +53,12 @@ function createSpaceOMaintenanceServer({
       });
       return stdout.trim();
     }
+    if (action === 'trim') {
+      const { stdout } = await runCommand(cliPath, ['pool', 'trim', '--operator', '--json'], {
+        timeout: 10_000, maxBuffer: 128 * 1024
+      });
+      return stdout.trim();
+    }
     await runCommand('/usr/bin/codesign', ['--verify', '--strict', cliPath], { timeout: 10_000, maxBuffer: 128 * 1024 });
     const expected = installedDigest();
     await runCommand(cliPath, ['daemon', 'restart', '--operator', '--timeout', '30', '--json'], {
@@ -83,7 +90,8 @@ function createSpaceOMaintenanceServer({
     try {
       const action = params?.name === 'spaceo_status' ? 'status'
         : params?.name === 'spaceo_set_reconfiguration_mode' ? 'set-mode'
-          : params?.name === 'spaceo_restart' ? 'restart' : null;
+          : params?.name === 'spaceo_restart' ? 'restart'
+            : params?.name === 'spaceo_trim_idle_displays' ? 'trim' : null;
       const args = params?.arguments ?? {};
       if (!action || !args || typeof args !== 'object' || Array.isArray(args)) {
         throw new Error('Only the allowlisted SpaceO maintenance tools are supported.');
