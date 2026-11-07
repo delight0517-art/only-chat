@@ -101,6 +101,46 @@ async function main() {
   assert.equal(waitingStatus.controlAvailable, false);
   assert.equal(waitingStatus.isOpen, false);
   assert.match(waitingStatus.statusText, /연결 대기/);
+
+  const connectedPanel = new EmbeddedThreefBrowserBridge({
+    policy: { check: async url => url.includes('youtube.com')
+      ? { allowed: false, reason: 'blocked', rule: 'YouTube 사용량 제한' }
+      : { allowed: true, reason: 'allowed' } },
+    dispatch: async command => {
+      if (command.action === 'status') {
+        return { available: true, url: 'https://example.com/', title: 'Example Domain' };
+      }
+      if (command.action === 'read') {
+        return { text: 'Example Domain documentation' };
+      }
+      if (command.action === 'aria') {
+        return { text: '[oc-agent-1] a Learn more' };
+      }
+      return { ok: true, url: command.url || 'https://example.com/' };
+    }
+  });
+  connectedPanel.policy.evaluate = async () => ({ decision: 'allowed', reasonCode: 'rules_allow', url: 'https://example.com/?secret=query', rule: 'private-rule', title: 'leak-title', body: 'leak-body' });
+  const connectedStatus = await connectedPanel.getStatus();
+  assert.deepEqual(connectedStatus.policyStatus, { decision: 'allowed', reasonCode: 'rules_allow' });
+  assert.equal(connectedStatus.controlAvailable, true);
+  const policyStatusText = JSON.stringify(connectedStatus.policyStatus);
+  for (const secret of ['example.com', 'secret', 'query', 'Example Domain', 'private-rule', 'leak-title', 'leak-body']) {
+    assert.equal(policyStatusText.includes(secret), false, `policyStatus must not leak ${secret}`);
+  }
+  assert.equal(connectedStatus.isOpen, true);
+  assert.equal(connectedStatus.statusText, 'Only Chat 안의 3F Browser 연결됨');
+  const connectedText = await connectedPanel.readText();
+  assert.equal(connectedText.ok, true);
+  assert.match(connectedText.stdout, /Example Domain/);
+  const connectedAria = await connectedPanel.getAriaTree();
+  assert.equal(connectedAria.ok, true);
+  assert.equal(connectedAria.blocked, false);
+  assert.match(connectedAria.ariaTree, /Learn more/);
+  const youtubeBlock = await connectedPanel.navigate('https://www.youtube.com/watch?v=sample');
+  assert.equal(youtubeBlock.ok, false);
+  assert.equal(youtubeBlock.blocked, true);
+  assert.match(youtubeBlock.stderr, /YouTube 사용량 제한/);
+
   console.log('Embedded 3F Browser routing, Focus Fence enforcement, URL credentials rejection, and offline behavior passed');
 }
 

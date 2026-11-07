@@ -74,11 +74,23 @@ class EmbeddedThreefBrowserBridge {
       const status = await this.dispatch({ action: 'status' });
       this.lastUrl = status.url || this.lastUrl;
       const controlAvailable = status.available === true;
+      let policyStatus = { decision: 'unknown', reasonCode: 'url_unavailable' };
+      if (controlAvailable && /^https?:\/\//i.test(this.lastUrl) && typeof this.policy?.evaluate === 'function') {
+        try { policyStatus = await this.policy.evaluate(this.lastUrl); } catch (_) {
+          policyStatus = { decision: 'unknown', reasonCode: 'policy_unavailable' };
+        }
+        if (!['allowed', 'blocked', 'unknown'].includes(policyStatus?.decision)
+          || !['rules_allow', 'rules_block', 'policy_unavailable', 'url_unavailable'].includes(policyStatus?.reasonCode)) {
+          policyStatus = { decision: 'unknown', reasonCode: 'policy_unavailable' };
+        } else {
+          policyStatus = { decision: policyStatus.decision, reasonCode: policyStatus.reasonCode };
+        }
+      }
       const pageOpen = /^https?:\/\//i.test(this.lastUrl);
       const statusText = controlAvailable
         ? (pageOpen ? 'Only Chat 안의 3F Browser 연결됨' : '3F Browser 제어 연결됨 · 열린 페이지 없음')
         : '3F Browser 패널 연결 대기 중';
-      return { available: true, isOpen: controlAvailable, activeUrl: this.lastUrl, title: status.title || '', controlAvailable, statusText: this.lastError || statusText };
+      return { available: true, isOpen: controlAvailable, activeUrl: this.lastUrl, title: status.title || '', controlAvailable, statusText: this.lastError || statusText, policyStatus };
     } catch (_) { return { available: true, isOpen: false, activeUrl: this.lastUrl, controlAvailable: false, statusText: 'Only Chat의 3F Browser 패널을 열면 연결됩니다.' }; }
   }
 

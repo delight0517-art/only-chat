@@ -179,6 +179,29 @@ class FocusFencePolicy {
     return result;
   }
 
+  async evaluate(value) {
+    let url;
+    try { url = normalizeHttpUrl(value); } catch (_) {
+      return { decision: 'unknown', reasonCode: 'url_unavailable' };
+    }
+    try {
+      const snapshot = await this.getRules();
+      if (!snapshot) return { decision: 'unknown', reasonCode: 'policy_unavailable' };
+      if (snapshot.rules.protectionEnabled === false) return { decision: 'allowed', reasonCode: 'rules_allow' };
+      const matched = matchPolicy(url, snapshot.rules);
+      if (matched) return { decision: 'blocked', reasonCode: 'rules_block' };
+      const youtube = await this._checkYoutubeUrl(url, snapshot);
+      if (!youtube.allowed) {
+        return youtube.reason === 'blocked'
+          ? { decision: 'blocked', reasonCode: 'rules_block' }
+          : { decision: 'unknown', reasonCode: 'policy_unavailable' };
+      }
+      return { decision: 'allowed', reasonCode: 'rules_allow' };
+    } catch (_) {
+      return { decision: 'unknown', reasonCode: 'policy_unavailable' };
+    }
+  }
+
   async check(value) {
     const url = normalizeHttpUrl(value);
     const snapshot = await this.getRules();

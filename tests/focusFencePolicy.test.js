@@ -30,6 +30,20 @@ async function main() {
   assert.equal(calls.some(url => url.includes('/youtube/check') || url.includes('/youtube/channel-check')), false,
     'the current Focus Fence rules snapshot supplies the YouTube quota decision');
 
+  const evaluateCalls = [];
+  const evaluatePolicy = new FocusFencePolicy({ ports: [17361], fetch: async (url, options = {}) => {
+    evaluateCalls.push({ url: String(url), method: options.method || 'GET' });
+    if (String(url).includes('/rules')) return { ok: true, json: async () => ({ blockedDomains: ['blocked.test'], blockedUrlParts: [], keywords: [], youtubeQuotaBlocked: true }) };
+    throw new Error('evaluate must not perform side-effecting requests');
+  } });
+  assert.deepEqual(await evaluatePolicy.evaluate('https://allowed.test/private?q=secret'), { decision: 'allowed', reasonCode: 'rules_allow' });
+  assert.deepEqual(await evaluatePolicy.evaluate('https://blocked.test/path?q=private'), { decision: 'blocked', reasonCode: 'rules_block' });
+  assert.deepEqual(await evaluatePolicy.evaluate('not a url'), { decision: 'unknown', reasonCode: 'url_unavailable' });
+  assert.deepEqual(evaluateCalls.map(call => call.method), ['GET']);
+  assert.equal(evaluateCalls.some(call => call.url.includes('/block')), false, 'evaluate never sends /block');
+  assert.deepEqual(await new FocusFencePolicy({ fetch: async () => { throw new Error('offline'); }, ports: [17361] }).evaluate('https://example.com'),
+    { decision: 'unknown', reasonCode: 'policy_unavailable' });
+
   const youtubeAllowed = await new FocusFencePolicy({ ports: [17361], fetch: async url => {
     if (String(url).includes('/rules')) return { ok: true, json: async () => ({ blockedDomains: [], blockedUrlParts: [], keywords: [], youtubeQuotaBlocked: false }) };
     throw new Error('Unexpected request');
