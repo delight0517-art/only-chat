@@ -4436,6 +4436,127 @@ window.onlyChatMacScreenCommandComplete = async (id, result) => {
   } catch (_) {}
 };
 
+const currentWindowPreviewRequests = new Map();
+let currentWindowPreviewRefreshInFlight = false;
+function callNativeWindowPreview(action, input = {}) {
+  const handler = window.webkit?.messageHandlers?.windowPreview;
+  if (!handler) return Promise.reject(new Error('현재 창 미리보기는 Only Chat macOS 앱에서 사용할 수 있습니다.'));
+  const id = `ui-window-preview-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      currentWindowPreviewRequests.delete(id);
+      reject(new Error('창 미리보기 응답 시간이 초과되었습니다.'));
+    }, 10000);
+    currentWindowPreviewRequests.set(id, { resolve, reject, timer });
+    handler.postMessage({ id, action, input });
+  });
+}
+
+window.onlyChatWindowPreviewComplete = (id, result) => {
+  const request = currentWindowPreviewRequests.get(id);
+  if (request) {
+    window.clearTimeout(request.timer);
+    currentWindowPreviewRequests.delete(id);
+    if (result?.error) request.reject(Object.assign(new Error(result.error), { permissionRequired: result.permissionRequired === true }));
+    else request.resolve(result || {});
+    return;
+  }
+
+  const button = document.getElementById('btnCurrentWindowPreview');
+  const image = document.getElementById('currentWindowPreviewImage');
+  const placeholder = document.getElementById('currentWindowPreviewPlaceholder');
+  if (!button || !image || !placeholder) return;
+  if (result?.image && result.mimeType === 'image/jpeg' && result.targetToken) {
+    image.src = `data:${result.mimeType};base64,${result.image}`;
+    image.hidden = false;
+    placeholder.hidden = true;
+    button.dataset.targetToken = result.targetToken;
+    button.title = `${result.windowTitle || result.appName || '현재 창'} · 클릭하면 이 창을 앞으로 가져옵니다.`;
+    button.setAttribute('aria-label', `${result.appName || '앱'} · ${result.windowTitle || '현재 창'} 미리보기. 클릭하면 앞으로 가져옵니다.`);
+  } else if (result?.error) {
+    image.removeAttribute('src');
+    image.hidden = true;
+    placeholder.hidden = false;
+    placeholder.textContent = result.permissionRequired ? '화면 권한 필요' : '창 미리보기 없음';
+    delete button.dataset.targetToken;
+    button.title = result.error;
+    button.setAttribute('aria-label', result.permissionRequired ? '화면 기록 권한을 요청하려면 클릭' : result.error);
+  } else if (result?.focused) {
+    button.setAttribute('aria-label', `${result.windowTitle || result.appName || '선택한 창'}을 앞으로 가져왔습니다.`);
+  } else if (result?.permissionRequestIssued) {
+    placeholder.textContent = result.screenRecording ? '미리보기 준비 중' : '시스템 설정에서 허용';
+    button.title = result.screenRecording ? '화면 기록 권한이 확인되었습니다.' : '시스템 설정에서 Only Chat의 화면 기록을 허용한 뒤 다시 실행해 주세요.';
+    button.setAttribute('aria-label', button.title);
+  }
+};
+
+async function refreshCurrentWindowPreview() {
+  if (currentWindowPreviewRefreshInFlight || document.visibilityState !== 'visible') return;
+  currentWindowPreviewRefreshInFlight = true;
+  try {
+    const result = await callNativeWindowPreview('preview');
+    window.onlyChatWindowPreviewComplete(`preview-${Date.now()}`, result);
+  } catch (error) {
+    window.onlyChatWindowPreviewComplete(`preview-${Date.now()}`, { error: error.message, permissionRequired: error.permissionRequired });
+  } finally {
+    currentWindowPreviewRefreshInFlight = false;
+  }
+}
+
+function installCurrentWindowPreviewControl() {
+  const titlebar = document.querySelector('.titlebar-right');
+  if (!titlebar || document.getElementById('btnCurrentWindowPreview')) return;
+  const style = document.createElement('style');
+  style.textContent = `
+    .current-window-preview{position:relative;width:112px;height:40px;margin-right:4px;padding:2px;overflow:hidden;border:1px solid var(--border-subtle);border-radius:7px;background:var(--bg-card);color:var(--text-muted);cursor:pointer;-webkit-app-region:no-drag}
+    .current-window-preview:hover{border-color:var(--accent-orange)}
+    .current-window-preview:focus-visible{outline:2px solid var(--border-focus);outline-offset:1px}
+    .current-window-preview img{display:block;width:100%;height:100%;border-radius:4px;object-fit:cover}
+    .current-window-preview img[hidden],.current-window-preview span[hidden]{display:none}
+    .current-window-preview span{display:grid;width:100%;height:100%;place-items:center;font-size:10px}
+  `;
+  document.head.appendChild(style);
+  const button = document.createElement('button');
+  button.className = 'current-window-preview';
+  button.id = 'btnCurrentWindowPreview';
+  button.type = 'button';
+  button.title = '화면 미리보기. 클릭하면 해당 창을 앞으로 가져옵니다.';
+  button.setAttribute('aria-label', '화면 미리보기 권한 확인 중');
+  const image = document.createElement('img');
+  image.id = 'currentWindowPreviewImage';
+  image.alt = '현재 Only Chat이 보고 있는 창 미리보기';
+  image.hidden = true;
+  const placeholder = document.createElement('span');
+  placeholder.id = 'currentWindowPreviewPlaceholder';
+  placeholder.setAttribute('aria-hidden', 'true');
+  placeholder.textContent = '화면 미리보기';
+  button.append(image, placeholder);
+  titlebar.prepend(button);
+  button.addEventListener('click', async event => {
+    const control = event.currentTarget;
+    control.disabled = true;
+    try {
+      const token = control.dataset.targetToken;
+      const result = token
+        ? await callNativeWindowPreview('focus', { targetToken: token })
+        : await callNativeWindowPreview('requestPermission');
+      if (result?.error) throw new Error(result.error);
+      window.onlyChatWindowPreviewComplete('', token
+        ? { ...result, focused: true }
+        : { ...result, permissionRequestIssued: true });
+      if (!token && result?.screenRecording) window.setTimeout(refreshCurrentWindowPreview, 800);
+    } catch (error) {
+      window.onlyChatWindowPreviewComplete('', { error: error.message, permissionRequired: error.permissionRequired });
+    } finally {
+      control.disabled = false;
+    }
+  });
+  window.setTimeout(refreshCurrentWindowPreview, 400);
+  window.setInterval(refreshCurrentWindowPreview, 3000);
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installCurrentWindowPreviewControl, { once: true });
+else installCurrentWindowPreviewControl();
+
 void loadMacScreenControlSetting();
 
 window.onlyChatBrowserCommandComplete = async (id, result) => {

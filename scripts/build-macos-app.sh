@@ -118,7 +118,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>OnlyChatServerPort</key><integer>$APP_SERVER_PORT</integer>
-  <key>NSScreenCaptureUsageDescription</key><string>Only Chat captures the current display only when you enable Mac screen control and request a screen view.</string>
+  <key>NSScreenCaptureUsageDescription</key><string>Only Chat shows a local preview of the frontmost other app window in the title bar. Its contents stay on this Mac unless you separately enable AI screen control.</string>
   <key>OnlyChatIsolatedPreview</key><$([ "$PREVIEW_ISOLATED" = "1" ] && echo true || echo false)/>
   <key>OnlyChatPreviewDataDirectory</key><string>$PREVIEW_DATA_DIR</string>
   <key>OnlyChatDiagnosticLogPath</key><string>${PREVIEW_DATA_DIR:+$PREVIEW_DATA_DIR/server.log}</string>

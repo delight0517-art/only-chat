@@ -11,6 +11,16 @@ import WebKit
 
 @main
 final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    private struct CurrentWindowPreviewTarget {
+        let token: String
+        let windowID: CGWindowID
+        let processID: pid_t
+        let bundleIdentifier: String
+        let appName: String
+        let title: String
+        let capturedAt: Date
+    }
+
     private static var singleInstanceLockFD: Int32 = -1
     private var window: NSWindow!
     private var webView: WKWebView!
@@ -21,6 +31,7 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var serverRestartWorkItem: DispatchWorkItem?
     private var appIsTerminating = false
     private var serverDiagnosticsHandle: FileHandle?
+    private var currentWindowPreviewTargets: [String: CurrentWindowPreviewTarget] = [:]
     private static var isolatedRuntimeRequested: Bool {
         let environment = ProcessInfo.processInfo.environment
         return (Bundle.main.object(forInfoDictionaryKey: "OnlyChatIsolatedPreview") as? Bool == true)
@@ -190,6 +201,7 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         configuration.userContentController.add(self, name: "speech")
         configuration.userContentController.add(self, name: "browserPanel")
         configuration.userContentController.add(self, name: "macScreen")
+        configuration.userContentController.add(self, name: "windowPreview")
         configuration.userContentController.addUserScript(WKUserScript(
             source: """
             (() => {
@@ -260,6 +272,10 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
         if message.name == "macScreen" {
             handleMacScreenMessage(message)
+            return
+        }
+        if message.name == "windowPreview" {
+            handleCurrentWindowPreviewMessage(message)
             return
         }
         guard message.name == "speech", let action = message.body as? String else { return }
@@ -489,6 +505,171 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             event.post(tap: .cghidEventTap)
             sendMacScreenResult(id: id, result: ["ok": true, "text": "화면을 스크롤했습니다."])
         default: sendMacScreenResult(id: id, result: ["error": "지원하지 않는 Mac 화면 작업입니다."])
+        }
+    }
+
+    private func handleCurrentWindowPreviewMessage(_ message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let source = webView.url,
+              source.scheme == "http", ["127.0.0.1", "localhost"].contains(source.host ?? ""), source.port == port,
+              let payload = message.body as? [String: Any], let id = payload["id"] as? String,
+              let action = payload["action"] as? String else { return }
+
+        switch action {
+        case "requestPermission":
+            let requested = CGRequestScreenCaptureAccess()
+            let granted = CGPreflightScreenCaptureAccess()
+            sendCurrentWindowPreviewResult(id: id, result: [
+                "permissionRequestIssued": requested || granted,
+                "screenRecording": granted
+            ])
+        case "preview":
+            guard CGPreflightScreenCaptureAccess() else {
+                sendCurrentWindowPreviewResult(id: id, result: [
+                    "error": "Only Chat의 화면 기록 권한이 필요합니다. 우측 상단 미리보기를 눌러 요청한 뒤 시스템 설정에서 허용해 주세요.",
+                    "permissionRequired": true
+                ])
+                return
+            }
+            guard #available(macOS 14.0, *) else {
+                sendCurrentWindowPreviewResult(id: id, result: ["error": "창 미리보기는 macOS 14 이상이 필요합니다."])
+                return
+            }
+            captureCurrentWindowPreview(id: id)
+        case "focus":
+            let input = payload["input"] as? [String: Any] ?? [:]
+            guard let token = input["targetToken"] as? String,
+                  let target = currentWindowPreviewTargets[token], Date().timeIntervalSince(target.capturedAt) <= 15,
+                  let runningApp = NSRunningApplication(processIdentifier: target.processID),
+                  runningApp.bundleIdentifier == target.bundleIdentifier,
+                  !runningApp.isTerminated else {
+                sendCurrentWindowPreviewResult(id: id, result: ["error": "미리보기 대상 창이 바뀌었습니다. 새 미리보기를 확인해 주세요."])
+                return
+            }
+            let visibleWindows = CGWindowListCopyWindowInfo(.optionOnScreenOnly.union(.excludeDesktopElements), kCGNullWindowID) as? [[String: Any]] ?? []
+            let targetStillVisible = visibleWindows.contains { info in
+                (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == target.processID
+                    && (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value == target.windowID
+            }
+            guard targetStillVisible else {
+                currentWindowPreviewTargets.removeValue(forKey: token)
+                sendCurrentWindowPreviewResult(id: id, result: ["error": "미리보기 대상 창이 닫혔습니다. 새 창 미리보기를 확인해 주세요."])
+                return
+            }
+            let activated = runningApp.activate(options: [])
+            var exactWindowRaised = false
+            if activated && AXIsProcessTrusted() {
+                let application = AXUIElementCreateApplication(target.processID)
+                var windowsValue: CFTypeRef?
+                if AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+                   let windows = windowsValue as? [AXUIElement] {
+                    for axWindow in windows {
+                        var titleValue: CFTypeRef?
+                        guard AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleValue) == .success,
+                              (titleValue as? String) == target.title else { continue }
+                        exactWindowRaised = AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString) == .success
+                        if exactWindowRaised { break }
+                    }
+                }
+            }
+            sendCurrentWindowPreviewResult(id: id, result: [
+                "focused": activated,
+                "exactWindowRaised": exactWindowRaised,
+                "appName": target.appName,
+                "windowTitle": target.title,
+                "error": activated ? "" : "선택한 앱 창을 앞으로 가져오지 못했습니다."
+            ])
+        default:
+            sendCurrentWindowPreviewResult(id: id, result: ["error": "지원하지 않는 창 미리보기 작업입니다."])
+        }
+    }
+
+    @available(macOS 14.0, *)
+    private func captureCurrentWindowPreview(id: String) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let windowInfos = CGWindowListCopyWindowInfo(.optionOnScreenOnly.union(.excludeDesktopElements), kCGNullWindowID) as? [[String: Any]] ?? []
+                let ownProcessID = ProcessInfo.processInfo.processIdentifier
+                let frontmostInfo = windowInfos.first { info in
+                    let processID = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+                    let windowID = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value
+                    let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+                    let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+                    let bounds = info[kCGWindowBounds as String] as? [String: Any] ?? [:]
+                    let width = (bounds["Width"] as? NSNumber)?.doubleValue ?? 0
+                    let height = (bounds["Height"] as? NSNumber)?.doubleValue ?? 0
+                    return processID != nil && processID != ownProcessID && windowID != nil && layer == 0 && alpha > 0.05
+                        && width >= 180 && height >= 120
+                }
+                guard let frontmostInfo,
+                      let processNumber = frontmostInfo[kCGWindowOwnerPID as String] as? NSNumber,
+                      let windowNumber = frontmostInfo[kCGWindowNumber as String] as? NSNumber,
+                      let cgTitle = (frontmostInfo[kCGWindowName as String] as? String) ?? "" else {
+                    self.currentWindowPreviewTargets.removeAll()
+                    self.sendCurrentWindowPreviewResult(id: id, result: ["error": "미리보기할 다른 앱 창이 현재 화면에 없습니다."])
+                    return
+                }
+
+                let processID = processNumber.int32Value
+                let windowID = CGWindowID(windowNumber.uint32Value)
+                let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+                guard let shareableWindow = content.windows.first(where: {
+                    $0.windowID == windowID && $0.owningApplication?.processID == processID
+                }),
+                let owner = shareableWindow.owningApplication,
+                !owner.bundleIdentifier.isEmpty else {
+                    self.sendCurrentWindowPreviewResult(id: id, result: ["error": "현재 창을 캡처 목록에서 찾지 못했습니다. 잠시 후 다시 시도해 주세요."])
+                    return
+                }
+                let filter = SCContentFilter(desktopIndependentWindow: shareableWindow)
+                let width = 560
+                let aspect = max(0.1, shareableWindow.frame.height / max(1, shareableWindow.frame.width))
+                let configuration = SCStreamConfiguration()
+                configuration.width = width
+                configuration.height = max(120, min(560, Int(CGFloat(width) * aspect)))
+                let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+                let rep = NSBitmapImageRep(cgImage: image)
+                guard let bytes = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.58]) else {
+                    self.sendCurrentWindowPreviewResult(id: id, result: ["error": "창 미리보기를 인코딩하지 못했습니다."])
+                    return
+                }
+
+                let token = UUID().uuidString
+                let title = cgTitle.isEmpty ? (shareableWindow.title ?? owner.applicationName) : cgTitle
+                let target = CurrentWindowPreviewTarget(
+                    token: token,
+                    windowID: windowID,
+                    processID: processID,
+                    bundleIdentifier: owner.bundleIdentifier,
+                    appName: owner.applicationName,
+                    title: title,
+                    capturedAt: Date()
+                )
+                self.currentWindowPreviewTargets = self.currentWindowPreviewTargets.filter {
+                    Date().timeIntervalSince($0.value.capturedAt) <= 15
+                }
+                self.currentWindowPreviewTargets[token] = target
+                self.sendCurrentWindowPreviewResult(id: id, result: [
+                    "targetToken": token,
+                    "windowTitle": title,
+                    "appName": owner.applicationName,
+                    "bundleIdentifier": owner.bundleIdentifier,
+                    "image": bytes.base64EncodedString(),
+                    "mimeType": "image/jpeg",
+                    "width": image.width,
+                    "height": image.height
+                ])
+            } catch {
+                self.sendCurrentWindowPreviewResult(id: id, result: ["error": "창 미리보기 캡처 실패: \(error.localizedDescription)"])
+            }
+        }
+    }
+
+    private func sendCurrentWindowPreviewResult(id: String, result: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: [id, result]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        DispatchQueue.main.async {
+            self.webView.evaluateJavaScript("window.onlyChatWindowPreviewComplete && window.onlyChatWindowPreviewComplete(\(json)[0], \(json)[1])")
         }
     }
 
