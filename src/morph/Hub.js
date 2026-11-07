@@ -28,6 +28,7 @@ class MetamorphicHub extends EventEmitter {
     this.watchEnabled = options.watchEnabled !== false;
     this.watchDebounceMs = Number.isFinite(options.watchDebounceMs) && options.watchDebounceMs >= 0 ? options.watchDebounceMs : 40;
     this.organLockTtlMs = Number.isFinite(options.organLockTtlMs) && options.organLockTtlMs > 0 ? options.organLockTtlMs : 5 * 60_000;
+    this.pendingFlushIntervalMs = Number.isFinite(options.pendingFlushIntervalMs) && options.pendingFlushIntervalMs >= 10 ? options.pendingFlushIntervalMs : 120;
     this.canMutate = options.canMutate || (() => true);
 
     // Decoupled Organ Slots
@@ -41,6 +42,7 @@ class MetamorphicHub extends EventEmitter {
     // Single Source of Truth & Collision Shield Ledger
     this.collisionLedger = new Map(); // organKind -> { lockedBy, acquiredAt, expiresAt }
     this.pendingMutations = [];
+    this._pendingFlushTimer = null;
     this.activeSseClients = new Set();
     this.watchers = [];
     this._watchTimers = new Map();
@@ -231,6 +233,7 @@ class MetamorphicHub extends EventEmitter {
           author,
           options: { ...options, deferIfBusy: false }
         });
+        this._schedulePendingFlush();
         return { ok: true, queued: true, organ: organKind, key, value, contractVersion, pendingCount: this.pendingMutations.length };
       }
       throw new Error('Hot reload is blocked while a request or file write is in progress.');
@@ -261,8 +264,35 @@ class MetamorphicHub extends EventEmitter {
     return { ok: true, queued: false, organ: organKind, key, value, contractVersion, hash: this._hash(fs.readFileSync(targetConfigFile)) };
   }
 
+  _stopPendingFlushTimer() {
+    if (this._pendingFlushTimer) {
+      clearInterval(this._pendingFlushTimer);
+      this._pendingFlushTimer = null;
+    }
+  }
+
+  _schedulePendingFlush() {
+    if (this._pendingFlushTimer || this.pendingMutations.length === 0) return;
+    const timer = setInterval(() => {
+      if (this.pendingMutations.length === 0) {
+        this._stopPendingFlushTimer();
+        return;
+      }
+      if (this.canMutate()) {
+        this.flushPendingMutations();
+        if (this.pendingMutations.length === 0) this._stopPendingFlushTimer();
+      }
+    }, this.pendingFlushIntervalMs);
+    if (typeof timer.unref === 'function') timer.unref();
+    this._pendingFlushTimer = timer;
+  }
+
   flushPendingMutations() {
-    if (!this.canMutate() || this.pendingMutations.length === 0) {
+    if (this.pendingMutations.length === 0) {
+      this._stopPendingFlushTimer();
+      return { flushed: 0, results: [], errors: [], remaining: 0 };
+    }
+    if (!this.canMutate()) {
       return { flushed: 0, results: [], errors: [], remaining: this.pendingMutations.length };
     }
     const batch = this.pendingMutations.splice(0, this.pendingMutations.length);
@@ -279,6 +309,7 @@ class MetamorphicHub extends EventEmitter {
         errors.push({ organ: item.organKind, key: item.key, error: error.message });
       }
     }
+    if (this.pendingMutations.length === 0) this._stopPendingFlushTimer();
     return { flushed: results.length, results, errors, remaining: this.pendingMutations.length };
   }
 
@@ -368,6 +399,7 @@ class MetamorphicHub extends EventEmitter {
   }
 
   stopWatchers() {
+    this._stopPendingFlushTimer();
     for (const timer of this._watchTimers.values()) {
       clearTimeout(timer);
     }

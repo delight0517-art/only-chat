@@ -115,7 +115,55 @@ async function testMetamorphicHub() {
   const flushed = busyHub.flushPendingMutations();
   assert.strictEqual(flushed.flushed, 1);
   assert.strictEqual(busyHub.getOrganData('font').baseSize, '15px');
-  console.log('  ✓ 활성 턴 중 변형 요청 유실 방지 및 턴 종료 후 원자적 반영 확인');
+
+  // Auto-drain timer verification when busy clears asynchronously without manual flush call
+  let asyncBusy = true;
+  const autoHub = new MetamorphicHub({
+    workspaceDir: tmpDir,
+    dataDir: tmpDir,
+    desktopUiDir: tmpDir,
+    watchEnabled: false,
+    pendingFlushIntervalMs: 15,
+    canMutate: () => !asyncBusy
+  });
+  const autoQueued = autoHub.mutateOrgan('font', 'baseSize', '16px', 'agent', { deferIfBusy: true });
+  assert.strictEqual(autoQueued.queued, true);
+  asyncBusy = false;
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.strictEqual(autoHub.getHubStatus().pendingMutationsCount, 0);
+  assert.strictEqual(autoHub.getOrganData('font').baseSize, '16px');
+  autoHub.stopWatchers();
+
+  // Live DesktopServer HTTP /api/morph/mutate queue + turn-end flush verification
+  const { DesktopServer } = require('../src/ui/desktop/server.js');
+  if (typeof DesktopServer.prototype._decrementActiveTurns === 'function') {
+    const serverDir = fs.mkdtempSync(path.join(os.tmpdir(), 'only-chat-morph-http-'));
+    const serverWorkspace = path.join(serverDir, 'workspace');
+    fs.mkdirSync(serverWorkspace, { recursive: true });
+    const app = new DesktopServer({ port: 0, isolated: true, dataDir: serverDir, workspaceDir: serverWorkspace, enableQuotaRefresh: false });
+    try {
+      const started = await app.start();
+      app.activeTurns = 1;
+      const mutateRes = await fetch(`${started.url}/api/morph/mutate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: started.url },
+        body: JSON.stringify({ organ: 'theme', key: 'accentCyan', value: '#22c55e', author: 'ui-live-test' })
+      });
+      assert.strictEqual(mutateRes.status, 202);
+      const mutateBody = await mutateRes.json();
+      assert.strictEqual(mutateBody.queued, true);
+      assert.strictEqual(app.hub.getHubStatus().pendingMutationsCount, 1);
+
+      app._decrementActiveTurns();
+      assert.strictEqual(app.activeTurns, 0);
+      assert.strictEqual(app.hub.getHubStatus().pendingMutationsCount, 0);
+      assert.strictEqual(app.hub.getOrganData('theme').accentCyan, '#22c55e');
+    } finally {
+      app.stop();
+      fs.rmSync(serverDir, { recursive: true, force: true });
+    }
+  }
+  console.log('  ✓ 활성 턴 중 변형 요청 유실 방지, 자동 드레인 타이머, HTTP 202 큐잉 및 턴 종료 즉시 반영 확인');
 
   console.log('\n🎉 [성공] 핫리로드 _ 신체 변형 시스템 검증 100% 완료!');
   return true;
