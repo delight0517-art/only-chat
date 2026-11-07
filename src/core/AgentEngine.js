@@ -1389,7 +1389,6 @@ class AgentEngine {
     const reasoningEffort = parseReasoningEffort(options.reasoningEffort);
     if (!reasoningEffort) throw new Error('Unsupported reasoning effort.');
     if (tier?.provider === 'account-router') {
-      if (options.fullAccess === true) throw new Error('Full access는 Codex CLI 직접 실행에서만 지원됩니다.');
       if (this.isolated) throw new Error('AI Account Router is disabled in isolated mode.');
       const accountRouterAdapter = await this._getAccountRouterAdapter();
       const routerTier = options.routerModelSelection ? { ...tier, model: options.routerModelSelection } : tier;

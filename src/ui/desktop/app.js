@@ -47,6 +47,13 @@ let speechAnimationFrame = null;
 let speechDraftPrefix = null;
 let speechDraftSuffix = '';
 let fullAccessEnabled = false;
+const FULL_ACCESS_SESSION_MODES_KEY = 'onlyChatFullAccessSessionModes';
+let fullAccessSessionModes = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FULL_ACCESS_SESSION_MODES_KEY) || '{}');
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  } catch (_) { return {}; }
+})();
 let pendingUiMorphReload = false;
 let uiMorphReloadTimer = null;
 const UI_ZOOM_KEY = 'onlyChatUiZoom';
@@ -140,6 +147,33 @@ let selectedReasoningEffort = localStorage.getItem(REASONING_EFFORT_KEY) || 'low
 let modelSwitchSchedule = null;
 const btnMicrophone = document.getElementById('btnMicrophone');
 const btnAccessToggle = document.getElementById('btnAccessToggle');
+
+function persistFullAccessSessionMode(sessionId = currentSessionId) {
+  if (typeof sessionId !== 'string' || !/^(?:session_\d{10,16}|ses_[a-f0-9]{16})$/.test(sessionId)) return;
+  fullAccessSessionModes[sessionId] = fullAccessEnabled;
+  for (const key of Object.keys(fullAccessSessionModes)) {
+    if (!/^(?:session_\d{10,16}|ses_[a-f0-9]{16})$/.test(key) || typeof fullAccessSessionModes[key] !== 'boolean') delete fullAccessSessionModes[key];
+  }
+  while (Object.keys(fullAccessSessionModes).length > 256) delete fullAccessSessionModes[Object.keys(fullAccessSessionModes)[0]];
+  localStorage.setItem(FULL_ACCESS_SESSION_MODES_KEY, JSON.stringify(fullAccessSessionModes));
+}
+
+function renderFullAccessToggle() {
+  if (!btnAccessToggle) return;
+  btnAccessToggle.setAttribute('aria-pressed', String(fullAccessEnabled));
+  btnAccessToggle.classList.toggle('enabled', fullAccessEnabled);
+  const label = btnAccessToggle.querySelector('.access-text');
+  if (label) label.textContent = fullAccessEnabled ? 'Full access · 현재 대화' : 'Workspace sandbox';
+  btnAccessToggle.title = fullAccessEnabled
+    ? '이 대화에서 작업공간 밖의 파일과 셸 경로도 사용할 수 있습니다. 도구 승인 질문은 보안 설정의 Turbo 정책을 따릅니다.'
+    : '현재 대화는 Only Chat 작업공간 안에서 실행됩니다.';
+}
+
+function applyFullAccessModeForSession(sessionId, isNewSession = false) {
+  fullAccessEnabled = isNewSession ? true : fullAccessSessionModes[sessionId] === true;
+  if (isNewSession) persistFullAccessSessionMode(sessionId);
+  renderFullAccessToggle();
+}
 
 function normalizeUiReasoningEffort(value) {
   return reasoningEffortLevels.find(level => level.value === value)?.value || 'low';
@@ -448,14 +482,9 @@ function setupEventListeners() {
   });
 
   btnAccessToggle?.addEventListener('click', () => {
-    if (!fullAccessEnabled && !window.confirm('Full access는 Codex가 작업공간 밖의 파일과 시스템 경로에도 접근하고 셸 명령을 실행할 수 있게 합니다. 다음 요청 한 번에만 적용하며, 실행 전에 별도 승인을 받습니다. 켤까요?')) return;
     fullAccessEnabled = !fullAccessEnabled;
-    btnAccessToggle.setAttribute('aria-pressed', String(fullAccessEnabled));
-    btnAccessToggle.classList.toggle('enabled', fullAccessEnabled);
-    btnAccessToggle.querySelector('.access-text').textContent = fullAccessEnabled ? 'Full access · 다음 Codex 요청' : 'Workspace sandbox';
-    btnAccessToggle.title = fullAccessEnabled
-      ? '다음 Codex 요청 한 번만 전체 경로 접근을 요청합니다. Codex 실행 전에 별도 승인이 필요합니다.'
-      : '현재 요청은 Only Chat 작업공간 안에서만 실행됩니다.';
+    persistFullAccessSessionMode();
+    renderFullAccessToggle();
   });
 
   btnManageUsage.addEventListener('click', () => {
@@ -1805,10 +1834,6 @@ async function handleSend() {
   if (!prompt || isGenerating) return false;
   activeSendInFlight = true;
   const fullAccessForTurn = fullAccessEnabled;
-  fullAccessEnabled = false;
-  btnAccessToggle?.setAttribute('aria-pressed', 'false');
-  btnAccessToggle?.classList.remove('enabled');
-  if (btnAccessToggle?.querySelector('.access-text')) btnAccessToggle.querySelector('.access-text').textContent = 'Workspace sandbox';
 
   const composerStatus = document.getElementById('composerStatus');
   const submittedFromCodexQueue = isCodexQueueComposerNotice(composerStatus?.textContent);
@@ -2413,7 +2438,15 @@ function handleStreamEvent(event, card) {
     case 'session_started': {
       if (event.clientSessionId === currentSessionId
         && typeof event.sessionId === 'string' && /^ses_[a-f0-9]{16}$/.test(event.sessionId)) {
+        const clientSessionId = currentSessionId;
         currentSessionId = event.sessionId;
+        const inheritedMode = fullAccessSessionModes[clientSessionId];
+        if (typeof inheritedMode === 'boolean') {
+          fullAccessEnabled = inheritedMode;
+          delete fullAccessSessionModes[clientSessionId];
+          persistFullAccessSessionMode(event.sessionId);
+          renderFullAccessToggle();
+        }
         currentCodexThreadId = null;
         void refreshModelSwitchSchedule();
       }
@@ -2666,6 +2699,7 @@ window.copyAssistantText = function(btn) {
 
 function startNewSession() {
   currentSessionId = `session_${Date.now()}`;
+  applyFullAccessModeForSession(currentSessionId, true);
   currentCodexThreadId = null;
   void refreshPriorityStatus();
   timeline.innerHTML = '';
@@ -3601,6 +3635,7 @@ async function loadSession(sessionId, title, source = null) {
 
   if (requestId !== sessionLoadRequestId) return false;
   currentSessionId = resumedSession?.sessionId || sessionId;
+  applyFullAccessModeForSession(currentSessionId, false);
   currentCodexThreadId = resumedSession?.source === 'codex' && sessionId.startsWith('codex_')
     ? sessionId.slice('codex_'.length)
     : null;

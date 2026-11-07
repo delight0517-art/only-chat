@@ -2280,7 +2280,7 @@ class DesktopServer {
       const selectedAccountRouterModel = normalizedModelSelection.startsWith(accountRouterPrefix)
         ? normalizedModelSelection.slice(accountRouterPrefix.length) : '';
       let accountRouterModelAllowed = false;
-      if (selectedAccountRouterModel && body.fullAccess !== true) {
+      if (selectedAccountRouterModel) {
         try {
           const routerChain = await (await this.engine._getAccountRouterAdapter()).getChain();
           accountRouterModelAllowed = routerChain?.enabled === true && Array.isArray(routerChain.accounts)
@@ -2309,7 +2309,7 @@ class DesktopServer {
       }
       if (body.fullAccess === true) {
         const chain = this.engine.priorityChain;
-        const selectedTier = !chain.chain.enabled && typeof body.overrideTierId === 'string'
+        const selectedTier = accountRouterModelAllowed ? null : !chain.chain.enabled && typeof body.overrideTierId === 'string'
           ? chain.chain.tiers.find(tier => tier.id === body.overrideTierId)
           : normalizedModelSelection === 'auto'
             ? chain.resolveActiveTier()
@@ -2319,11 +2319,11 @@ class DesktopServer {
               && tier.health?.isThrottled !== true)
               .sort((a, b) => (Number(a.tier) || Number.MAX_SAFE_INTEGER) - (Number(b.tier) || Number.MAX_SAFE_INTEGER))[0];
         const codexConnected = selectedTier?.provider === 'codex' && this.codexAdapter?.getReadiness(selectedTier).connected === true;
-        if (this.approvalPolicy === 'read-only' || !codexConnected) {
+        if (this.approvalPolicy === 'read-only' || (!codexConnected && !accountRouterModelAllowed)) {
           res.writeHead(409, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: this.approvalPolicy === 'read-only'
             ? '읽기 전용 정책에서는 Full access를 사용할 수 없습니다.'
-            : 'Full access는 연결된 Codex 계정으로 요청할 수 있습니다. 모델 또는 계정을 Codex로 선택해 주세요.' }));
+            : 'Full access는 연결된 Codex 계정 또는 설정된 Account Router 모델로 요청할 수 있습니다.' }));
           return;
         }
       }
