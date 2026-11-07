@@ -2114,6 +2114,74 @@ async function handleSend() {
 
 let activeGoal = null;
 let goalModeEnabled = false;
+let goalCircuitAbortController = null;
+const GOAL_STALL_LIMIT_MS = 60 * 60_000;
+
+function goalBlockerFingerprint(value) {
+  return String(value || '').toLowerCase()
+    .replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/g, '<id>')
+    .replace(/\b\d{4}-\d{2}-\d{2}(?:[t ]\S+)?/g, '<time>')
+    .replace(/\b\d+(?:\.\d+)?\s*(?:bytes?|b|kib|mib|gib|kb|mb|gb)\b/g, '<size>')
+    .replace(/(?:\/users\/|\/private\/|\/tmp\/|[a-z]:\\)[^\s,;)]+/ig, '<path>')
+    .replace(/\b\d+\b/g, '<n>')
+    .replace(/\s+/g, ' ').trim().slice(0, 400);
+}
+
+function recordGoalBlocker(goal, reason, nowMs = Date.now()) {
+  if (!goal || typeof reason !== 'string' || !reason.trim()) return { repeated: false, fingerprint: '' };
+  goal.blockerProgress ||= Object.create(null);
+  const fingerprint = goalBlockerFingerprint(reason);
+  const progress = Number(goal.substantiveProgress || 0);
+  if (Object.prototype.hasOwnProperty.call(goal.blockerProgress, fingerprint)
+    && goal.blockerProgress[fingerprint] === progress) {
+    return { repeated: true, fingerprint };
+  }
+  goal.blockerProgress[fingerprint] = progress;
+  if (goal.blockerFingerprint !== fingerprint || goal.stalledSince == null) {
+    goal.stalledSince = nowMs;
+    goal.lastSubstantiveProgressAt = nowMs;
+  }
+  goal.blockerFingerprint = fingerprint;
+  goal.lastBlockerReason = reason.trim();
+  return { repeated: false, fingerprint };
+}
+
+function recordGoalProgress(goal, nowMs = Date.now()) {
+  if (!goal) return;
+  goal.substantiveProgress = Number(goal.substantiveProgress || 0) + 1;
+  goal.lastSubstantiveProgressAt = nowMs;
+  goal.blockerProgress = Object.create(null);
+  goal.blockerFingerprint = '';
+  goal.stalledSince = null;
+  goal.lastBlockerReason = '';
+}
+
+function goalStallExpired(goal, nowMs = Date.now()) {
+  return Boolean(goal && goal.stalledSince != null && nowMs - goal.stalledSince >= GOAL_STALL_LIMIT_MS);
+}
+
+function goalStallCheckpoint(goal, nextAction) {
+  return {
+    blockerFingerprint: goal?.blockerFingerprint || null,
+    blockerReason: goal?.lastBlockerReason || null,
+    blockerFirstSeenAt: goal?.stalledSince == null ? null : new Date(goal.stalledSince).toISOString(),
+    lastSubstantiveProgressAt: goal?.lastSubstantiveProgressAt == null ? null : new Date(goal.lastSubstantiveProgressAt).toISOString(),
+    nextAction
+  };
+}
+
+function scheduleGoalStallDeadline(goal) {
+  if (!goal) return;
+  if (goal.stallTimer) clearTimeout(goal.stallTimer);
+  goal.stallTimer = null;
+  if (goal.stalledSince == null) return;
+  const remaining = Math.max(1, GOAL_STALL_LIMIT_MS - (Date.now() - goal.stalledSince));
+  goal.stallTimer = setTimeout(() => {
+    if (activeGoal !== goal) return;
+    if (!goalStallExpired(goal)) return scheduleGoalStallDeadline(goal);
+    reportIncompleteActiveGoal(`같은 근본 원인에서 60분 동안 검증된 진전이 없습니다: ${goal.lastBlockerReason || '원인 미기록'}`, '60분 정체');
+  }, remaining);
+}
 
 function parseClientGoalDuration(val) {
   const match = /^(\d{1,3})(m|h)$/.exec(String(val || '').trim());
@@ -2127,6 +2195,7 @@ function cancelActiveGoal(reason = '사용자가 목표 추구를 중단했습�
   const goalObj = activeGoal;
   activeGoal = null;
   if (goalObj.timer) { clearTimeout(goalObj.timer); goalObj.timer = null; }
+  if (goalObj.stallTimer) { clearTimeout(goalObj.stallTimer); goalObj.stallTimer = null; }
   const goalBanner = document.getElementById('goalModeBanner');
   if (goalBanner) goalBanner.hidden = true;
   const goalPill = document.getElementById('btnGoalToggle');
@@ -2146,6 +2215,7 @@ function finishActiveGoal(summary = '목표가 완료되었습니다.') {
   const goalObj = activeGoal;
   activeGoal = null;
   if (goalObj.timer) { clearTimeout(goalObj.timer); goalObj.timer = null; }
+  if (goalObj.stallTimer) { clearTimeout(goalObj.stallTimer); goalObj.stallTimer = null; }
   const goalBanner = document.getElementById('goalModeBanner');
   if (goalBanner) goalBanner.hidden = true;
   const goalPill = document.getElementById('btnGoalToggle');
@@ -2155,6 +2225,34 @@ function finishActiveGoal(summary = '목표가 완료되었습니다.') {
   const msg = document.createElement('div');
   msg.className = 'text-body';
   msg.textContent = `🎯 [Goal 완료] ${summary} (총 ${goalObj.iteration}회차 수행 완료)`;
+  card.content.appendChild(msg);
+  timeline.scrollTop = timeline.scrollHeight;
+  setGeneratingState(false);
+}
+
+function reportIncompleteActiveGoal(reason, status = '차단') {
+  if (!activeGoal) return;
+  const goalObj = activeGoal;
+  activeGoal = null;
+  if (goalObj.timer) { clearTimeout(goalObj.timer); goalObj.timer = null; }
+  if (goalObj.stallTimer) { clearTimeout(goalObj.stallTimer); goalObj.stallTimer = null; }
+  if (currentAbortController) {
+    goalCircuitAbortController = currentAbortController;
+    currentAbortController.abort();
+  }
+  const nextAction = '중단 지점과 완료된 변경을 확인한 뒤, 같은 차단 경로를 반복하지 말고 다른 근거 있는 방법을 선택하세요.';
+  const checkpoint = goalStallCheckpoint(goalObj, nextAction);
+  const goalBanner = document.getElementById('goalModeBanner');
+  if (goalBanner) goalBanner.hidden = true;
+  const goalPill = document.getElementById('btnGoalToggle');
+  if (goalPill && !goalModeEnabled) goalPill.classList.remove('active');
+  const card = createAssistantContainer({ timing: false });
+  timeline.appendChild(card.row);
+  const msg = document.createElement('div');
+  msg.className = 'text-body';
+  const firstSeen = checkpoint.blockerFirstSeenAt ? `최초 차단 ${checkpoint.blockerFirstSeenAt}` : '차단 시각 미기록';
+  const lastProgress = checkpoint.lastSubstantiveProgressAt ? `마지막 진전 ${checkpoint.lastSubstantiveProgressAt}` : '진전 시각 미기록';
+  msg.textContent = `🎯 [Goal 미완료 · ${status}] ${reason} · ${firstSeen} · ${lastProgress} · 다음 조치: ${nextAction}`;
   card.content.appendChild(msg);
   timeline.scrollTop = timeline.scrollHeight;
   setGeneratingState(false);
@@ -2172,7 +2270,13 @@ async function startGoalMode(goalPrompt, durationMs, fixedDuration = false) {
     fixedDuration,
     iteration: 1,
     timer: null,
-    sessionId: currentSessionId
+    stallTimer: null,
+    sessionId: currentSessionId,
+    substantiveProgress: 0,
+    lastSubstantiveProgressAt: Date.now(),
+    blockerProgress: Object.create(null),
+    blockedSteps: [],
+    previousNoToolAnswer: ''
   };
 
   const goalBanner = document.getElementById('goalModeBanner');
@@ -2195,6 +2299,10 @@ async function startGoalMode(goalPrompt, durationMs, fixedDuration = false) {
 
 async function runGoalIterationTurn(turnPrompt) {
   if (!activeGoal) return;
+  if (goalStallExpired(activeGoal)) {
+    reportIncompleteActiveGoal(`같은 근본 원인에서 60분 동안 검증된 진전이 없습니다: ${activeGoal.lastBlockerReason || '원인 미기록'}`, '60분 정체');
+    return;
+  }
   const currentIteration = activeGoal.iteration;
 
   if (currentIteration > 1) {
@@ -2216,6 +2324,11 @@ async function runGoalIterationTurn(turnPrompt) {
 
   if (!activeGoal) return;
 
+  if (turnResult.execution?.successfulMutatingTools > 0) {
+    recordGoalProgress(activeGoal);
+    scheduleGoalStallDeadline(activeGoal);
+  }
+
   const responseText = turnResult.fullResponse || '';
   const isCompleted = !activeGoal.fixedDuration && (
     /^\s*GOAL_COMPLETE\s*$/m.test(responseText) ||
@@ -2223,37 +2336,71 @@ async function runGoalIterationTurn(turnPrompt) {
   );
 
   const blockedMatch = /^\s*GOAL_BLOCKED(?:\s*:\s*(.+?))?\s*$/m.exec(responseText);
+  const stepBlockedMatch = /^\s*GOAL_STEP_BLOCKED\s*:\s*(.+?)\s*$/m.exec(responseText);
+  const noToolTurn = Number(turnResult.execution?.toolCalls || 0) === 0;
+  const normalizedAnswer = responseText.trim().replace(/\s+/g, ' ').toLowerCase();
 
   if (isCompleted) {
     finishActiveGoal('목표가 완전히 달성되었습니다.');
+  } else if (stepBlockedMatch) {
+    const reason = stepBlockedMatch[1].trim() || '하위 작업이 진행 불가 상태입니다.';
+    const recorded = recordGoalBlocker(activeGoal, reason);
+    if (recorded.repeated) {
+      reportIncompleteActiveGoal(`한 번의 변경된 재시도 뒤 같은 근본 원인이 다시 발생했습니다: ${reason}`, '차단 원인 재발');
+    } else {
+      scheduleGoalStallDeadline(activeGoal);
+      activeGoal.blockedSteps.push(reason);
+      appendTurnNotice(assistantCard, `하위 작업 보류 · ${reason}. 같은 경로를 반복하지 않고 다른 근거 있는 작업으로 이동합니다.`, 'warning');
+      if (activeGoal.blockedSteps.length >= 5) {
+        reportIncompleteActiveGoal(`서로 다른 하위 작업 5개가 막혔습니다. 최근 차단: ${reason}`, '진전 없음');
+      } else {
+        activeGoal.iteration++;
+        const remainingMin = Math.max(1, Math.ceil((activeGoal.deadline - Date.now()) / 60000));
+        const nextPrompt = `계속 같은 Goal을 진행하세요. 남은 시간 약 ${remainingMin}분입니다. 이미 막힌 하위 작업은 반복하지 마세요: ${activeGoal.blockedSteps.slice(-8).join(' | ')}. 같은 근본 원인이 다시 나오면 즉시 중단하고 원인과 다른 근거 있는 다음 조치를 기록하세요. 목표: ${activeGoal.goalPrompt}`;
+        const goalModeText = document.getElementById('goalModeText');
+        if (goalModeText) goalModeText.textContent = `🎯 목표 추구 중 (${activeGoal.iteration}회차) · 차단 경로 제외: ${reason}`;
+        activeGoal.timer = setTimeout(() => { if (activeGoal) void runGoalIterationTurn(nextPrompt); }, 1500);
+      }
+    }
   } else if (blockedMatch) {
-    cancelActiveGoal(`목표 진행이 차단되었습니다 (${blockedMatch[1] || '사유 미제시'})`);
+    const reason = (blockedMatch[1] || '사유 미제시').trim();
+    recordGoalBlocker(activeGoal, reason);
+    reportIncompleteActiveGoal(`목표 진행이 차단되었습니다: ${reason}`, '차단');
   } else if (Date.now() >= activeGoal.deadline) {
-    finishActiveGoal(`지정된 시간(${Math.round(activeGoal.durationMs / 60000)}분)이 만료되어 목표 추구를 마쳤습니다.`);
+    reportIncompleteActiveGoal(`지정된 시간(${Math.round(activeGoal.durationMs / 60000)}분)이 만료됐지만 Goal 완료가 확인되지 않았습니다.`, '시간 제한');
+  } else if (noToolTurn && normalizedAnswer && normalizedAnswer === activeGoal.previousNoToolAnswer) {
+    const reason = '도구 실행이나 검증된 변경 없이 같은 응답이 반복되었습니다.';
+    recordGoalBlocker(activeGoal, reason);
+    reportIncompleteActiveGoal(reason, '진전 없음');
   } else if (!turnResult.ok) {
     if (turnResult.error && turnResult.error.name === 'AbortError') {
       cancelActiveGoal('사용자가 작업을 중단했습니다.');
     } else {
       activeGoal.consecutiveErrors = (activeGoal.consecutiveErrors || 0) + 1;
-      if (activeGoal.consecutiveErrors >= 3) {
-        cancelActiveGoal(`반복된 오류로 인해 목표 추구를 안전하게 중단했습니다: ${turnResult.error?.message || '실행 오류'}`);
+      const errorReason = turnResult.error?.message || '실행 오류';
+      const recorded = recordGoalBlocker(activeGoal, errorReason);
+      if (recorded.repeated || activeGoal.consecutiveErrors >= 2) {
+        reportIncompleteActiveGoal(`변경된 재시도 후에도 오류가 반복됐습니다: ${errorReason}`, '오류 반복');
       } else {
+        scheduleGoalStallDeadline(activeGoal);
         const retryDelay = activeGoal.consecutiveErrors * 4000;
-        appendTurnNotice(assistantCard, `⚠️ 실행 오류 발생 (${activeGoal.consecutiveErrors}/3). ${retryDelay / 1000}초 후 재시도합니다.`, 'warning');
+        appendTurnNotice(assistantCard, `⚠️ 실행 오류 발생. 같은 명령을 그대로 반복하지 않고 원인을 확인하는 다른 경로로 한 번 재시도합니다. ${retryDelay / 1000}초 후 재개합니다.`, 'warning');
         activeGoal.timer = setTimeout(() => {
-          if (activeGoal) void runGoalIterationTurn(turnPrompt);
+          if (activeGoal) void runGoalIterationTurn(`${turnPrompt}\n\n직전 오류: ${errorReason}. 같은 명령이나 경로를 그대로 반복하지 말고, 먼저 원인을 확인한 뒤 다른 근거 있는 안전한 조치를 선택하세요.`);
         }, retryDelay);
       }
     }
   } else {
     activeGoal.consecutiveErrors = 0;
+    activeGoal.previousNoToolAnswer = noToolTurn ? normalizedAnswer : '';
     activeGoal.iteration++;
     const remainingMin = Math.max(1, Math.ceil((activeGoal.deadline - Date.now()) / 60000));
     const goalModeText = document.getElementById('goalModeText');
     if (goalModeText) {
       goalModeText.textContent = `🎯 Pursuing Goal · 목표 추구 중 (${activeGoal.iteration}회차 · 남은 시간 약 ${remainingMin}분)`;
     }
-    const nextPrompt = `계속 같은 Goal을 진행하세요. 남은 시간은 약 ${remainingMin}분입니다. 직전 결과와 남은 작업을 확인하고, 이미 끝난 일을 반복하지 말고 다음의 가장 작은 안전한 단계를 실행하세요. 목표: ${activeGoal.goalPrompt}`;
+    const blockedContext = activeGoal.blockedSteps.length ? ` 이미 막힌 하위 작업(반복 금지): ${activeGoal.blockedSteps.slice(-8).join(' | ')}.` : '';
+    const nextPrompt = `계속 같은 Goal을 진행하세요. 남은 시간은 약 ${remainingMin}분입니다. 직전 결과와 남은 작업을 확인하고, 이미 끝난 일을 반복하지 말고 다음의 가장 작은 안전한 단계를 실행하세요.${blockedContext} 목표: ${activeGoal.goalPrompt}`;
     activeGoal.timer = setTimeout(() => {
       if (activeGoal) void runGoalIterationTurn(nextPrompt);
     }, 1500);
@@ -2275,6 +2422,9 @@ async function executeTurnCore({
   let fullResponse = '';
   let turnOk = false;
   let turnError = null;
+  let toolCalls = 0;
+  let successfulMutatingTools = 0;
+  const mutatingGoalTools = new Set(['edit_file', 'write_file', 'file_change', 'create_file', 'delete_file', 'workspace_file_edit', 'workspace_file_create']);
 
   try {
     const isTurbo = activeApprovalPolicy === 'never';
@@ -2326,6 +2476,16 @@ async function executeTurnCore({
           } else if (event.type === 'turn_error') {
             turnError = new Error(event.message || event.error || event.category || '턴 실행 중 오류가 발생했습니다.');
             if (assistantCard) assistantCard.workOutcome = 'error';
+          } else if (event.type === 'tool_start') {
+            toolCalls++;
+          } else if (event.type === 'tool_end') {
+            const detail = event.result || {};
+            const toolResult = detail.result || {};
+            const call = detail.call || event.call || {};
+            const commandResultUnknown = call.name === 'exec_command' && !Number.isInteger(toolResult.exitCode);
+            const failed = Boolean(toolResult.error) || toolResult.ok === false || toolResult.blocked === true
+              || commandResultUnknown || (Number.isInteger(toolResult.exitCode) && toolResult.exitCode !== 0);
+            if (!failed && mutatingGoalTools.has(call.name)) successfulMutatingTools++;
           }
           handleStreamEvent(event, assistantCard);
         } catch (_) {}
@@ -2340,10 +2500,14 @@ async function executeTurnCore({
 
   } catch (err) {
     turnError = err;
-    assistantCard.workOutcome = err.name === 'AbortError' ? 'aborted' : 'error';
-    appendTurnNotice(assistantCard, err.name === 'AbortError'
-      ? '⏹ 사용자에 의해 작업이 중단되었습니다.'
-      : `❌ 요청 실패: ${err.message}`, err.name === 'AbortError' ? 'warning' : 'error');
+    const goalCircuitAbort = err.name === 'AbortError' && turnAbortController === goalCircuitAbortController;
+    if (goalCircuitAbort) goalCircuitAbortController = null;
+    assistantCard.workOutcome = goalCircuitAbort ? 'stopped' : err.name === 'AbortError' ? 'aborted' : 'error';
+    if (!goalCircuitAbort) {
+      appendTurnNotice(assistantCard, err.name === 'AbortError'
+        ? '⏹ 사용자에 의해 작업이 중단되었습니다.'
+        : `❌ 요청 실패: ${err.message}`, err.name === 'AbortError' ? 'warning' : 'error');
+    }
     const queueFailureNotice = getCodexQueueSendFailureNotice(submittedFromCodexQueue);
     const composerStatus = document.getElementById('composerStatus');
     if (queueFailureNotice && composerStatus) composerStatus.textContent = queueFailureNotice;
@@ -2361,7 +2525,7 @@ async function executeTurnCore({
     if (!activeGoal) setGeneratingState(false);
     applyPendingUiMorphReloadWhenSafe();
   }
-  return { ok: turnOk, fullResponse, error: turnError };
+  return { ok: turnOk, fullResponse, error: turnError, execution: { toolCalls, successfulMutatingTools } };
 }
 
 function clearCurrentAbortControllerIfSame(turnAbortController) {

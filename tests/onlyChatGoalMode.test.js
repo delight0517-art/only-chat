@@ -38,6 +38,33 @@ test('parseClientGoalDuration correctly parses duration formats', () => {
   assert.equal(context.parse('unknown'), 30 * 60_000, 'defaults to 30 minutes on invalid format');
 });
 
+test('Goal circuit breaker fingerprints roots, retries once, resets only on progress, and expires at 60 minutes', () => {
+  const start = app.indexOf('const GOAL_STALL_LIMIT_MS =');
+  const end = app.indexOf('\nfunction parseClientGoalDuration', start);
+  assert.ok(start >= 0 && end > start, 'Goal circuit breaker helpers must be extractable');
+  const context = {};
+  vm.runInNewContext(`${app.slice(start, end)}\nglobalThis.goalCircuit = { goalBlockerFingerprint, recordGoalBlocker, recordGoalProgress, goalStallExpired, goalStallCheckpoint };`, context);
+  const circuit = context.goalCircuit;
+  const goal = { blockerProgress: Object.create(null), substantiveProgress: 0, stalledSince: null, blockerFingerprint: '' };
+
+  const first = circuit.recordGoalBlocker(goal, 'Google Drive eviction failed for /Users/test/File 12.4 GiB', 10_000);
+  assert.equal(first.repeated, false);
+  assert.equal(goal.stalledSince, 10_000);
+  const sameCause = circuit.recordGoalBlocker(goal, 'Google Drive eviction failed for /Users/other/File 9.7 GiB', 20_000);
+  assert.equal(sameCause.repeated, true, 'dynamic paths and sizes do not disguise the same root cause');
+  assert.equal(circuit.goalStallExpired(goal, 10_000 + 60 * 60_000 - 1), false);
+  assert.equal(circuit.goalStallExpired(goal, 10_000 + 60 * 60_000), true);
+
+  circuit.recordGoalProgress(goal, 30_000);
+  assert.equal(goal.stalledSince, null);
+  assert.equal(circuit.recordGoalBlocker(goal, 'Google Drive eviction failed for /Users/other/File 9.7 GiB', 40_000).repeated, false,
+    'a verified source/state change permits a fresh one-time retry');
+  const checkpoint = circuit.goalStallCheckpoint(goal, 'Use another evidence-backed route.');
+  assert.equal(checkpoint.blockerFirstSeenAt, new Date(40_000).toISOString());
+  assert.equal(checkpoint.lastSubstantiveProgressAt, new Date(40_000).toISOString(), 'a new blocker diagnosis is new evidence');
+  assert.match(checkpoint.nextAction, /evidence-backed/);
+});
+
 test('app.js integrates /goal slash command and Goal Mode execution loop', () => {
   assert.match(app, /const goalMatch = prompt\.trim\(\)\.match/, 'app.js must parse /goal command');
   assert.match(app, /cancelActiveGoal/, 'app.js must support goal cancellation');
@@ -45,6 +72,8 @@ test('app.js integrates /goal slash command and Goal Mode execution loop', () =>
   assert.match(app, /startGoalMode/, 'app.js must support starting goal mode');
   assert.match(app, /runGoalIterationTurn/, 'app.js must execute autonomous goal loop iterations');
   assert.match(app, /Pursuing Goal · 목표 추구 중/, 'app.js must display pursuing goal state');
+  assert.match(app, /GOAL_STEP_BLOCKED/, 'app Goal Mode must route blocked substeps through its circuit breaker');
+  assert.match(app, /Goal 미완료/, 'deadline and circuit-breaker stops must be visibly incomplete');
 });
 
 test('CLI only-chat goal works with active desktop server and streams turns', async () => {
@@ -91,8 +120,9 @@ test('CLI only-chat goal works with active desktop server and streams turns', as
 
 test('Goal loop safely aborts on consecutive errors and cleans up timers', () => {
   assert.match(app, /event\.type === 'turn_error'/, 'executeTurnCore must recognize SSE turn_error event');
-  assert.match(app, /activeGoal\.consecutiveErrors\s*>=\s*3/, 'runGoalIterationTurn must stop after 3 consecutive errors');
-  assert.match(app, /cancelActiveGoal\(`반복된 오류로 인해 목표 추구를 안전하게 중단했습니다/, 'must announce error stop');
+  assert.match(app, /activeGoal\.consecutiveErrors\s*>=\s*2/, 'runGoalIterationTurn must stop after one changed-input retry fails');
+  assert.match(app, /같은 명령이나 경로를 그대로 반복하지 말고/, 'the retry changes its diagnostic/action instruction');
+  assert.match(app, /reportIncompleteActiveGoal\(/, 'automatic stop must be labeled incomplete, not successful');
   assert.match(app, /const goalObj = activeGoal;\s*activeGoal = null;/, 'cancelActiveGoal and finishActiveGoal must null activeGoal immediately');
   assert.match(app, /beforeunload/, 'window beforeunload must cancel active goal');
 });
