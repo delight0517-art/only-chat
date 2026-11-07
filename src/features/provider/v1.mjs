@@ -1,7 +1,9 @@
+import responseGuidance from '../../providers/responseGuidance.js';
+
 const DEFAULT_BASE_URL = 'http://127.0.0.1:18880';
 const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
 const TOOL_NAMES = Object.freeze([
-  'exec_command', 'bash', 'read_file', 'write_file', 'edit_file', 'apply_patch',
+  'exec_command', 'bash', 'read_file', 'search_files', 'write_file', 'edit_file', 'apply_patch',
   'google_drive_list', 'google_drive_read', 'google_drive_create', 'google_drive_update', 'gmail_list', 'gmail_read', 'gmail_send',
   'notion_search', 'notion_query', 'notion_create_page', 'notion_update_page', 'notion_append_blocks',
   'notion_api_read', 'notion_api_write',
@@ -15,7 +17,7 @@ const TOOL_NAMES = Object.freeze([
   'joint_development_list', 'joint_development_read', 'joint_development_assess', 'joint_development_create'
 ]);
 const READ_ONLY_TOOL_NAMES = new Set([
-  'read_file', 'google_drive_list', 'google_drive_read', 'gmail_list', 'gmail_read',
+  'read_file', 'search_files', 'google_drive_list', 'google_drive_read', 'gmail_list', 'gmail_read',
   'notion_search', 'notion_query', 'notion_api_read', 'spacekeeper_session_report', 'spacekeeper_capacity_status',
   'notion_mcp_list_tools', 'notion_mcp_call_tool',
   'notion_rea_read', 'notion_rea_search', 'notion_rea_aria', 'notion_rea_status',
@@ -37,7 +39,9 @@ const JOINT_DEVELOPMENT_CONTRACT = {
 function toolDefinitions(approvalPolicy = 'on-request', toolProfile = null) {
   if (toolProfile === 'no-tools') return [];
   const profileNames = toolProfile === 'file-edit' ? new Set(['read_file', 'edit_file'])
+    : toolProfile === 'file-write' ? new Set(['read_file', 'write_file'])
     : toolProfile === 'file-read' ? new Set(['read_file'])
+      : toolProfile === 'file-search' ? new Set(['search_files', 'read_file'])
       : toolProfile === 'embedded-3f-status' ? new Set(['embedded_3f_status'])
         : toolProfile === 'threef-browser-status' ? new Set(['browser_status']) : null;
   const names = TOOL_NAMES.filter(name =>
@@ -48,8 +52,12 @@ function toolDefinitions(approvalPolicy = 'on-request', toolProfile = null) {
       name,
       description: name === 'read_file'
         ? 'Read a file under the active Only Chat workspace. Pass path relative to the workspace root. For large files, set start_line and end_line to a small range (about 30 lines) and read more ranges only as needed; do not load a large document wholesale. For a root-level TODO_ROADMAP.md, pass exactly "TODO_ROADMAP.md"; never prepend the project name or use a filesystem-root path.'
+        : name === 'search_files'
+          ? 'Search text in a workspace file or directory with a literal query. Pass path relative to the workspace root (use TODO.md to search only the project TODO). This is read-only and returns matching file, line numbers, and bounded snippets; then use read_file on relevant lines.'
         : name === 'edit_file'
           ? 'Edit a file under the active Only Chat workspace. Pass path relative to the workspace root; for a root-level file use only its filename, without a project-name prefix.'
+        : name === 'write_file'
+          ? 'Write a file under the active Only Chat workspace. The CLI profile permits only the exact new relative path explicitly approved for this run; it rejects existing files and paths outside the workspace.'
         : name === 'task_registry_list'
         ? 'Read the shared local task registry so this chat can find work, owners, checkpoints and evidence before repeating investigation. Do not assume a listed task is complete.'
         : name === 'task_registry_read'
@@ -101,11 +109,21 @@ function toolDefinitions(approvalPolicy = 'on-request', toolProfile = null) {
             start_line: { type: 'integer', minimum: 1, description: 'Inclusive 1-based first line. If end_line is supplied, end_line must be greater than or equal to start_line.' },
             end_line: { type: 'integer', minimum: 1, description: 'Inclusive 1-based last line, not a line count. For lines 151-152 use start_line=151 and end_line=152.' }
           }, required: ['path'], additionalProperties: false }
+          : name === 'search_files'
+            ? { type: 'object', properties: {
+                query: { type: 'string', minLength: 1, maxLength: 300 },
+                path: { type: 'string', minLength: 1, description: 'Workspace-relative file or directory, e.g. TODO.md.' }
+              }, required: ['query'], additionalProperties: false }
           : name === 'edit_file'
             ? { type: 'object', properties: {
               path: { type: 'string', minLength: 1, description: 'Workspace-root-relative path; no project-name prefix.' },
               target: { type: 'string', minLength: 1 }, replacement: { type: 'string' }
             }, required: ['path', 'target', 'replacement'], additionalProperties: false }
+          : name === 'write_file'
+            ? { type: 'object', properties: {
+              path: { type: 'string', minLength: 1, description: 'The exact workspace-relative path explicitly approved for this run.' },
+              content: { type: 'string' }
+            }, required: ['path', 'content'], additionalProperties: false }
         : name === 'joint_development_list'
           ? { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 200 } }, additionalProperties: false }
           : name === 'joint_development_read'
@@ -222,9 +240,24 @@ function createAccountRouterAdapter(options = {}) {
 
   async function call(tier, history, hooks = {}, context = {}) {
     if (!Array.isArray(history) || !history.length) throw new Error('Router needs a non-empty conversation history.');
+    const guidance = responseGuidance.RESPONSE_GUIDANCE;
+    const messages = history.map(message => ({ ...message }));
+    const systemIndex = messages.findIndex(message => message?.role === 'system');
+    if (systemIndex >= 0) {
+      messages[systemIndex] = {
+        ...messages[systemIndex],
+        content: `${guidance}\n\n${String(messages[systemIndex].content || '')}`
+      };
+    } else {
+      messages.unshift({ role: 'system', content: guidance });
+    }
     const toolProfile = context.toolProfile || (explicitlyRequestsNoTools(history) ? 'no-tools' : null);
     const requireInitialRead = toolProfile === 'file-read' && !history.some(message => message?.role === 'tool');
-    const signal = context.signal || AbortSignal.timeout(timeoutMs);
+    const requireInitialSearch = toolProfile === 'file-search' && !history.some(message => message?.role === 'tool');
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const signal = context.signal
+      ? AbortSignal.any([context.signal, timeoutSignal])
+      : timeoutSignal;
     let response;
     try {
       response = await fetchImpl(`${baseUrl}/v1/chat/completions`, {
@@ -232,7 +265,7 @@ function createAccountRouterAdapter(options = {}) {
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({
           model: tier?.model || 'auto',
-          messages: history,
+          messages,
           tools: Array.isArray(context.allowedTools)
             ? [
                 ...toolDefinitions(context.approvalPolicy, toolProfile).filter(tool => context.allowedTools.includes(tool.function.name)),
@@ -248,6 +281,7 @@ function createAccountRouterAdapter(options = {}) {
           tool_choice: toolProfile === 'no-tools' ? 'none'
             : toolProfile === 'embedded-3f-status' && !history.some(message => message?.role === 'tool') ? { type: 'function', function: { name: 'embedded_3f_status' } }
               : toolProfile === 'threef-browser-status' && !history.some(message => message?.role === 'tool') ? { type: 'function', function: { name: 'browser_status' } }
+                : requireInitialSearch ? { type: 'function', function: { name: 'search_files' } }
               : requireInitialRead ? { type: 'function', function: { name: 'read_file' } } : 'auto',
           stream: false
         }),
@@ -402,7 +436,7 @@ function createOllamaAdapter(options = {}) {
     const hasSystemMessage = history.some(message => message?.role === 'system');
     const localAssistantGuide = {
       role: 'system',
-      content: 'You are Only Chat\'s local assistant. Answer ordinary conversation and text-only requests directly without calling tools. Use a tool only when the user asks for a task that requires current workspace, device, or service data, or asks you to perform a concrete action. For large files, read only a small line range (about 30 lines); start_line and end_line are inclusive 1-based line numbers, and end_line must be greater than or equal to start_line. For source-code analysis, synthesize after reading instead of returning raw excerpts; state each finding with an exact function or identifier and a short exact quote from read_file output, distinguish absent evidence from unread evidence, and say the analysis is incomplete when requested evidence was not read. For qwen2.5:3b, make at most 4 read_file calls per source-analysis turn; if more evidence is needed, stop and name the next narrow range. For lines 151-152 send start_line=151 and end_line=152. Fetch more ranges only as needed. Follow each tool schema exactly; never invent filenames, paths, IDs, limits, or results. Treat tool output as the evidence boundary: preserve explicit checkboxes and negations, distinguish source or test evidence from live runtime evidence, and state when a requested fact is not established by the returned text. In Markdown, [ ] means unchecked/open/incomplete and [x] or [X] means checked/complete; when reporting status, copy the exact marker and never call [ ] checked. Never infer screenshots, provider calls, device behavior, or completion from a plan, status label, or test result. If a tool fails, report the failure plainly and do not claim the task is complete. Never show tool-call markup such as <tool_call> to the user.'
+      content: 'You are Only Chat\'s local assistant. Answer ordinary conversation and text-only requests directly without calling tools. Use a tool only when the user asks for a task that requires current workspace, device, or service data, or asks you to perform a concrete action. For large files, read only a small line range (about 30 lines); start_line and end_line are inclusive 1-based line numbers, and end_line must be greater than or equal to start_line. For source-code analysis, synthesize after reading instead of returning raw excerpts; state each finding with an exact function or identifier and a short exact quote from read_file output, distinguish absent evidence from unread evidence, and say the analysis is incomplete when requested evidence was not read. For qwen2.5:3b, make at most 4 read_file calls per source-analysis turn; if more evidence is needed, stop and name the next narrow range. For lines 151-152 send start_line=151 and end_line=152. Fetch more ranges only as needed. Follow each tool schema exactly; never invent filenames, paths, IDs, limits, or results. Treat tool output as the evidence boundary: preserve explicit checkboxes and negations, distinguish source or test evidence from live runtime evidence, and state when a requested fact is not established by the returned text. In Markdown, [ ] means unchecked/open/incomplete and [x] or [X] means checked/complete; when reporting status, copy the exact marker and never call [ ] checked. When interpreting a compound boolean guard, preserve the polarity of every predicate and explain what the true and false branches do; a passing guard does not mean that the guarded condition is false. If a tool fails, report the failure plainly and do not claim the task is complete. Never show tool-call markup such as <tool_call> to the user.'
     };
     const requestHistory = hasSystemMessage ? history : [localAssistantGuide, ...history];
     const context = args[3] || {};
@@ -418,7 +452,9 @@ function createOllamaAdapter(options = {}) {
       throw new Error('Ollama returned a tool call for a no-tools request.');
     }
     const allowedTools = toolProfile === 'file-read' ? ['read_file']
+      : toolProfile === 'file-search' ? ['search_files', 'read_file']
       : toolProfile === 'file-edit' ? ['read_file', 'edit_file']
+        : toolProfile === 'file-write' ? ['read_file', 'write_file']
         : toolProfile === 'embedded-3f-status' ? ['embedded_3f_status']
           : toolProfile === 'threef-browser-status' ? ['browser_status'] : null;
     if (allowedTools && response.toolCalls.some(call => !allowedTools.includes(call.name))) {

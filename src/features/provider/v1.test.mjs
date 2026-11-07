@@ -26,9 +26,11 @@ assert.ok(toolDefinitions().some(tool => tool.function.name === 'gmail_send'));
 assert.ok(toolDefinitions().some(tool => tool.function.name === 'google_drive_read'));
 assert.ok(!toolDefinitions().some(tool => tool.function.name === 'vault_get_credential'));
 assert.deepEqual(toolDefinitions('on-request', 'file-edit').map(tool => tool.function.name), ['read_file', 'edit_file']);
+assert.deepEqual(toolDefinitions('on-request', 'file-write').map(tool => tool.function.name), ['read_file', 'write_file']);
 assert.deepEqual(toolDefinitions('on-request', 'file-read').map(tool => tool.function.name), ['read_file'], 'file-read must not expose edit_file to the model');
 assert.deepEqual(toolDefinitions('on-request', 'no-tools'), [], 'no-tools must expose no callable functions');
 assert.deepEqual(toolDefinitions('read-only', 'file-edit').map(tool => tool.function.name), ['read_file'], 'tool profiles must intersect with the read-only policy');
+assert.deepEqual(toolDefinitions('read-only', 'file-write').map(tool => tool.function.name), ['read_file'], 'read-only policy must suppress file writes');
 const fileReadTool = toolDefinitions('on-request', 'file-edit').find(tool => tool.function.name === 'read_file').function;
 assert.deepEqual(fileReadTool.parameters.required, ['path']);
 assert.match(fileReadTool.parameters.properties.end_line.description, /inclusive 1-based last line, not a line count/i);
@@ -36,10 +38,14 @@ assert.match(fileReadTool.parameters.properties.end_line.description, /start_lin
 assert.equal(fileReadTool.parameters.properties.path.description.includes('TODO_ROADMAP.md'), true);
 assert.match(fileReadTool.description, /never prepend the project name or use a filesystem-root path/);
 assert.match(fileReadTool.description, /small range.*do not load a large document wholesale/i);
+const fileWriteTool = toolDefinitions('on-request', 'file-write').find(tool => tool.function.name === 'write_file').function;
+assert.deepEqual(fileWriteTool.parameters.required, ['path', 'content']);
+assert.match(fileWriteTool.parameters.properties.path.description, /exact workspace-relative path explicitly approved/);
 assert.equal(DEFAULT_OLLAMA_BASE_URL, 'http://127.0.0.1:11434');
 
 const discoveryEngine = Object.create(AgentEngine.prototype);
 discoveryEngine.isolated = false;
+discoveryEngine.accountRouterReadiness = { verified: false };
 const originalTier = { id: 'codex-primary', provider: 'codex' };
 discoveryEngine.priorityChain = {
   chain: { enabled: true, tiers: [originalTier] },
@@ -82,11 +88,15 @@ const metadataAdapter = createAccountRouterAdapter({ fetch: async url => {
 } });
 assert.deepEqual(await metadataAdapter.getChain(), { apiVersion: 1, enabled: true, accounts: [] });
 const deltas = [];
-const result = await adapter.call({ model: 'auto' }, [{ role: 'user', content: 'hi' }], { onMessageDelta: text => deltas.push(text) });
+const routerHistory = [{ role: 'user', content: 'hi' }];
+const result = await adapter.call({ model: 'auto' }, routerHistory, { onMessageDelta: text => deltas.push(text) });
 assert.equal(request.url, 'http://127.0.0.1:18880/v1/chat/completions');
 const payload = JSON.parse(request.init.body);
 assert.equal(payload.model, 'auto');
-assert.deepEqual(payload.messages, [{ role: 'user', content: 'hi' }]);
+assert.equal(payload.messages[0].role, 'system');
+assert.match(payload.messages[0].content, /“막힘”은 조사와 다음 행동이 끝난 상태가 아니라/);
+assert.deepEqual(payload.messages[1], { role: 'user', content: 'hi' });
+assert.deepEqual(routerHistory, [{ role: 'user', content: 'hi' }], 'Router guidance injection must not mutate caller history');
 assert.equal(payload.stream, false);
 assert.equal(payload.tool_choice, 'auto');
 assert.deepEqual(payload.tools.map(item => item.function.name), toolDefinitions().map(item => item.function.name), 'default policy exposes the current complete provider tool set');
@@ -97,6 +107,25 @@ assert.equal(request.init.headers.Authorization, undefined);
 assert.deepEqual(result, { content: 'hello', toolCalls: [], usage: { total_tokens: 2 }, protocol: 'openai-compatible' });
 assert.deepEqual(deltas, ['hello']);
 
+const timeoutAdapter = createAccountRouterAdapter({
+  timeoutMs: 20,
+  fetch: async (_url, init) => new Promise((_resolve, reject) => {
+    const rejectOnAbort = () => reject(init.signal.reason);
+    if (init.signal.aborted) rejectOnAbort();
+    else init.signal.addEventListener('abort', rejectOnAbort, { once: true });
+  })
+});
+let timeoutFallback;
+const timeoutOutcome = await Promise.race([
+  timeoutAdapter.call({ model: 'gpt-6-luna' }, [{ role: 'user', content: 'diagnose' }], {}, {
+    signal: new AbortController().signal
+  }).then(() => null, error => error),
+  new Promise(resolve => { timeoutFallback = setTimeout(() => resolve(null), 250); })
+]);
+clearTimeout(timeoutFallback);
+assert.ok(timeoutOutcome instanceof Error, 'the provider request must honor its timeout when a caller signal is also supplied');
+assert.match(timeoutOutcome.message, /AI Account Router request timed out or was cancelled/);
+
 let noToolsRouterRequest;
 const noToolsRouter = createAccountRouterAdapter({ fetch: async (_url, init) => {
   noToolsRouterRequest = JSON.parse(init.body);
@@ -104,6 +133,8 @@ const noToolsRouter = createAccountRouterAdapter({ fetch: async (_url, init) => 
 } });
 const noToolsRouterResult = await noToolsRouter.call({ model: 'gpt-6-luna' }, [{ role: 'user', content: 'Reply exactly. Do not use tools.' }]);
 assert.deepEqual(noToolsRouterRequest.tools, [], 'Router text-only turns must send no tool definitions');
+assert.equal(noToolsRouterRequest.messages[0].role, 'system', 'Router guidance applies to the primary AI route');
+assert.match(noToolsRouterRequest.messages[0].content, /막혔다고 보고하기 전에는 관찰된 상태가 정확히 어떤 작업을 막는지 확인하고/);
 assert.equal(noToolsRouterRequest.tool_choice, 'none', 'Router text-only turns must explicitly disable tool calls');
 assert.equal(noToolsRouterResult.content, 'ONLYCHAT_ROUTER_TEXT_OK');
 const statusRouterRequests = [];
@@ -208,7 +239,7 @@ assert.match(ollamaMessages[0].content, /preserve explicit checkboxes and negati
 assert.match(ollamaMessages[0].content, /distinguish source or test evidence from live runtime evidence/i, 'local summaries must not promote source checks into runtime proof');
 assert.match(ollamaMessages[0].content, /\[ \] means unchecked\/open\/incomplete and \[x\] or \[X\] means checked\/complete/i, 'local summaries must interpret TODO checkbox markers correctly');
 assert.match(ollamaMessages[0].content, /end_line must be greater than or equal to start_line/i, 'the local assistant must construct ordered inclusive line ranges');
-assert.match(ollamaMessages[0].content, /Never infer screenshots, provider calls, device behavior, or completion/i, 'local summaries must not invent unobserved completion evidence');
+assert.match(ollamaMessages[0].content, /확인하지 않은 일을 완료했다고 말하지 않는다/, 'local summaries must not invent unobserved completion evidence');
 assert.deepEqual(ollamaMessages.at(-1), { role: 'user', content: 'Read the TODO.' });
 assert.deepEqual(ollamaResult.toolCalls, [{ id: 'ollama-read-1', name: 'read_file', args: { path: 'TODO.md' } }]);
 let readOnlyOllamaTools;
@@ -409,6 +440,7 @@ assert.equal(toolResult.protocol, 'openai-compatible');
 let routedTier;
 const engine = Object.create(AgentEngine.prototype);
 engine.isolated = false;
+engine.accountRouterReadiness = {};
 engine.tools = { approvalPolicy: 'read-only' };
 engine.accountRouterAdapter = { call: async (tier, history, hooks, context) => {
   routedTier = { tier, history, context };
@@ -423,6 +455,7 @@ assert.equal(routedTier.context.approvalPolicy, 'read-only');
 assert.deepEqual(engine.accountRouterReadiness, { available: true, connected: true, verified: true, state: 'connected', message: 'AI Account Router 실제 요청 성공' });
 const failedRouterEngine = Object.create(AgentEngine.prototype);
 failedRouterEngine.isolated = false;
+failedRouterEngine.accountRouterReadiness = {};
 failedRouterEngine.tools = { approvalPolicy: 'read-only' };
 failedRouterEngine.accountRouterAdapter = { call: async () => { throw new Error('AI Account Router returned HTTP 503 (missing_credential).'); } };
 await assert.rejects(failedRouterEngine._callProviderWithFallback({ id: 'router-failed', provider: 'account-router', model: 'auto' }, [{ role: 'user', content: 'hi' }], {}, { reasoningEffort: 'low' }), /missing_credential/);
@@ -505,6 +538,19 @@ try {
   const profileTurn = await integrationEngine.executeTurn('Write a file', { reasoningEffort: 'low', toolProfile: 'file-edit' });
   assert.equal(profileTurn.content, 'profile enforced');
   assert.equal(profileExecutionCount, 0, 'the file-edit profile blocks unadvertised tools even if a provider returns one');
+  turn = 0;
+  integrationEngine.accountRouterAdapter = { call: async () => {
+    turn += 1;
+    if (turn === 1) return { content: '', toolCalls: [{ id: 'file-write-allowed', name: 'write_file', args: { path: 'new.txt', content: 'new' } }], protocol: 'openai-compatible' };
+    return { content: 'file-write profile enforced', toolCalls: [] };
+  } };
+  const fileWriteTurn = await integrationEngine.executeTurn('Create a file', {
+    reasoningEffort: 'low',
+    toolProfile: 'file-write',
+    requestToolApproval: async request => request.name === 'write_file'
+  });
+  assert.equal(fileWriteTurn.content, 'file-write profile enforced');
+  assert.equal(profileExecutionCount, 1, 'file-write exposes write_file only after the selected profile and approval allow it');
   let standaloneBrowserStatusCalls = 0;
   integrationEngine.tools.browserStatus = async () => {
     standaloneBrowserStatusCalls++;
