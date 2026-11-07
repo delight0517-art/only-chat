@@ -7,5 +7,5 @@ const path = require('node:path');
 const html = fs.readFileSync(path.join(__dirname, '../src/ui/desktop/index.html'), 'utf8');
 assert.match(html, /id="settingApprovalPolicy"[\s\S]*?Codex 요청마다 작업공간 쓰기 승인/);
 assert.match(html, /id="settingsApprovalSelect"[\s\S]*?Codex 요청마다 작업공간 쓰기 승인/);
-assert.equal((html.match(/앱 도구는 호출별로 승인합니다\. On Request에서 Codex는 요청마다 작업공간 쓰기 범위를 먼저 승인받고, Read Only에서는 화면·전원 변경 도구도 사용할 수 없습니다\./g) || []).length, 2);
+assert.equal((html.match(/새 대화는 Turbo와 Full Access를 기본 적용합니다\. Never Ask에서는 앱 도구 승인 질문을 건너뛰며, macOS 권한과 35Closer 전원 승인은 별도로 유지됩니다\.|앱 도구는 호출별로 승인합니다\. On Request에서 Codex는 요청마다 작업공간 쓰기 범위를 먼저 승인받고, Read Only에서는 화면·전원 변경 도구도 사용할 수 없습니다\./g) || []).length, 2);
 console.log('approvalPolicySettingsCopy passed: both settings surfaces explain actual Codex and read-only behavior');

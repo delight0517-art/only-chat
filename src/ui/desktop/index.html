@@ -226,6 +226,13 @@
           <div class="attachment-list" id="attachmentList" aria-live="polite"></div>
           <div class="composer-status" id="composerStatus" role="status" aria-live="polite"></div>
           
+          <!-- Pursuing Goal Active Banner -->
+          <div class="goal-mode-banner" id="goalModeBanner" hidden>
+            <span class="goal-mode-pulse" aria-hidden="true">🎯</span>
+            <span class="goal-mode-text" id="goalModeText">Pursuing Goal · 목표 추구 중</span>
+            <button class="goal-cancel-btn" id="btnCancelGoal" type="button" title="목표 추구 중단">중단</button>
+          </div>
+
           <div class="composer-bottom-bar">
             <!-- Left Controls: + and Full Access Pill -->
             <div class="composer-bottom-left">
@@ -240,6 +247,11 @@
               <button class="access-pill" id="btnAccessToggle" type="button" aria-pressed="false" title="현재 요청은 Only Chat 작업공간 안에서만 실행됩니다.">
                 <span class="warning-icon">⚠️</span>
                 <span class="access-text">Workspace sandbox</span>
+              </button>
+
+              <button class="goal-pill" id="btnGoalToggle" type="button" aria-pressed="false" title="Goal Mode: 목표를 달성할 때까지 자율적으로 연속 작업을 수행합니다 (/goal [시간] <목표>)">
+                <span class="goal-icon" aria-hidden="true">🎯</span>
+                <span class="goal-pill-text">Goal Mode</span>
               </button>
             </div>
 
@@ -518,6 +530,19 @@
           <div class="settings-section-card">
             <h3 class="section-card-title">General</h3>
 
+            <div class="settings-row-item">
+              <div class="row-item-text">
+                <div class="row-item-heading">코드 업데이트 적용 및 중단된 작업 재개</div>
+                <div class="row-item-desc">Only Chat 서버를 안전하게 다시 시작합니다. 진행 중인 요청은 체크포인트에 저장하고, 재시작 후 안전한 경우 한 번 자동으로 이어갑니다. 실행 중이던 앱 도구는 중복 실행하지 않고 확인이 필요하면 멈춥니다.</div>
+                <div class="row-item-desc" id="serverRestartStatus" role="status" aria-live="polite"></div>
+              </div>
+              <div class="row-item-action">
+                <button class="btn-change-outline" id="btnRestartOnlyChatServer" type="button">재시작 후 이어가기</button>
+              </div>
+            </div>
+
+            <div class="settings-divider-line"></div>
+
             <div class="settings-row-item workspace-ownership-row">
               <div class="row-item-text">
                 <div class="row-item-heading">개별 경로 잠금과 작업공간 실행 임대</div>
@@ -603,9 +628,12 @@
                   <div class="kebab-menu-wrapper">
                     <button class="btn-kebab" onclick="toggleKebabMenu(event, 'aside')">•••</button>
                     <div class="kebab-popover" id="kebab-aside">
-                      <div class="kebab-item" onclick="setAsRank('aside', 1)">1순위로 지정 (M-Oasis)</div>
-                      <div class="kebab-item" onclick="setAsRank('aside', 2)">2순위로 지정 (M-Oasis)</div>
-                      <div class="kebab-item" onclick="setAsRank('aside', 3)">3순위로 지정 (M-Oasis)</div>
+                      <div class="kebab-item" onclick="reauthProvider('aside')">
+                        <span class="kebab-icon">⟳</span> Reauthenticate
+                      </div>
+                      <div class="kebab-item danger" onclick="disconnectProvider('aside')">
+                        <span class="kebab-icon">🗑</span> 계정 삭제
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -628,12 +656,8 @@
                         <span class="kebab-icon">⟳</span> Reauthenticate
                       </div>
                       <div class="kebab-item danger" onclick="disconnectProvider('claude')">
-                        <span class="kebab-icon">⎋</span> Disconnect
+                        <span class="kebab-icon">🗑</span> 계정 삭제
                       </div>
-                      <div class="kebab-divider"></div>
-                      <div class="kebab-item" onclick="setAsRank('claude', 1)">1순위로 지정 (M-Oasis)</div>
-                      <div class="kebab-item" onclick="setAsRank('claude', 2)">2순위로 지정 (M-Oasis)</div>
-                      <div class="kebab-item" onclick="setAsRank('claude', 3)">3순위로 지정 (M-Oasis)</div>
                     </div>
                   </div>
                 </div>
@@ -657,12 +681,8 @@
                         <span class="kebab-icon">⟳</span> Reauthenticate
                       </div>
                       <div class="kebab-item danger" onclick="disconnectProvider('chatgpt')">
-                        <span class="kebab-icon">⎋</span> Disconnect
+                        <span class="kebab-icon">🗑</span> 계정 삭제
                       </div>
-                      <div class="kebab-divider"></div>
-                      <div class="kebab-item" onclick="setAsRank('codex-primary', 1)">1순위로 지정 (Primary: rogan2534@gmail.com)</div>
-                      <div class="kebab-item" onclick="setAsRank('codex-secondary', 2)">2순위로 지정 (Secondary: f123123ff@gmail.com)</div>
-                      <div class="kebab-item" onclick="setAsRank('codex-primary', 3)">3순위로 지정 (Primary 방어선)</div>
                     </div>
                   </div>
                 </div>
@@ -681,13 +701,12 @@
                   <div class="kebab-menu-wrapper">
                     <button class="btn-kebab" onclick="toggleKebabMenu(event, 'openrouter')">•••</button>
                     <div class="kebab-popover" id="kebab-openrouter">
-                      <div class="kebab-item" onclick="openConnectModal('openrouter')">
-                        <span class="kebab-icon">✎</span> Configure API Key
+                      <div class="kebab-item" onclick="reauthProvider('openrouter')">
+                        <span class="kebab-icon">⟳</span> Reauthenticate
                       </div>
-                      <div class="kebab-divider"></div>
-                      <div class="kebab-item" onclick="setAsRank('openrouter', 1)">1순위로 지정 (M-Oasis)</div>
-                      <div class="kebab-item" onclick="setAsRank('openrouter', 2)">2순위로 지정 (M-Oasis)</div>
-                      <div class="kebab-item" onclick="setAsRank('openrouter', 3)">3순위로 지정 (M-Oasis)</div>
+                      <div class="kebab-item danger" onclick="disconnectProvider('openrouter')">
+                        <span class="kebab-icon">🗑</span> 계정 삭제
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -706,13 +725,12 @@
                   <div class="kebab-menu-wrapper">
                     <button class="btn-kebab" onclick="toggleKebabMenu(event, 'ollama')">•••</button>
                     <div class="kebab-popover" id="kebab-ollama">
-                      <div class="kebab-item" onclick="openConnectModal('ollama')">
-                        <span class="kebab-icon">⚙</span> 로컬 모델 설정
+                      <div class="kebab-item" onclick="reauthProvider('ollama')">
+                        <span class="kebab-icon">⟳</span> Reauthenticate
                       </div>
-                      <div class="kebab-divider"></div>
-                      <div class="kebab-item" onclick="setAsRank('ollama', 1)">1순위로 지정 (0원 로컬)</div>
-                      <div class="kebab-item" onclick="setAsRank('ollama', 2)">2순위로 지정 (0원 로컬)</div>
-                      <div class="kebab-item" onclick="setAsRank('ollama', 3)">3순위로 지정 (0원 로컬)</div>
+                      <div class="kebab-item danger" onclick="disconnectProvider('ollama')">
+                        <span class="kebab-icon">🗑</span> 계정 삭제
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -732,14 +750,11 @@
                   <div class="kebab-menu-wrapper">
                     <button class="btn-kebab" onclick="toggleKebabMenu(event, 'google')">•••</button>
                     <div class="kebab-popover" id="kebab-google">
-                      <div class="kebab-item" onclick="setAsRank('antigravity-flash-med', 1)">
-                        <span class="kebab-icon">★</span> 1순위로 지정 (M-Oasis Tier 1)
+                      <div class="kebab-item" onclick="reauthProvider('google')">
+                        <span class="kebab-icon">⟳</span> Reauthenticate
                       </div>
-                      <div class="kebab-item" onclick="setAsRank('antigravity-flash-med', 2)">
-                        2순위로 지정
-                      </div>
-                      <div class="kebab-item" onclick="setAsRank('antigravity-flash-med', 3)">
-                        3순위로 지정
+                      <div class="kebab-item danger" onclick="disconnectProvider('google')">
+                        <span class="kebab-icon">🗑</span> 계정 삭제
                       </div>
                     </div>
                   </div>
@@ -759,8 +774,11 @@
                   <div class="kebab-menu-wrapper">
                     <button class="btn-kebab" onclick="toggleKebabMenu(event, 'copilot')">•••</button>
                     <div class="kebab-popover" id="kebab-copilot">
-                      <div class="kebab-item" onclick="openConnectModal('copilot')">
-                        <span class="kebab-icon">🔗</span> GitHub 계정 로그인
+                      <div class="kebab-item" onclick="reauthProvider('copilot')">
+                        <span class="kebab-icon">⟳</span> Reauthenticate
+                      </div>
+                      <div class="kebab-item danger" onclick="disconnectProvider('copilot')">
+                        <span class="kebab-icon">🗑</span> 계정 삭제
                       </div>
                     </div>
                   </div>
@@ -780,8 +798,11 @@
                   <div class="kebab-menu-wrapper">
                     <button class="btn-kebab" onclick="toggleKebabMenu(event, 'gemini-fence')">•••</button>
                     <div class="kebab-popover" id="kebab-gemini-fence">
-                      <div class="kebab-item" onclick="openConnectModal('gemini-fence')">
-                        <span class="kebab-icon">⚙</span> Fence 보안 정책 구성
+                      <div class="kebab-item" onclick="reauthProvider('gemini-fence')">
+                        <span class="kebab-icon">⟳</span> Reauthenticate
+                      </div>
+                      <div class="kebab-item danger" onclick="disconnectProvider('gemini-fence')">
+                        <span class="kebab-icon">🗑</span> 계정 삭제
                       </div>
                     </div>
                   </div>
@@ -801,8 +822,11 @@
                   <div class="kebab-menu-wrapper">
                     <button class="btn-kebab" onclick="toggleKebabMenu(event, 'litellm')">•••</button>
                     <div class="kebab-popover" id="kebab-litellm">
-                      <div class="kebab-item" onclick="openConnectModal('litellm')">
-                        <span class="kebab-icon">✎</span> 프록시 URL 및 토큰 설정
+                      <div class="kebab-item" onclick="reauthProvider('litellm')">
+                        <span class="kebab-icon">⟳</span> Reauthenticate
+                      </div>
+                      <div class="kebab-item danger" onclick="disconnectProvider('litellm')">
+                        <span class="kebab-icon">🗑</span> 계정 삭제
                       </div>
                     </div>
                   </div>
@@ -1266,6 +1290,9 @@
       <button class="btn-icon" id="btnCloseBrowser">✕</button>
     </div>
     <div class="drawer-content" style="padding: 12px; gap: 10px;">
+      <div class="browser-tab-strip" id="browserTabStrip" role="tablist" aria-label="3F Browser 탭" style="display: flex; gap: 4px; align-items: center; overflow-x: auto; padding: 2px 0 6px;">
+        <button class="btn-secondary" id="btnBrowserNewTab" type="button" style="padding: 2px 8px; font-size: 12px; flex: none;" title="새 탭 열기" aria-label="새 탭 열기">＋</button>
+      </div>
       <div style="display: flex; gap: 6px;">
         <input type="text" id="browserUrlInput" class="search-box-input" style="flex: 1;" placeholder="https://google.com" value="https://google.com">
         <button class="btn-secondary" data-browser-action="back" aria-label="뒤로">‹</button>

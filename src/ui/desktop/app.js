@@ -422,6 +422,20 @@ function setupEventListeners() {
 
   composerInput.addEventListener('keydown', handleComposerKeydown);
 
+  document.getElementById('btnGoalToggle')?.addEventListener('click', () => {
+    goalModeEnabled = !goalModeEnabled;
+    const pill = document.getElementById('btnGoalToggle');
+    if (pill) {
+      pill.classList.toggle('active', goalModeEnabled);
+      pill.setAttribute('aria-pressed', String(goalModeEnabled));
+    }
+  });
+
+  document.getElementById('btnCancelGoal')?.addEventListener('click', () => {
+    cancelActiveGoal('사용자가 목표 추구 배너에서 중단했습니다.');
+    abortActiveTurn();
+  });
+
   document.getElementById('btnNewChat').addEventListener('click', startNewSession);
 
   btnSidebarSearch.addEventListener('click', () => {
@@ -1868,6 +1882,78 @@ async function handleSend() {
   const assistantTimer = startAssistantTimer(assistantCard);
   timeline.scrollTop = timeline.scrollHeight;
 
+  const goalMatch = prompt.trim().match(/^\/goal(?:\s+((?:--fixed-duration\s+)?(?:\d{1,3}(?:m|h)\s+)?.*))?$/is);
+  if (goalMatch) {
+    const rawArgs = (goalMatch[1] || '').trim();
+    if (!rawArgs) {
+      const usageNotice = document.createElement('div');
+      usageNotice.className = 'text-body';
+      usageNotice.style.whiteSpace = 'pre-wrap';
+      usageNotice.textContent = [
+        '🎯 [Goal Mode (목표 추구 모드)]',
+        '목표가 완전히 달성될 때까지 자율적으로 여러 턴을 연속 실행합니다.',
+        '',
+        '사용법:',
+        '  /goal [시간] <목표 내용>',
+        '  /goal --fixed-duration [시간] <목표 내용>',
+        '  /goal stop (진행 중인 목표 중단)',
+        '',
+        '예시:',
+        '  /goal 30m TODO 항목 검증 및 리팩토링',
+        '  /goal 1h 시스템 오류 해결 및 테스트 통과',
+        '  /goal 이번 대화의 모든 작업 마무리 (기본 30분)'
+      ].join('\n');
+      assistantCard.content.appendChild(usageNotice);
+      assistantTimer.finish();
+      finishAssistantWork(assistantCard, 'complete');
+      activeSendInFlight = false;
+      setGeneratingState(false);
+      return true;
+    }
+
+    if (rawArgs.toLowerCase() === 'stop' || rawArgs.toLowerCase() === 'cancel') {
+      cancelActiveGoal('명령어(/goal stop)로 목표 추구를 중단했습니다.');
+      assistantTimer.finish();
+      finishAssistantWork(assistantCard, 'complete');
+      activeSendInFlight = false;
+      setGeneratingState(false);
+      return true;
+    }
+
+    const fixedDuration = /--fixed-duration/i.test(rawArgs);
+    let rest = rawArgs.replace(/--fixed-duration/gi, '').trim();
+    const durMatch = /^(\d{1,3}(?:m|h))\s+(.+)$/is.exec(rest);
+    let durationMs = 30 * 60_000;
+    let goalObjective = rest;
+    if (durMatch) {
+      durationMs = parseClientGoalDuration(durMatch[1]);
+      goalObjective = durMatch[2].trim();
+    }
+    const introMsg = document.createElement('div');
+    introMsg.className = 'text-body';
+    introMsg.textContent = `🎯 [Goal 시작] 목표 추구를 시작합니다 (시간: 약 ${Math.round(durationMs / 60000)}분 · 1회차)`;
+    assistantCard.content.appendChild(introMsg);
+    assistantTimer.finish();
+    finishAssistantWork(assistantCard, 'complete');
+    activeSendInFlight = false;
+    setGeneratingState(false);
+    void startGoalMode(goalObjective, durationMs, fixedDuration);
+    return true;
+  }
+
+  if (goalModeEnabled && !prompt.startsWith('/')) {
+    const introMsg = document.createElement('div');
+    introMsg.className = 'text-body';
+    introMsg.textContent = `🎯 [Goal 시작] 목표 추구 모드로 실행합니다 (시간: 약 30분 · 1회차)`;
+    assistantCard.content.appendChild(introMsg);
+    assistantTimer.finish();
+    finishAssistantWork(assistantCard, 'complete');
+    activeSendInFlight = false;
+    setGeneratingState(false);
+    void startGoalMode(prompt, 30 * 60_000, false);
+    return true;
+  }
+
   const sessionStorageMatch = prompt.trim().match(/^\/session-storage(?:\s+(\d{1,2}))?$/);
   if (sessionStorageMatch) {
     try {
@@ -1964,9 +2050,164 @@ async function handleSend() {
     return true;
   }
 
+  const turnResult = await executeTurnCore({
+    prompt,
+    assistantCard,
+    assistantTimer,
+    submittedFromCodexQueue,
+    codexQueueFingerprint,
+    fullAccessForTurn
+  });
+  return turnResult.ok;
+}
+
+let activeGoal = null;
+let goalModeEnabled = false;
+
+function parseClientGoalDuration(val) {
+  const match = /^(\d{1,3})(m|h)$/.exec(String(val || '').trim());
+  if (!match) return 30 * 60_000;
+  const minutes = Number(match[1]) * (match[2] === 'h' ? 60 : 1);
+  return Math.max(1, Math.min(180, minutes)) * 60_000;
+}
+
+function cancelActiveGoal(reason = '사용자가 목표 추구를 중단했습니다.') {
+  if (!activeGoal) return;
+  if (activeGoal.timer) { clearTimeout(activeGoal.timer); activeGoal.timer = null; }
+  const goalBanner = document.getElementById('goalModeBanner');
+  if (goalBanner) goalBanner.hidden = true;
+  const goalPill = document.getElementById('btnGoalToggle');
+  if (goalPill && !goalModeEnabled) goalPill.classList.remove('active');
+  const card = createAssistantContainer({ timing: false });
+  timeline.appendChild(card.row);
+  const msg = document.createElement('div');
+  msg.className = 'text-body';
+  msg.textContent = `🎯 [Goal 중단] ${reason} (총 ${activeGoal.iteration}회차 수행)`;
+  card.content.appendChild(msg);
+  timeline.scrollTop = timeline.scrollHeight;
+  activeGoal = null;
+  setGeneratingState(false);
+}
+
+function finishActiveGoal(summary = '목표가 완료되었습니다.') {
+  if (!activeGoal) return;
+  if (activeGoal.timer) { clearTimeout(activeGoal.timer); activeGoal.timer = null; }
+  const goalBanner = document.getElementById('goalModeBanner');
+  if (goalBanner) goalBanner.hidden = true;
+  const goalPill = document.getElementById('btnGoalToggle');
+  if (goalPill && !goalModeEnabled) goalPill.classList.remove('active');
+  const card = createAssistantContainer({ timing: false });
+  timeline.appendChild(card.row);
+  const msg = document.createElement('div');
+  msg.className = 'text-body';
+  msg.textContent = `🎯 [Goal 완료] ${summary} (총 ${activeGoal.iteration}회차 수행 완료)`;
+  card.content.appendChild(msg);
+  timeline.scrollTop = timeline.scrollHeight;
+  activeGoal = null;
+  setGeneratingState(false);
+}
+
+async function startGoalMode(goalPrompt, durationMs, fixedDuration = false) {
+  if (activeGoal) {
+    cancelActiveGoal('새로운 목표가 시작되어 이전 목표를 종료합니다.');
+  }
+  const deadline = Date.now() + durationMs;
+  activeGoal = {
+    goalPrompt,
+    durationMs,
+    deadline,
+    fixedDuration,
+    iteration: 1,
+    timer: null,
+    sessionId: currentSessionId
+  };
+
+  const goalBanner = document.getElementById('goalModeBanner');
+  const goalModeText = document.getElementById('goalModeText');
+  if (goalBanner) goalBanner.hidden = false;
+  if (goalModeText) {
+    const min = Math.max(1, Math.ceil(durationMs / 60_000));
+    goalModeText.textContent = `🎯 Pursuing Goal · 목표 추구 중 (1회차 · 남은 시간 약 ${min}분)`;
+  }
+  const goalPill = document.getElementById('btnGoalToggle');
+  if (goalPill) goalPill.classList.add('active');
+
+  const fixedRules = fixedDuration
+    ? ' 사용자가 지정한 전체 시간이 끝나기 전에는 GOAL_COMPLETE를 출력하거나 완료를 선언하지 마세요. 한 하위 작업이 막히면 GOAL_STEP_BLOCKED: <짧은 사유>를 출력하고 다음 반복에서 다른 안전한 하위 작업을 선택하세요. Goal 전체에 남은 안전한 작업이 없거나 전체 범위가 막혔을 때만 GOAL_BLOCKED: <짧은 사유와 다음 조치>로 종료하세요.'
+    : ' 목표가 완전히 달성되면 마지막 줄에 GOAL_COMPLETE를 출력하세요. 더 이상 진행할 수 없거나 막히면 GOAL_BLOCKED: <사유>를 출력하세요.';
+
+  const firstTurnPrompt = `[Goal 목표: ${goalPrompt}]\n${fixedRules}\n\n${goalPrompt}`;
+  await runGoalIterationTurn(firstTurnPrompt);
+}
+
+async function runGoalIterationTurn(turnPrompt) {
+  if (!activeGoal) return;
+  const currentIteration = activeGoal.iteration;
+
+  if (currentIteration > 1) {
+    appendUserMessage(`🎯 [Goal 반복 ${currentIteration}회차] 남은 시간 약 ${Math.max(1, Math.ceil((activeGoal.deadline - Date.now()) / 60000))}분`);
+  }
+
+  setGeneratingState(true);
+  const assistantCard = createAssistantContainer({ timing: true });
+  timeline.appendChild(assistantCard.row);
+  const assistantTimer = startAssistantTimer(assistantCard);
+  timeline.scrollTop = timeline.scrollHeight;
+
+  const turnResult = await executeTurnCore({
+    prompt: turnPrompt,
+    assistantCard,
+    assistantTimer,
+    isGoalTurn: true
+  });
+
+  if (!activeGoal) return;
+
+  const responseText = turnResult.fullResponse || '';
+  const isCompleted = !activeGoal.fixedDuration && (
+    /^\s*GOAL_COMPLETE\s*$/m.test(responseText) ||
+    /(?:goal\s+complete|all\s+(?:tasks|work)\s+(?:are\s+)?complete|목표.{0,12}완료|남은\s*작업.{0,12}없|모두\s*완료)/i.test(responseText)
+  );
+
+  const blockedMatch = /^\s*GOAL_BLOCKED(?:\s*:\s*(.+?))?\s*$/m.exec(responseText);
+
+  if (isCompleted) {
+    finishActiveGoal('목표가 완전히 달성되었습니다.');
+  } else if (blockedMatch) {
+    cancelActiveGoal(`목표 진행이 차단되었습니다 (${blockedMatch[1] || '사유 미제시'})`);
+  } else if (Date.now() >= activeGoal.deadline) {
+    finishActiveGoal(`지정된 시간(${Math.round(activeGoal.durationMs / 60000)}분)이 만료되어 목표 추구를 마쳤습니다.`);
+  } else if (!turnResult.ok && turnResult.error && turnResult.error.name === 'AbortError') {
+    cancelActiveGoal('사용자가 작업을 중단했습니다.');
+  } else {
+    activeGoal.iteration++;
+    const remainingMin = Math.max(1, Math.ceil((activeGoal.deadline - Date.now()) / 60000));
+    const goalModeText = document.getElementById('goalModeText');
+    if (goalModeText) {
+      goalModeText.textContent = `🎯 Pursuing Goal · 목표 추구 중 (${activeGoal.iteration}회차 · 남은 시간 약 ${remainingMin}분)`;
+    }
+    const nextPrompt = `계속 같은 Goal을 진행하세요. 남은 시간은 약 ${remainingMin}분입니다. 직전 결과와 남은 작업을 확인하고, 이미 끝난 일을 반복하지 말고 다음의 가장 작은 안전한 단계를 실행하세요. 목표: ${activeGoal.goalPrompt}`;
+    activeGoal.timer = setTimeout(() => {
+      if (activeGoal) void runGoalIterationTurn(nextPrompt);
+    }, 1500);
+  }
+}
+
+async function executeTurnCore({
+  prompt,
+  assistantCard,
+  assistantTimer,
+  submittedFromCodexQueue = false,
+  codexQueueFingerprint = '',
+  fullAccessForTurn = fullAccessEnabled,
+  isGoalTurn = false
+}) {
   const turnAbortController = new AbortController();
   currentAbortController = turnAbortController;
   activeAssistantCard = assistantCard;
+  let fullResponse = '';
+  let turnOk = false;
+  let turnError = null;
 
   try {
     const res = await fetch('/api/turn', {
@@ -2009,6 +2250,11 @@ async function handleSend() {
 
         try {
           const event = JSON.parse(jsonStr);
+          if (event.type === 'message_delta' && typeof event.delta === 'string') {
+            fullResponse += event.delta;
+          } else if (event.type === 'turn_complete' && event.summary?.response?.content) {
+            fullResponse = event.summary.response.content;
+          }
           handleStreamEvent(event, assistantCard);
         } catch (_) {}
       }
@@ -2016,13 +2262,16 @@ async function handleSend() {
 
     await refreshPriorityStatus();
     await loadSessions();
+    turnOk = true;
 
   } catch (err) {
+    turnError = err;
     assistantCard.workOutcome = err.name === 'AbortError' ? 'aborted' : 'error';
     appendTurnNotice(assistantCard, err.name === 'AbortError'
       ? '⏹ 사용자에 의해 작업이 중단되었습니다.'
       : `❌ 요청 실패: ${err.message}`, err.name === 'AbortError' ? 'warning' : 'error');
     const queueFailureNotice = getCodexQueueSendFailureNotice(submittedFromCodexQueue);
+    const composerStatus = document.getElementById('composerStatus');
     if (queueFailureNotice && composerStatus) composerStatus.textContent = queueFailureNotice;
   } finally {
     clearCurrentAbortControllerIfSame(turnAbortController);
@@ -2035,10 +2284,10 @@ async function handleSend() {
     assistantTimer.finish();
     finishAssistantWork(assistantCard, assistantCard.workOutcome || 'complete');
     activeSendInFlight = false;
-    setGeneratingState(false);
+    if (!activeGoal) setGeneratingState(false);
     applyPendingUiMorphReloadWhenSafe();
   }
-  return true;
+  return { ok: turnOk, fullResponse, error: turnError };
 }
 
 function clearCurrentAbortControllerIfSame(turnAbortController) {
@@ -2046,6 +2295,9 @@ function clearCurrentAbortControllerIfSame(turnAbortController) {
 }
 
 function abortActiveTurn() {
+  if (activeGoal) {
+    cancelActiveGoal('사용자가 작업을 중단했습니다.');
+  }
   if (currentAbortController) {
     currentAbortController.abort();
     currentAbortController = null;

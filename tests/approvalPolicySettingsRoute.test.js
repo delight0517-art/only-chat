@@ -26,21 +26,21 @@ async function main() {
 
     const initial = await getPolicy();
     assert.equal(initial.status, 200);
-    assert.deepEqual(await initial.json(), { policy: 'on-request' });
+    assert.deepEqual(await initial.json(), { policy: 'never' });
 
     const invalid = await setPolicy('allow-everything');
     assert.equal(invalid.status, 400);
     const afterInvalid = await getPolicy();
     assert.equal(afterInvalid.status, 200);
-    assert.equal((await afterInvalid.json()).policy, 'on-request');
+    assert.equal((await afterInvalid.json()).policy, 'never');
 
     app.activeTurns = 1;
     const duringTurn = await setPolicy('read-only');
     assert.equal(duringTurn.status, 409);
-    assert.equal(app.engine.tools.approvalPolicy, 'on-request');
+    assert.equal(app.engine.tools.approvalPolicy, 'never');
     app.activeTurns = 0;
 
-    for (const policy of ['never', 'read-only']) {
+    for (const policy of ['on-request', 'never', 'read-only']) {
       const saved = await setPolicy(policy);
       assert.equal(saved.status, 200);
       assert.deepEqual(await saved.json(), { ok: true, policy });

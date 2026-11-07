@@ -49,6 +49,7 @@ test('dispatcher HTTP route runs an isolated AgentEngine task and reports its re
   try {
     app = new DesktopServer({
       isolated: true,
+      approvalPolicy: 'on-request',
       dataDir,
       workspaceDir: path.join(dataDir, 'workspace'),
       port: 0,
@@ -132,6 +133,7 @@ test('dispatcher falls back after an empty provider response before requiring a 
   try {
     app = new DesktopServer({
       isolated: true,
+      approvalPolicy: 'on-request',
       dataDir,
       workspaceDir: path.join(dataDir, 'workspace'),
       port: 0,
@@ -208,6 +210,7 @@ test('dispatcher task allowlist blocks disallowed tools before approval and runn
   try {
     app = new DesktopServer({
       isolated: true,
+      approvalPolicy: 'on-request',
       dataDir,
       workspaceDir: path.join(dataDir, 'workspace'),
       port: 0,
@@ -260,6 +263,7 @@ test('dispatcher waits for session-bound UI approval before executing a tool', a
   try {
     app = new DesktopServer({
       isolated: true,
+      approvalPolicy: 'on-request',
       dataDir,
       workspaceDir: path.join(dataDir, 'workspace'),
       port: 0,
@@ -321,6 +325,7 @@ test('rejecting dispatcher approval leaves the tool unexecuted and task blocked'
   try {
     app = new DesktopServer({
       isolated: true,
+      approvalPolicy: 'on-request',
       dataDir,
       workspaceDir: path.join(dataDir, 'workspace'),
       port: 0,
@@ -367,6 +372,7 @@ test('dispatcher provides a sanitized live priority snapshot to every task', asy
   try {
     app = new DesktopServer({
       isolated: true,
+      approvalPolicy: 'on-request',
       dataDir,
       workspaceDir: path.join(dataDir, 'workspace'),
       port: 0,
