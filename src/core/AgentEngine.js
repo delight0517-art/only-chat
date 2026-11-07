@@ -15,6 +15,7 @@ const { SkillManager } = require('./SkillManager.js');
 const { ParallelDispatcher } = require('./ParallelDispatcher.js');
 const { OwnershipLock } = require('./OwnershipLock.js');
 const { WorkspaceExecutionLease } = require('./WorkspaceExecutionLease.js');
+const { absolutePatchPaths, runOwnedFileMutation } = require('./FileMutationGate.js');
 const { workspaceRecovery } = require('./CoordinationRecovery.js');
 const { TaskRegistryStore } = require('./TaskRegistryStore.js');
 const { HandoffAdapter } = require('./HandoffAdapter.js');
@@ -83,6 +84,7 @@ function safeProviderTier(tier) {
 class AgentEngine {
   constructor(options = {}) {
     this.isolated = options.isolated === true;
+    this.requireTaskOwnership = options.requireTaskOwnership === true;
     this.accountRouterReadiness = options.accountRouterReadiness || {
       available: null,
       connected: false,
@@ -630,6 +632,7 @@ class AgentEngine {
       commandRunner: this.tools.commandRunner,
       isTierReady: tier => this.priorityChain.isTierReady(tier),
       approvalPolicy: this.tools.approvalPolicy,
+      requireTaskOwnership: Boolean(task.registryTaskKey),
       watchSkills: false,
       dispatcherAutoStart: false,
       workspaceLeaseWaitMs: this.workspaceLeaseWaitMs,
@@ -762,10 +765,25 @@ class AgentEngine {
       }
       if (task.resumeSessionId) worker.loadInternalSession(session);
       task.sessionId = session.sessionId;
+      let taskOwnershipContext = null;
+      if (task.registryTaskKey) {
+        const store = worker.tools.taskRegistryStore;
+        const record = store?.getTask(task.registryTaskKey);
+        if (!store || !record || !task.managerOwnerChatId || session.source !== 'internal'
+          || record.repositoryPath !== fs.realpathSync(taskWorkspaceDir)) {
+          return { status: 'blocked', reason: 'Only Chat 내부 세션·정본 저장소·작업 소유자를 검증할 수 없어 파일 변경을 차단했습니다.', sessionId: session.sessionId, executionEvidence: evidence };
+        }
+        taskOwnershipContext = {
+          origin: 'only-chat-internal', originHostId: store.hostId,
+          taskKey: task.registryTaskKey, ownerChatId: task.managerOwnerChatId,
+          repositoryPath: record.repositoryPath, allowedPaths: task.targetFiles
+        };
+      }
       const manager = await import('../features/admin-manager/v1.mjs');
       const response = await worker.executeTurn(taskPrompt, {
         ...callbacks,
         executorMode: true,
+        taskOwnershipContext,
         ...(this.dispatcherApprovalHandler
           ? { requestToolApproval: request => this.dispatcherApprovalHandler(task, request) }
           : {}),
@@ -1137,7 +1155,7 @@ class AgentEngine {
                   const { readGuestWindows } = require('../connectors/GuestWindowReader');
                   toolResult = await readGuestWindows(this.currentSession.sessionId, { dataDir: this.dataDir, signal: callbacks.signal });
                 } else {
-                  toolResult = await this._executeToolCall(call, onToolOutput);
+                  toolResult = await this._executeToolCall(call, onToolOutput, callbacks.taskOwnershipContext);
                 }
               } catch (toolErr) {
                 toolResult = { error: toolErr.message };
@@ -1223,7 +1241,7 @@ class AgentEngine {
     }
   }
 
-  async _executeToolCall(call, onOutput) {
+  async _executeToolCall(call, onOutput, taskOwnershipContext = null) {
     const { name, args } = call;
     if (this.tools.approvalPolicy === 'read-only' && isMutationToolName(name) && !this.tools.isNotionMcpReadOnlyCall(call)) {
       throw new Error(`Tool call '${name}' is blocked under read-only policy.`);
@@ -1242,6 +1260,7 @@ class AgentEngine {
       switch (name) {
         case 'exec_command':
         case 'bash':
+          if (this.requireTaskOwnership) throw new Error('작업 소유권 실행자는 셸의 변경 경로를 검증할 수 없어 셸 명령을 차단했습니다. 검토된 읽기 전용 체크를 Only Chat 밖에서 실행해 주세요.');
           return await this.tools.execCommand(args.command || args.cmd, onOutput, {
             cwd: args.cwd,
             storagePeakGiB: args.storagePeakGiB,
@@ -1252,11 +1271,18 @@ class AgentEngine {
         case 'search_files':
           return await this.tools.searchFiles(args.query, args.path);
         case 'write_file':
-          return await this.tools.writeFile(args.path || args.file_path, args.content);
+          return await runOwnedFileMutation({ strict: this.requireTaskOwnership, context: taskOwnershipContext,
+            store: this.tools.taskRegistryStore, filePaths: [this.tools.resolvePath(args.path || args.file_path)],
+            operation: () => this.tools.writeFile(args.path || args.file_path, args.content) });
         case 'edit_file':
-          return await this.tools.editFile(args.path || args.file_path, args.target, args.replacement);
-        case 'apply_patch':
-          return await this.tools.applyPatch(args.patch);
+          return await runOwnedFileMutation({ strict: this.requireTaskOwnership, context: taskOwnershipContext,
+            store: this.tools.taskRegistryStore, filePaths: [this.tools.resolvePath(args.path || args.file_path)],
+            operation: () => this.tools.editFile(args.path || args.file_path, args.target, args.replacement) });
+        case 'apply_patch': {
+          const filePaths = absolutePatchPaths(this.workspaceDir, args.patch);
+          return await runOwnedFileMutation({ strict: this.requireTaskOwnership, context: taskOwnershipContext,
+            store: this.tools.taskRegistryStore, filePaths, operation: () => this.tools.applyPatch(args.patch) });
+        }
 
         // Google Workspace Tools (Drive & Gmail)
         case 'google_drive_list':

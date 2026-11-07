@@ -16,6 +16,9 @@ const MAX_MESSAGE_LENGTH = 1_200;
 const HOST_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu;
 const MAX_EXECUTOR_RESULT_LENGTH = 8_000;
 const MAX_EXECUTOR_TOOL_NAMES = 32;
+const MAX_OWNERSHIP_FILES = 2_000;
+const MAX_OWNERSHIP_BYTES = 64 * 1024 * 1024;
+const MAX_OWNERSHIP_EVENTS = 50;
 const MIN_LEASE_MS = 30_000;
 const MAX_LEASE_MS = 15 * 60_000;
 const DEFAULT_LEASE_MS = 2 * 60_000;
@@ -84,6 +87,113 @@ function pathsOverlap(left, right) {
     const ak = pathKey(a), bk = pathKey(b);
     return ak === bk || ak.startsWith(`${bk}/`) || bk.startsWith(`${ak}/`);
   }));
+}
+
+function scopeContains(scope, relativePath) {
+  const scopeKey = pathKey(scope);
+  const targetKey = pathKey(relativePath);
+  return scope === '.' || targetKey === scopeKey || targetKey.startsWith(`${scopeKey}/`);
+}
+
+function snapshotScope(repositoryPath, scope) {
+  const root = fs.realpathSync(repositoryPath);
+  const absolute = path.resolve(root, ...scope.split('/').filter(Boolean));
+  const relative = path.relative(root, absolute);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('ownership scope escapes its repository');
+  let component = root;
+  for (const part of relative.split(path.sep).filter(Boolean)) {
+    component = path.join(component, part);
+    try { if (fs.lstatSync(component).isSymbolicLink()) throw new Error(`ownership scope contains a symbolic link: ${part}`); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+
+  let files = 0;
+  let bytes = 0;
+  const entries = [];
+  const walk = (filePath, relativePath) => {
+    let stat;
+    try { stat = fs.lstatSync(filePath); }
+    catch (error) {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) throw new Error(`ownership scope contains a symbolic link: ${relativePath || '.'}`);
+    if (stat.isDirectory()) {
+      const names = fs.readdirSync(filePath).sort((a, b) => a.localeCompare(b));
+      for (const name of names) walk(path.join(filePath, name), [relativePath, name].filter(Boolean).join('/'));
+      return true;
+    }
+    if (!stat.isFile()) throw new Error(`ownership scope contains a non-file entry: ${relativePath || '.'}`);
+    if (++files > MAX_OWNERSHIP_FILES || bytes + stat.size > MAX_OWNERSHIP_BYTES) {
+      throw new Error('ownership scope snapshot exceeds the bounded file or byte limit; reserve narrower paths');
+    }
+    const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    try {
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size !== stat.size) {
+        throw new Error(`ownership scope changed while being snapshotted: ${relativePath}`);
+      }
+      const digest = crypto.createHash('sha256').update(fs.readFileSync(fd)).digest('hex');
+      bytes += opened.size;
+      entries.push({ path: relativePath, sha256: digest });
+    } finally { fs.closeSync(fd); }
+    return true;
+  };
+
+  const exists = walk(absolute, scope === '.' ? '' : scope);
+  entries.sort((a, b) => a.path.localeCompare(b.path));
+  return {
+    exists,
+    kind: exists ? (entries.length === 1 && entries[0].path === scope ? 'file' : 'tree') : 'missing',
+    sha256: crypto.createHash('sha256').update(JSON.stringify(entries)).digest('hex'),
+    fileCount: files,
+    byteCount: bytes
+  };
+}
+
+function captureOwnershipScopes(repositoryPath, paths, sourceHostId, creatorChatId, capturedAt) {
+  return {
+    schemaVersion: 1,
+    sourceHostId,
+    creatorChatId,
+    capturedAt,
+    events: [],
+    scopes: paths.map(scope => {
+      const snapshot = snapshotScope(repositoryPath, scope);
+      return { path: scope, initial: snapshot, expected: snapshot, lastWriterChatId: null, updatedAt: capturedAt };
+    })
+  };
+}
+
+function normalizeMutationPaths(repositoryPath, rawPaths) {
+  if (!Array.isArray(rawPaths) || rawPaths.length < 1 || rawPaths.length > 100) throw new TypeError('filePaths must contain 1–100 exact paths');
+  const root = fs.realpathSync(repositoryPath);
+  const paths = rawPaths.map(raw => {
+    if (typeof raw !== 'string' || !raw.trim() || raw.includes('\\') || raw.includes('\0')) throw new TypeError('file path is invalid');
+    let absolute = path.resolve(root, raw);
+    if (path.isAbsolute(raw)) {
+      let existing = absolute;
+      while (!fs.existsSync(existing) && existing !== path.dirname(existing)) existing = path.dirname(existing);
+      const canonicalExisting = fs.realpathSync(existing);
+      absolute = path.resolve(canonicalExisting, path.relative(existing, absolute));
+    }
+    const relative = path.relative(root, absolute);
+    if (!relative || relative === '.' || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('file path must identify a file inside the repository');
+    let current = root;
+    for (const part of relative.split(path.sep)) {
+      current = path.join(current, part);
+      try {
+        if (fs.lstatSync(current).isSymbolicLink()) throw new Error('symbolic links are not valid owned file paths');
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    return relative.split(path.sep).join('/');
+  });
+  return normalizePaths(paths);
+}
+
+function equalSnapshot(left, right) {
+  return Boolean(left && right && left.exists === right.exists && left.kind === right.kind
+    && left.sha256 === right.sha256 && left.fileCount === right.fileCount && left.byteCount === right.byteCount);
 }
 
 function overlappingPathDetails(left, right) {
@@ -450,6 +560,29 @@ class TaskRegistryStore {
           throw new Error('invalid task registry execution plan');
         }
       }
+      if (task.ownership !== undefined) {
+        const ownership = task.ownership;
+        const validSnapshot = value => value && typeof value === 'object' && !Array.isArray(value)
+          && typeof value.exists === 'boolean' && ['file', 'tree', 'missing'].includes(value.kind)
+          && /^[a-f0-9]{64}$/u.test(value.sha256)
+          && Number.isSafeInteger(value.fileCount) && value.fileCount >= 0 && value.fileCount <= MAX_OWNERSHIP_FILES
+          && Number.isSafeInteger(value.byteCount) && value.byteCount >= 0 && value.byteCount <= MAX_OWNERSHIP_BYTES;
+        if (!ownership || ownership.schemaVersion !== 1 || ownership.sourceHostId !== task.sourceHostId
+          || ownership.creatorChatId !== task.creatorChatId || !Number.isFinite(Date.parse(ownership.capturedAt))
+          || !Array.isArray(ownership.scopes) || ownership.scopes.length !== task.paths.length
+          || ownership.scopes.some((scope, index) => !scope || scope.path !== task.paths[index]
+            || !validSnapshot(scope.initial) || !validSnapshot(scope.expected)
+            || (scope.lastWriterChatId !== null && (typeof scope.lastWriterChatId !== 'string' || !scope.lastWriterChatId.trim() || scope.lastWriterChatId.length > 256))
+            || !Number.isFinite(Date.parse(scope.updatedAt)))
+          || !Array.isArray(ownership.events) || ownership.events.length > MAX_OWNERSHIP_EVENTS
+          || ownership.events.some(event => !event || typeof event.action !== 'string' || !['authorized_write', 'denied_write'].includes(event.action)
+            || typeof event.chatId !== 'string' || !event.chatId.trim() || event.chatId.length > 256
+            || !Array.isArray(event.paths) || event.paths.length > 100
+            || event.paths.some(item => typeof item !== 'string' || !item.trim() || item.length > 1024)
+            || !Number.isFinite(Date.parse(event.at)))) {
+          throw new Error('invalid task registry ownership snapshot');
+        }
+      }
       if (task.executionProgress !== undefined) {
         if (!task.execution || !Array.isArray(task.executionProgress) || task.executionProgress.length !== task.execution.tasks.length
           || task.executionProgress.some((item, index) => !item || item.id !== `${task.taskKey}-${index + 1}`
@@ -685,6 +818,7 @@ class TaskRegistryStore {
         leaseExpiresAt: null,
         revision: 1,
         checkpoint: { nextAction: normalized.nextAction, blocker: '', evidenceRefs: [] },
+        ownership: captureOwnershipScopes(normalized.repositoryPath, normalized.paths, this.hostId, normalized.creatorChatId, now),
         createdAt: now,
         updatedAt: now,
         lastUpdatedByChatId: normalized.creatorChatId,
@@ -793,6 +927,20 @@ class TaskRegistryStore {
         this._saveState(state);
         return result;
       }
+      if (!task.ownership) {
+        const result = { accepted: false, reason: 'ownership_snapshot_missing', taskKey: task.taskKey, revision: task.revision };
+        this._remember(state, replay, result);
+        this._saveState(state);
+        return result;
+      }
+      const changedScopes = task.ownership.scopes.filter(scope => !equalSnapshot(scope.expected,
+        snapshotScope(task.repositoryPath, scope.path))).map(scope => scope.path);
+      if (changedScopes.length) {
+        const result = { accepted: false, reason: 'path_content_changed', taskKey: task.taskKey, changedPaths: changedScopes, revision: task.revision };
+        this._remember(state, replay, result);
+        this._saveState(state);
+        return result;
+      }
       if (task.ownerChatId && Date.parse(task.leaseExpiresAt) > nowMs && task.ownerChatId !== normalized.ownerChatId) {
         const result = { accepted: false, reason: 'owned_by_other_chat', taskKey: task.taskKey,
           ownerChatId: task.ownerChatId, leaseExpiresAt: task.leaseExpiresAt,
@@ -832,6 +980,75 @@ class TaskRegistryStore {
       this._remember(state, replay, result);
       this._saveState(state);
       return result;
+    });
+  }
+
+  async authorizeFileMutation(input = {}) {
+    const taskKey = printableString(input.taskKey, 'taskKey', 128);
+    const ownerChatId = printableString(input.ownerChatId, 'ownerChatId', 256);
+    const originHostId = printableString(input.originHostId, 'originHostId', 36);
+    const repositoryPath = normalizeRepositoryPath(input.repositoryPath);
+    if (input.origin !== 'only-chat-internal' || originHostId !== this.hostId) return { authorized: false, reason: 'unverified_only_chat_origin' };
+    const task = this.getTask(taskKey);
+    if (!task) return { authorized: false, reason: 'task_not_found' };
+    if (task.repositoryPath !== repositoryPath || task.sourceHostId !== this.hostId) return { authorized: false, reason: 'repository_or_source_mismatch' };
+    if (task.ownerChatId !== ownerChatId || !task.leaseExpiresAt || Date.parse(task.leaseExpiresAt) <= this.clock()
+      || !['claimed', 'executing'].includes(task.status)) return { authorized: false, reason: 'active_owner_lease_required' };
+    if (!task.ownership) return { authorized: false, reason: 'ownership_snapshot_missing' };
+    const files = normalizeMutationPaths(repositoryPath, input.filePaths);
+    const allowedPaths = normalizePaths(input.allowedPaths);
+    const leasePaths = normalizeLeasePaths(task.leasePaths || task.paths);
+    if (!files.length || files.some(file => !allowedPaths.some(scope => scopeContains(scope, file))
+      || !leasePaths.some(scope => scopeContains(scope, file)))) return { authorized: false, reason: 'exact_path_not_leased' };
+    const scopes = task.ownership.scopes.filter(scope => files.some(file => scopeContains(scope.path, file)));
+    if (!scopes.length) return { authorized: false, reason: 'ownership_scope_missing' };
+    for (const scope of scopes) {
+      const current = snapshotScope(repositoryPath, scope.path);
+      if (!equalSnapshot(scope.expected, current)) return { authorized: false, reason: 'path_content_changed', changedPath: scope.path };
+    }
+    return { authorized: true, snapshots: scopes.map(scope => ({ path: scope.path, expected: clone(scope.expected) })) };
+  }
+
+  async recordFileMutation(input = {}) {
+    const taskKey = printableString(input.taskKey, 'taskKey', 128);
+    const ownerChatId = printableString(input.ownerChatId, 'ownerChatId', 256);
+    const originHostId = printableString(input.originHostId, 'originHostId', 36);
+    const repositoryPath = normalizeRepositoryPath(input.repositoryPath);
+    const files = normalizeMutationPaths(repositoryPath, input.filePaths);
+    if (input.origin !== 'only-chat-internal' || originHostId !== this.hostId) return { updated: false, reason: 'unverified_only_chat_origin' };
+    return this._withWriteLock(`task-registry:file-mutation:${taskKey}`, async () => {
+      const state = this._loadState();
+      const task = state.tasks.find(item => item.taskKey === taskKey);
+      const nowMs = this.clock();
+      if (!task || !task.ownership) return { updated: false, reason: task ? 'ownership_snapshot_missing' : 'task_not_found' };
+      if (task.repositoryPath !== repositoryPath || task.sourceHostId !== this.hostId
+        || task.ownerChatId !== ownerChatId || !task.leaseExpiresAt || Date.parse(task.leaseExpiresAt) <= nowMs
+        || !['claimed', 'executing'].includes(task.status)) return { updated: false, reason: 'active_owner_lease_required' };
+      if (!Array.isArray(input.beforeSnapshots)) return { updated: false, reason: 'before_snapshot_required' };
+      const allowedPaths = normalizePaths(input.allowedPaths);
+      const leasePaths = normalizeLeasePaths(task.leasePaths || task.paths);
+      if (!files.length || files.some(file => !allowedPaths.some(scope => scopeContains(scope, file))
+        || !leasePaths.some(scope => scopeContains(scope, file)))) return { updated: false, reason: 'exact_path_not_leased' };
+      const scopes = task.ownership.scopes.filter(scope => files.some(file => scopeContains(scope.path, file)));
+      if (!files.length || !scopes.length || scopes.some(scope => {
+        const before = input.beforeSnapshots.find(item => item?.path === scope.path)?.expected;
+        return !equalSnapshot(scope.expected, before);
+      })) return { updated: false, reason: 'ownership_snapshot_changed' };
+      const now = new Date(nowMs).toISOString();
+      for (const scope of scopes) {
+        scope.expected = snapshotScope(repositoryPath, scope.path);
+        scope.lastWriterChatId = ownerChatId;
+        scope.updatedAt = now;
+      }
+      task.ownership.events.push({ action: 'authorized_write', chatId: ownerChatId, paths: files, at: now });
+      task.ownership.events = task.ownership.events.slice(-MAX_OWNERSHIP_EVENTS);
+      task.lastUpdatedByChatId = ownerChatId;
+      task.lastUpdatedByHostId = this.hostId;
+      task.lastUpdatedAt = now;
+      task.revision += 1;
+      task.updatedAt = now;
+      this._saveState(state);
+      return { updated: true, taskKey, paths: files, revision: task.revision };
     });
   }
 
@@ -1028,6 +1245,10 @@ class TaskRegistryStore {
         return reject('task_still_leased', { status: task.status, ownerChatId: task.ownerChatId,
           leaseExpiresAt: task.leaseExpiresAt, blockingTask: blockingTaskDetails(task, task.leasePaths || task.paths) });
       }
+      if (!task.ownership) return reject('ownership_snapshot_missing', { status: task.status });
+      const changedPaths = task.ownership.scopes.filter(scope => !equalSnapshot(scope.expected,
+        snapshotScope(task.repositoryPath, scope.path))).map(scope => scope.path);
+      if (changedPaths.length) return reject('path_content_changed', { status: task.status, changedPaths });
       const progress = task.executionProgress || initialExecutionProgress(taskKey, task.execution, task.createdAt);
       const retryable = progress.filter(item => item.status !== 'completed');
       if (!retryable.length) return reject('no_incomplete_executors', { status: task.status });

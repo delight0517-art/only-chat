@@ -366,6 +366,89 @@ test('permits disjoint scopes and lets an expired lease be reclaimed without imp
   });
 });
 
+test('rejects changed file content before claim and preserves the original SHA snapshot', async () => {
+  await withFixture(async ({ repo, store }) => {
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    const file = path.join(repo, 'src', 'owned.js');
+    fs.writeFileSync(file, 'original\n');
+    await store.createTask(taskInput(repo, { taskKey: 'hash-drift', paths: ['src/owned.js'], idempotencyKey: 'create-hash-drift' }));
+    const original = store.getTask('hash-drift').ownership.scopes[0].initial.sha256;
+    fs.writeFileSync(file, 'changed before claim\n');
+    const claim = await store.claimTask({ taskKey: 'hash-drift', ownerChatId: 'chat-a', idempotencyKey: 'claim-hash-drift' });
+    assert.equal(claim.accepted, false);
+    assert.equal(claim.reason, 'path_content_changed');
+    assert.deepEqual(claim.changedPaths, ['src/owned.js']);
+    const preserved = store.getTask('hash-drift').ownership.scopes[0];
+    assert.equal(preserved.initial.sha256, original);
+    assert.equal(preserved.expected.sha256, original);
+    assert.equal(preserved.lastWriterChatId, null);
+  });
+});
+
+test('authorizes only the internal owner and exact subpath, then records the new hash', async () => {
+  await withFixture(async ({ repo, store }) => {
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    const file = path.join(repo, 'src', 'owned.js');
+    fs.writeFileSync(file, 'original\n');
+    await store.createTask(taskInput(repo, { taskKey: 'hash-write', paths: ['src'], idempotencyKey: 'create-hash-write' }));
+    await store.claimTask({ taskKey: 'hash-write', ownerChatId: 'chat-a', idempotencyKey: 'claim-hash-write' });
+    const context = {
+      origin: 'only-chat-internal', originHostId: store.hostId,
+      taskKey: 'hash-write', ownerChatId: 'chat-a', repositoryPath: repo,
+      allowedPaths: ['src/owned.js']
+    };
+    assert.equal((await store.authorizeFileMutation({ ...context, originHostId: 'f86ce49e-c2b6-4aa0-a691-d2c66bd42b87', filePaths: [file] })).reason, 'unverified_only_chat_origin');
+    assert.equal((await store.authorizeFileMutation({ ...context, ownerChatId: 'other-chat', filePaths: [file] })).reason, 'active_owner_lease_required');
+    assert.equal((await store.authorizeFileMutation({ ...context, filePaths: [path.join(repo, 'src', 'sibling.js')] })).reason, 'exact_path_not_leased');
+
+    const allowed = await store.authorizeFileMutation({ ...context, filePaths: [file] });
+    assert.equal(allowed.authorized, true);
+    fs.writeFileSync(file, 'written by owner\n');
+    const recorded = await store.recordFileMutation({ ...context, filePaths: [file], beforeSnapshots: allowed.snapshots });
+    assert.equal(recorded.updated, true);
+    const scope = store.getTask('hash-write').ownership.scopes[0];
+    assert.notEqual(scope.expected.sha256, scope.initial.sha256);
+    assert.equal(scope.lastWriterChatId, 'chat-a');
+    assert.equal(store.getTask('hash-write').ownership.events.at(-1).action, 'authorized_write');
+    assert.equal((await store.authorizeFileMutation({ ...context, filePaths: [file] })).authorized, true);
+  });
+});
+
+test('does not resume an interrupted executor after a scoped file changed', async () => {
+  await withFixture(async ({ repo, dataDir }) => {
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    const file = path.join(repo, 'src', 'owned.js');
+    fs.writeFileSync(file, 'before\n');
+    const store = new TaskRegistryStore({ dataDir });
+    const execution = { kind: 'executor-plan', summary: 'Resume guarded task', tasks: [
+      { title: 'Edit owned file', prompt: 'Edit only the file.', files: ['src/owned.js'], allowedTools: ['edit_file'] }
+    ] };
+    await store.createTask(taskInput(repo, { taskKey: 'resume-hash-drift', paths: ['src/owned.js'], execution, idempotencyKey: 'create-resume-hash-drift' }));
+    await store.claimTask({ taskKey: 'resume-hash-drift', ownerChatId: 'chat-a', idempotencyKey: 'claim-resume-hash-drift' });
+    await store.recordExecutorProgress({ taskKey: 'resume-hash-drift', ownerChatId: 'chat-a', executorId: 'resume-hash-drift-1', status: 'running', idempotencyKey: 'resume-hash-running' });
+    await store.recordExecutorProgress({ taskKey: 'resume-hash-drift', ownerChatId: 'chat-a', executorId: 'resume-hash-drift-1', status: 'blocked', reason: 'simulated interruption', idempotencyKey: 'resume-hash-blocked' });
+    fs.writeFileSync(file, 'external change after interruption\n');
+    const resumed = await store.resumeExecutorPlan({ taskKey: 'resume-hash-drift', ownerChatId: 'chat-b', idempotencyKey: 'resume-hash-drift-retry' });
+    assert.equal(resumed.accepted, false);
+    assert.equal(resumed.reason, 'path_content_changed');
+    assert.deepEqual(resumed.changedPaths, ['src/owned.js']);
+    assert.equal(store.getTask('resume-hash-drift').ownerChatId, null);
+  });
+});
+
+test('rejects symbolic links in a reserved ownership scope', async () => {
+  await withFixture(async ({ root, repo, store }) => {
+    const outside = path.join(root, 'outside-owned.js');
+    fs.writeFileSync(outside, 'outside\n');
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.symlinkSync(outside, path.join(repo, 'src', 'escape.js'));
+    await assert.rejects(store.createTask(taskInput(repo, {
+      taskKey: 'symlink-scope', paths: ['src'], idempotencyKey: 'create-symlink-scope'
+    })), /symbolic link/);
+    fs.rmSync(outside, { force: true });
+  });
+});
+
 test('partial resume preserves blocker provenance while queuing a disjoint executor', async () => {
   await withFixture(async ({ repo, dataDir }) => {
     let now = Date.parse('2026-11-03T00:00:00.000Z');
