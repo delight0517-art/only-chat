@@ -43,6 +43,8 @@ mkdir -p "$ICONSET"
 swiftc -swift-version 5 -framework Security \
   "$ROOT/macOS/NotionCredentialBridge.swift" \
   -o "$APP/Contents/Resources/OnlyChatCredentialBridge"
+cp "$THREEF_SOURCE_ROOT/Resources/Readability.js" "$APP/Contents/Resources/Readability.js"
+cp "$THREEF_SOURCE_ROOT/Resources/Readability-LICENSE" "$APP/Contents/Resources/Readability-LICENSE"
 python3 - "$ICONSET" <<'PY'
 import pathlib, sys
 from PIL import Image, ImageDraw
@@ -70,20 +72,30 @@ rm -rf "$ICONSET"
 
 swiftc -parse-as-library -swift-version 5 -framework AppKit -framework ApplicationServices -framework CoreGraphics -framework ImageIO -framework ScreenCaptureKit -framework WebKit -framework Speech -framework AVFoundation \
   "$ROOT/macOS/OnlyChatApp.swift" \
+  "$ROOT/macOS/ThreeFBrowserResourceBundle.swift" \
   "$THREEF_SOURCE_ROOT/OptionalFeatureAvailability.swift" \
   "$THREEF_SOURCE_ROOT/AddressBarNavigationRequest.swift" \
+  "$THREEF_SOURCE_ROOT/BrowserNavigationURLSync.swift" \
+  "$THREEF_SOURCE_ROOT/BrowserTabSelectionPolicy.swift" \
   "$THREEF_SOURCE_ROOT/BrowserContextMenu.swift" \
   "$THREEF_SOURCE_ROOT/BrowserKeyboardCommands.swift" \
   "$THREEF_SOURCE_ROOT/BrowserModel.swift" \
   "$THREEF_SOURCE_ROOT/BrowserSessionStore.swift" \
+  "$THREEF_SOURCE_ROOT/BookmarkHTML.swift" \
+  "$THREEF_SOURCE_ROOT/ReaderArticle.swift" \
+  "$THREEF_SOURCE_ROOT/ReaderModeView.swift" \
   "$THREEF_SOURCE_ROOT/BrowserSettingsView.swift" \
   "$THREEF_SOURCE_ROOT/DefaultBrowserService.swift" \
   "$THREEF_SOURCE_ROOT/BrowserView.swift" \
+  "$THREEF_SOURCE_ROOT/MediaSiteCandidate.swift" \
+  "$THREEF_SOURCE_ROOT/MediaSiteCandidateSheet.swift" \
+  "$THREEF_SOURCE_ROOT/MediaSiteSnoozeStore.swift" \
   "$THREEF_SOURCE_ROOT/BrowserWebView.swift" \
   "$THREEF_SOURCE_ROOT/EmbeddedBrowserSession.swift" \
   "$THREEF_SOURCE_ROOT/ExtensionCompatibility.swift" \
   "$THREEF_SOURCE_ROOT/FocusFenceConnectionService.swift" \
   "$THREEF_SOURCE_ROOT/FocusFenceSearchResultFilter.swift" \
+  "$THREEF_SOURCE_ROOT/GoogleOAuthNavigationPolicy.swift" \
   "$THREEF_SOURCE_ROOT/HotModuleStore.swift" \
   "$THREEF_SOURCE_ROOT/YouTubePreviewPlaybackBlocker.swift" \
   "$THREEF_SOURCE_ROOT/ThreeFURLRouter.swift" \

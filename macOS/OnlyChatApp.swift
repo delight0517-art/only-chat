@@ -695,12 +695,33 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             environment.removeValue(forKey: "ONLY_CHAT_GOOGLE_TOKEN_FILE")
         }
         process.environment = environment
-        if let logPath = Bundle.main.object(forInfoDictionaryKey: "OnlyChatDiagnosticLogPath") as? String,
-           !logPath.isEmpty {
-            if !FileManager.default.fileExists(atPath: logPath) {
-                FileManager.default.createFile(atPath: logPath, contents: nil)
+        if let previousHandle = serverDiagnosticsHandle {
+            try? previousHandle.close()
+            serverDiagnosticsHandle = nil
+        }
+        if let logURL = serverDiagnosticsURL() {
+            do {
+                try FileManager.default.createDirectory(
+                    at: logURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                if !FileManager.default.fileExists(atPath: logURL.path) {
+                    FileManager.default.createFile(
+                        atPath: logURL.path,
+                        contents: nil,
+                        attributes: [.posixPermissions: 0o600]
+                    )
+                }
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600],
+                    ofItemAtPath: logURL.path
+                )
+                let handle = try FileHandle(forWritingTo: logURL)
+                try handle.seekToEnd()
+                serverDiagnosticsHandle = handle
+            } catch {
+                fputs("Only Chat server diagnostics could not be opened: \(error.localizedDescription)\n", stderr)
             }
-            serverDiagnosticsHandle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
         }
         process.standardOutput = serverDiagnosticsHandle ?? FileHandle.nullDevice
         process.standardError = serverDiagnosticsHandle ?? FileHandle.nullDevice
@@ -726,6 +747,17 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             serverLaunchInProgress = false
             scheduleServerRestart(requested: false, message: "Only Chat 서버를 시작하지 못했습니다: \(error.localizedDescription)")
         }
+    }
+
+    private func serverDiagnosticsURL() -> URL? {
+        if let configuredPath = Bundle.main.object(forInfoDictionaryKey: "OnlyChatDiagnosticLogPath") as? String,
+           !configuredPath.isEmpty {
+            return URL(fileURLWithPath: configuredPath)
+        }
+        guard Self.isolatedRuntimeRequested,
+              let isolatedDataDirectory = Self.isolatedDataDirectory else { return nil }
+        return URL(fileURLWithPath: isolatedDataDirectory, isDirectory: true)
+            .appendingPathComponent("server.log", isDirectory: false)
     }
 
     private func scheduleServerRestart(requested: Bool, message: String) {
