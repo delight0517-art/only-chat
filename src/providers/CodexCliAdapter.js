@@ -312,7 +312,7 @@ class CodexCliAdapter {
     const screenBridge = approvalPolicy === 'read-only' || context.toolProfile === 'no-tools' || agentWorkspaceRoute
       ? null : this.macScreenBridge?.();
     const agentWorkspaceSocket = agentWorkspaceRoute?.socketPath || null;
-    if (fullAccess || approvalPolicy === 'on-request') {
+    if (approvalPolicy === 'on-request') {
       const approve = context.requestWorkspaceWriteApproval;
       if (typeof approve !== 'function') {
         const error = new Error(fullAccess ? 'Codex Full access 확인을 요청할 수 없습니다.' : 'Codex 작업공간 쓰기 승인을 요청할 수 없습니다.');

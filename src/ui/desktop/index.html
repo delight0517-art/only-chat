@@ -1072,12 +1072,12 @@
             <div class="settings-row-item">
               <div class="row-item-text">
                 <div class="row-item-heading" id="approvalPolicyHeading">Command Approval Policy</div>
-                <div class="row-item-desc" id="settingApprovalPolicyDescription">앱 도구는 호출별로 승인합니다. On Request에서 Codex는 요청마다 작업공간 쓰기 범위를 먼저 승인받고, Read Only에서는 화면·전원 변경 도구도 사용할 수 없습니다.</div>
+                <div class="row-item-desc" id="settingApprovalPolicyDescription">새 대화는 Turbo와 Full Access를 기본 적용합니다. Never Ask에서는 앱 도구 승인 질문을 건너뛰며, macOS 권한과 35Closer 전원 승인은 별도로 유지됩니다.</div>
               </div>
               <div class="row-item-action">
                 <select class="settings-select-dropdown" id="settingApprovalPolicy" disabled aria-labelledby="approvalPolicyHeading" aria-describedby="settingApprovalPolicyDescription settingApprovalPolicyStatus">
-                  <option value="on-request" selected>On Request (Codex 요청마다 작업공간 쓰기 승인)</option>
-                  <option value="never">Never Ask (전면 자율 실행 - 위험)</option>
+                  <option value="on-request">On Request (Codex 요청마다 작업공간 쓰기 승인)</option>
+                  <option value="never" selected>Turbo · Never Ask (앱 도구 승인 생략)</option>
                   <option value="read-only">Read Only (수정 및 삭제 차단)</option>
                 </select>
                 <small id="settingApprovalPolicyStatus" role="status" aria-live="polite">승인 정책을 불러오는 중…</small>
@@ -1161,11 +1161,11 @@
         <label for="settingsApprovalSelect" style="font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase;">명령어 승인 정책 (Approval Policy)</label>
         <select class="select-pill" id="settingsApprovalSelect" style="width: 100%; margin-top: 6px;" disabled aria-describedby="settingsApprovalPolicyDescription settingsApprovalPolicyStatus">
           <option value="on-request">Codex 요청마다 작업공간 쓰기 승인 (On Request)</option>
-          <option value="never">확인 없이 전자율 실행 (Never Ask / Danger)</option>
+          <option value="never" selected>Turbo · Never Ask (앱 도구 승인 생략)</option>
           <option value="read-only">쓰기 및 삭제 명령 전면 차단 (Read Only)</option>
         </select>
         <small id="settingsApprovalPolicyStatus" role="status" aria-live="polite" style="display:block; margin-top:6px; color:var(--text-dim); line-height:1.45;">승인 정책을 불러오는 중…</small>
-        <small id="settingsApprovalPolicyDescription" style="display:block; margin-top:6px; color:var(--text-dim); line-height:1.45;">앱 도구는 호출별로 승인합니다. On Request에서 Codex는 요청마다 작업공간 쓰기 범위를 먼저 승인받고, Read Only에서는 화면·전원 변경 도구도 사용할 수 없습니다.</small>
+        <small id="settingsApprovalPolicyDescription" style="display:block; margin-top:6px; color:var(--text-dim); line-height:1.45;">새 대화는 Turbo와 Full Access를 기본 적용합니다. Never Ask에서는 앱 도구 승인 질문을 건너뛰며, macOS 권한과 35Closer 전원 승인은 별도로 유지됩니다.</small>
       </div>
 
       <!-- Google & Notion Connectors Section -->

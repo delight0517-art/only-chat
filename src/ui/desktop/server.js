@@ -107,7 +107,7 @@ class DesktopServer {
     this.approvalPolicyFile = path.join(this.dataDir, 'approval-policy.json');
     this.approvalPolicy = APPROVAL_POLICIES.has(options.approvalPolicy)
       ? options.approvalPolicy
-      : readApprovalPolicy(this.approvalPolicyFile) || 'on-request';
+      : readApprovalPolicy(this.approvalPolicyFile) || 'never';
     const engineOptions = { ...options, approvalPolicy: this.approvalPolicy };
     delete engineOptions.openExternal;
     this.focusFencePolicy = new FocusFencePolicy();
