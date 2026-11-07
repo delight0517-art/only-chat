@@ -54,6 +54,7 @@ const MUTATION_TOOL_NAMES = new Set([
   'browser_workspace_snapshot', 'browser_workspace_restore', 'browser_workspace_focus', 'browser_workspace_open',
   'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_send', 'task_registry_ack', 'task_registry_record_check', 'joint_development_create'
 ]);
+const TURN_EXECUTION_STATE = Symbol('only-chat-turn-execution-state');
 
 function isMutationToolName(name) {
   return MUTATION_TOOL_NAMES.has(name);
@@ -450,17 +451,23 @@ class AgentEngine {
    * Run one conversational agent turn with streaming callbacks and tool dispatching
    */
   async executeTurn(userPrompt, callbacks = {}) {
+    // Keep one side-effect marker across recursive tool continuations in this turn.
+    // A provider may be retried before a mutating tool starts, but after that point
+    // a follow-up failure must not replay the action through another provider.
+    const turnCallbacks = callbacks[TURN_EXECUTION_STATE]
+      ? callbacks
+      : { ...callbacks, [TURN_EXECUTION_STATE]: { mutatingToolStarted: false } };
     return this.workspaceExecutionLease.run(
       this.workspaceDir,
       this.currentSession?.sessionId || 'router-provider-discovery',
       async () => {
         await this._ensureAccountRouterTier();
         if (!this.currentSession) this.initSession();
-        return this._executeTurn(userPrompt, callbacks);
+        return this._executeTurn(userPrompt, turnCallbacks);
       },
-      { signal: callbacks.signal, onWait: evidence => {
+      { signal: turnCallbacks.signal, onWait: evidence => {
         this.emit('workspace_waiting', evidence);
-        callbacks.onWorkspaceWait?.(evidence);
+        turnCallbacks.onWorkspaceWait?.(evidence);
       } }
     );
   }
@@ -932,7 +939,7 @@ class AgentEngine {
       }
       routerModelSelection = explicitlySelectedRouterModel;
     }
-    const maxAttempts = callbacks.fullAccess === true || routerModelSelection ? 1 : this.priorityChain.chain.tiers.length;
+    const maxAttempts = routerModelSelection ? 1 : this.priorityChain.chain.tiers.length;
 
     while (!turnSuccess && attempts < maxAttempts) {
       const activeTier = routerModelSelection
@@ -1151,6 +1158,10 @@ class AgentEngine {
 
               let toolResult;
               try {
+                if (callbacks.fullAccess === true && isMutationToolName(call?.name)) {
+                  const turnState = callbacks[TURN_EXECUTION_STATE];
+                  if (turnState) turnState.mutatingToolStarted = true;
+                }
                 if (executorMode && allowedTools?.has('guest_list_windows') && call.name === 'guest_list_windows') {
                   const { readGuestWindows } = require('../connectors/GuestWindowReader');
                   toolResult = await readGuestWindows(this.currentSession.sessionId, { dataDir: this.dataDir, signal: callbacks.signal });
@@ -1219,6 +1230,7 @@ class AgentEngine {
         lastProviderFailure = { category, model, rank };
         if (category === 'approval_required' || category === 'approval_denied') break;
         this.priorityChain.reportTierFailure(activeTier.id, err);
+        if (callbacks.fullAccess === true && callbacks[TURN_EXECUTION_STATE]?.mutatingToolStarted) break;
         // Continue loop to try next fallback tier
       }
     }
