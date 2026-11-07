@@ -1095,7 +1095,7 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         if isLocalAppURL(url) {
             decisionHandler(.allow)
         } else if ["https", "http"].contains(url.scheme ?? "") {
-            NSWorkspace.shared.open(url)
+            openInThreefBrowser(url)
             decisionHandler(.cancel)
         } else {
             decisionHandler(.cancel)
@@ -1196,9 +1196,33 @@ final class OnlyChatApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
         if let url = navigationAction.request.url, ["https", "http"].contains(url.scheme ?? "") {
-            NSWorkspace.shared.open(url)
+            openInThreefBrowser(url)
         }
         return nil
+    }
+
+    private func openInThreefBrowser(_ destination: URL) {
+        guard let scheme = destination.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = destination.host, !host.isEmpty,
+              destination.user == nil, destination.password == nil,
+              let browserURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.rogan.threef.browser") else {
+            showError("3F Browser를 찾을 수 없거나 열 수 있는 웹 주소가 아닙니다. 3F Browser 설치 상태를 확인해 주세요.")
+            return
+        }
+        var components = URLComponents()
+        components.scheme = "threef"
+        components.host = "open"
+        components.queryItems = [URLQueryItem(name: "url", value: destination.absoluteString)]
+        guard let deepLink = components.url else {
+            showError("3F Browser에 전달할 주소를 만들지 못했습니다.")
+            return
+        }
+        NSWorkspace.shared.open([deepLink], withApplicationAt: browserURL, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            guard let error else { return }
+            DispatchQueue.main.async {
+                self.showError("3F Browser를 열지 못했습니다: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func showError(_ message: String) {
