@@ -936,22 +936,12 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
           ? '통합 가드: 충돌 없음' : '통합 가드: 통합 대기';
         write(`[Only Chat 상태 확인: ${workspaceContext.activeBacklog.length}개 미완료 backlog · ${leaseSummary} · ${integrationSummary}]\n`);
       }
-      result = await streamOnlyChatTurn({ baseUrl, sessionId, prompt: nextPrompt, model, approveTools, approveCommands, approveWorkspaceWrite, workspaceContext, toolProfile, fetchImpl, write, signal: activeSignal, maxToolCalls: GOAL_TURN_TOOL_LIMIT, timeoutMs: GOAL_TURN_TIMEOUT_MS });
+      result = await streamOnlyChatTurn({ baseUrl, sessionId, prompt: nextPrompt, model, approveTools, approveWorkspaceWrite, workspaceContext, toolProfile, fetchImpl, write, signal: activeSignal, maxToolCalls: GOAL_TURN_TOOL_LIMIT, timeoutMs: GOAL_TURN_TIMEOUT_MS });
     } catch (error) {
       if (now() >= deadline) break;
       throw error;
     }
     if (result.sessionId) sessionId = result.sessionId;
-    const successfulChanges = Number(result.execution?.successfulFileChangeTools || 0)
-      + Number(result.execution?.successfulMutatingTools || 0);
-    if (successfulChanges > 0) {
-      substantiveProgress += successfulChanges;
-      blockerProgress.clear();
-      stalledSince = null;
-      stalledFingerprint = '';
-      stalledReason = '';
-      lastSubstantiveProgressAt = now();
-    }
     if (!result.ok) {
       if (fixedDuration && ['tool_call_limit', 'turn_timeout'].includes(result.category)) {
         consecutiveInterruptedTurns++;
