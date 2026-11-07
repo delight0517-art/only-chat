@@ -543,9 +543,13 @@ class AgentEngine {
       const accounts = Array.isArray(chain?.accounts)
         ? chain.accounts.filter(account => account.enabled !== false && account.provider && !['demo', 'unconfigured'].includes(account.provider))
         : [];
-      const isFreeModel = model => typeof model === 'string'
-        && (model.toLowerCase() === 'openrouter/free' || model.toLowerCase().endsWith(':free'));
-      const routerProviderIds = chain?.enabled === true && accounts.length > 0 && accounts.every(account => isFreeModel(account.model))
+      const hasVerifiedRouterModel = chain?.providerState === 'verified' && accounts.some(account => {
+        if (account.availability !== 'available') return false;
+        const model = typeof account.model === 'string' ? account.model.trim() : '';
+        return /^[a-z0-9_.-]+(?:\/[a-z0-9_.-]+)?(?::[a-z0-9_.-]+)?$/i.test(model)
+          && !['auto', 'unconfigured'].includes(model.toLowerCase());
+      });
+      const routerProviderIds = chain?.enabled === true && hasVerifiedRouterModel
         ? routerTiers.map(tier => tier.id)
         : [];
       return [...new Set([...localProviderIds, ...routerProviderIds])];
@@ -593,7 +597,7 @@ class AgentEngine {
     if (Array.isArray(dispatcherAllowedProviderIds) && dispatcherAllowedProviderIds.length === 0) {
       return {
         status: 'blocked',
-        reason: '현재 설정에서 도구 허용 목록을 강제할 수 있고 비용이 0원으로 확인된 dispatcher 제공자가 없습니다. Only Chat 입력창에서 직접 요청해 일반 승인 흐름을 사용해 주세요.',
+        reason: '검증된 AI Account Router 계정·모델 또는 설치 확인된 Ollama 모델이 없어 실행자를 시작하지 않았습니다. 계정 연결과 모델 상태를 확인해 주세요.',
         executionEvidence: null
       };
     }

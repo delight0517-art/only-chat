@@ -52,7 +52,7 @@ async function main() {
       server.engine._getDispatcherAllowedProviderIds = async () => [];
       const blockedResponse = await fetch(`${url}/api/admin-manager/status`);
       const blockedStatus = await blockedResponse.json();
-      assert.deepEqual(blockedStatus.dispatcher, { ready: false, blockedReason: 'no_verified_free_provider' });
+      assert.deepEqual(blockedStatus.dispatcher, { ready: false, blockedReason: 'no_verified_dispatch_provider' });
       assert.equal(blockedStatus.capabilities.find(capability => capability.id === 'work.delegate').state, 'unavailable');
 
       server.engine._getDispatcherAllowedProviderIds = async () => ['account-router-local'];
@@ -104,7 +104,7 @@ async function main() {
     const saved = server.engine.sessions.readSession(server.engine.currentSession.sessionId);
     assert.equal(saved.some(item => typeof item.content === 'string' && item.content.startsWith('Only Chat 관리자 모드입니다.')), false);
     assert.equal(saved.some(item => item.type === 'tool_result'), false);
-    console.log('admin manager readiness API, free-provider gating, ephemeral context and tool-call rejection passed');
+    console.log('admin manager readiness API, provider gating, ephemeral context and tool-call rejection passed');
   } finally {
     server.stop();
     fs.rmSync(profile, { recursive: true, force: true });

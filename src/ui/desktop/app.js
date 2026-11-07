@@ -1780,15 +1780,15 @@ async function refreshAdminManagerStatus() {
     if (!availableCount) throw new Error('no actionable capabilities');
     managerModeToggle.disabled = false;
     const delegation = status.capabilities.some(capability => capability.id === 'work.delegate' && capability.state === 'executable');
-    const noVerifiedFreeDispatcher = status.dispatcher?.blockedReason === 'no_verified_free_provider';
+    const noVerifiedDispatcher = status.dispatcher?.blockedReason === 'no_verified_dispatch_provider';
     managerModeToggle.title = delegation
       ? '관리자가 계획을 만들고 별도 실행자 세션에 작업을 맡겨 상태와 결과를 보여줍니다. 승인 필요 작업은 기존 승인 정책에 따릅니다.'
-      : noVerifiedFreeDispatcher
-        ? '현재 실행자 위임을 허용할 수 있는 비용 0원 확인 모델이 없습니다. 무료 제공자를 연결해야 실제 작업을 위임할 수 있습니다.'
+      : noVerifiedDispatcher
+        ? '검증된 AI Account Router 계정·모델이나 설치 확인된 Ollama 모델이 없어 실행자 위임을 시작할 수 없습니다.'
       : `사용 가능한 Mac 기능 ${availableCount}/${status.capabilities.length}개를 확인합니다. 실행자 위임이 활성화되지 않았습니다.`;
     if (labelContainer) labelContainer.title = managerModeToggle.title;
     if (label) label.textContent = delegation ? '관리자 AI · 실행자 위임'
-      : noVerifiedFreeDispatcher ? '관리자 AI · 무료 실행 경로 없음'
+      : noVerifiedDispatcher ? '관리자 AI · 실행자 모델 확인 필요'
       : `관리자 AI · 제안 (${availableCount}/${status.capabilities.length})`;
   } catch (_) {
     managerModeToggle.checked = false;

@@ -2273,13 +2273,14 @@ class DesktopServer {
       }
       const modelSelection = typeof body.modelSelection === 'string' ? body.modelSelection : 'auto';
       const normalizedModelSelection = modelSelection.trim().toLowerCase();
+      const managerMode = body.managerMode === true;
       const isFreeRouterModel = /^(?:openrouter\/free|[a-z0-9_.-]+\/[a-z0-9_.-]+:free)$/i.test(normalizedModelSelection);
       let freeRouterModelAllowed = false;
       const accountRouterPrefix = 'account-router:';
       const selectedAccountRouterModel = normalizedModelSelection.startsWith(accountRouterPrefix)
         ? normalizedModelSelection.slice(accountRouterPrefix.length) : '';
       let accountRouterModelAllowed = false;
-      if (selectedAccountRouterModel && body.managerMode !== true && body.fullAccess !== true) {
+      if (selectedAccountRouterModel && body.fullAccess !== true) {
         try {
           const routerChain = await (await this.engine._getAccountRouterAdapter()).getChain();
           accountRouterModelAllowed = routerChain?.enabled === true && Array.isArray(routerChain.accounts)
@@ -2343,7 +2344,6 @@ class DesktopServer {
         }
       }
         const overrideTierId = !this.engine.priorityChain.chain.enabled && body.overrideTierId || null;
-      const managerMode = body.managerMode === true;
       let managerSystemMessage = null;
       let managerExecutionAllowed = false;
       if (managerMode) {
@@ -2678,7 +2678,7 @@ class DesktopServer {
     const packageVersion = JSON.parse(fs.readFileSync(path.join(this.projectRoot, 'package.json'), 'utf8')).version;
     const processStartedAt = Date.now() - process.uptime() * 1000;
     const dispatcherReady = Array.isArray(dispatcherAllowedProviderIds) && dispatcherAllowedProviderIds.length > 0;
-    const dispatcherBlockedReason = this.isolated ? 'isolated_runtime' : dispatcherReady ? null : 'no_verified_free_provider';
+    const dispatcherBlockedReason = this.isolated ? 'isolated_runtime' : dispatcherReady ? null : 'no_verified_dispatch_provider';
     const moduleFiles = {
       'admin-manager': ['src/features/admin-manager/v1.mjs', true, true, adminManagerVersion],
       'agent-engine': ['src/core/AgentEngine.js', Boolean(this.engine.executeTurn), false, packageVersion],
