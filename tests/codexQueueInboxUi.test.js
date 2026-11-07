@@ -75,6 +75,7 @@ const context = {
   isRecording: false,
   btnMicrophone: new Element('button'),
   window: { confirm: () => true },
+  AbortSignal,
   Event: class Event { constructor(type, options) { this.type = type; this.options = options; } }
 };
 assert.match(source, /setCodexQueueItemSendState\(codexQueueFingerprint, 'inflight'\)/, 'queue-origin sends are recorded before request dispatch');

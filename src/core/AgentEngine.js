@@ -83,7 +83,7 @@ function safeProviderTier(tier) {
 class AgentEngine {
   constructor(options = {}) {
     this.isolated = options.isolated === true;
-    this.accountRouterReadiness = {
+    this.accountRouterReadiness = options.accountRouterReadiness || {
       available: null,
       connected: false,
       verified: false,
@@ -165,6 +165,7 @@ class AgentEngine {
       ? { storageDir: path.join(this.dataDir, 'handoff'), gdriveHandoffDir: false }
       : {});
     this.providerAdapter = options.providerAdapter || null;
+    this.accountRouterAdapter = options.accountRouterAdapter || null;
     this.accountRouterModuleSlot = new AccountRouterModuleSlot({ projectRoot: path.resolve(__dirname, '../..') });
 
     this.currentSession = null;
@@ -365,6 +366,10 @@ class AgentEngine {
     const workspaceDir = sessionData.cwd || this.workspaceDir;
     let turns = (Array.isArray(sessionData.turns) ? sessionData.turns : []).filter(turn =>
       ['user', 'assistant'].includes(turn?.role) && typeof turn.content === 'string');
+    let conversationHistory = isInternal && Array.isArray(sessionData.conversationHistory)
+      ? sessionData.conversationHistory.filter(turn => ['user', 'assistant', 'tool'].includes(turn?.role)
+        && (typeof turn.content === 'string' || turn.content === null || (turn.role === 'tool' && typeof turn.tool_call_id === 'string')))
+      : turns;
     let currentSession;
     if (isInternal) {
       currentSession = {
@@ -372,7 +377,8 @@ class AgentEngine {
         resumedFrom: sessionData.source,
         title: sessionData.title,
         workspaceDir,
-        model: sessionData.model
+        model: sessionData.model,
+        provider: sessionData.provider
       };
     } else {
       const existingImport = this.sessions.listSessions().find(session =>
@@ -388,6 +394,7 @@ class AgentEngine {
           model: existingSession.model || sessionData.model
         };
         turns = existingSession.turns;
+        conversationHistory = existingSession.conversationHistory || turns;
       } else {
         const localSession = this.sessions.createSession({
           workspaceDir,
@@ -419,9 +426,11 @@ class AgentEngine {
     this.ownership = new OwnershipLock({ workspaceDir: this.workspaceDir });
     this.currentSession = currentSession;
     // Keep the imported transcript in Only Chat's local session; the source stays read-only.
-    this.conversationHistory = turns.map(t => ({
+    this.conversationHistory = conversationHistory.map(t => ({
       role: t.role,
-      content: t.content
+      ...(t.content !== undefined ? { content: t.content } : {}),
+      ...(t.tool_calls ? { tool_calls: t.tool_calls } : {}),
+      ...(t.tool_call_id ? { tool_call_id: t.tool_call_id } : {})
     }));
 
     return this.currentSession;
@@ -467,7 +476,7 @@ class AgentEngine {
         account.model && account.model !== 'unconfigured');
       if (!configured || !this.accountRouterReadiness?.verified) {
         const unverified = chain.providerState === 'unverified' || chain.accounts.some(account => account.availability === 'unverified');
-        this.accountRouterReadiness = {
+        this.accountRouterReadiness = Object.assign(this.accountRouterReadiness || {}, {
           available: configured ? null : false,
           connected: false,
           verified: false,
@@ -475,7 +484,7 @@ class AgentEngine {
           message: unverified
             ? 'AI Account Router 계정 자격 증명이 아직 검증되지 않았습니다.'
             : configured ? 'AI Account Router 실제 요청 확인이 필요합니다.' : 'AI Account Router에 사용 가능한 계정이 없습니다.'
-        };
+        });
       }
       const existingRouter = this.priorityChain.chain.tiers.find(tier => tier.provider === 'account-router');
       const routerHealth = existingRouter && this.priorityChain.tierHealth?.get(existingRouter.id);
@@ -522,11 +531,13 @@ class AgentEngine {
 
   async _getDispatcherAllowedProviderIds() {
     // Native CLI agents execute tools inside their own subprocess and cannot
-    // enforce this task's exact allowlist. Only the Account Router returns
-    // tool calls for AgentEngine to validate before local execution.
+    // enforce this task's exact allowlist. Account Router and local Ollama
+    // return tool calls for AgentEngine to validate before local execution.
     if (this.isolated) return null;
-    const tiers = this.priorityChain.chain.tiers.filter(tier => tier.enabled !== false && tier.provider === 'account-router');
-    if (!tiers.length) return [];
+    const configuredTiers = this.priorityChain.chain.tiers.filter(tier => tier.enabled !== false);
+    const localProviderIds = await this._getVerifiedLocalOllamaProviderIds(configuredTiers);
+    const routerTiers = configuredTiers.filter(tier => tier.provider === 'account-router');
+    if (!routerTiers.length) return localProviderIds;
     try {
       const chain = await (await this._getAccountRouterAdapter()).getChain();
       const accounts = Array.isArray(chain?.accounts)
@@ -534,8 +545,28 @@ class AgentEngine {
         : [];
       const isFreeModel = model => typeof model === 'string'
         && (model.toLowerCase() === 'openrouter/free' || model.toLowerCase().endsWith(':free'));
-      if (chain?.enabled !== true || !accounts.length || accounts.some(account => !isFreeModel(account.model))) return [];
-      return tiers.map(tier => tier.id);
+      const routerProviderIds = chain?.enabled === true && accounts.length > 0 && accounts.every(account => isFreeModel(account.model))
+        ? routerTiers.map(tier => tier.id)
+        : [];
+      return [...new Set([...localProviderIds, ...routerProviderIds])];
+    } catch (_) {
+      return localProviderIds;
+    }
+  }
+
+  async _getVerifiedLocalOllamaProviderIds(tiers = this.priorityChain.chain.tiers, fetchImpl = globalThis.fetch) {
+    const localTiers = tiers.filter(tier => tier.enabled !== false && tier.provider === 'ollama'
+      && typeof tier.id === 'string' && tier.id && typeof tier.model === 'string' && tier.model.trim());
+    if (!localTiers.length || typeof fetchImpl !== 'function') return [];
+    try {
+      const response = await fetchImpl('http://127.0.0.1:11434/api/tags', {
+        headers: { Host: '127.0.0.1:11434', Accept: 'application/json' },
+        signal: AbortSignal.timeout(1500)
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !Array.isArray(body?.models)) return [];
+      const availableModels = new Set(body.models.map(item => String(item?.name || item?.model || '').trim().toLowerCase()).filter(Boolean));
+      return localTiers.filter(tier => availableModels.has(tier.model.trim().toLowerCase())).map(tier => tier.id);
     } catch (_) {
       return [];
     }
@@ -809,28 +840,44 @@ class AgentEngine {
     } = callbacks;
 
     // 1. Dynamic Live Skill & Shortcut Resolution (No new chat required!)
-    const { text: resolvedPrompt, injectedSkills } = this.skills.resolvePromptShortcuts(userPrompt);
+    const isToolContinuation = userPrompt === '';
+    const { text: resolvedPrompt, injectedSkills } = isToolContinuation
+      ? { text: '', injectedSkills: [] }
+      : this.skills.resolvePromptShortcuts(userPrompt);
     if (injectedSkills.length > 0 && onReasoningDelta) {
       onReasoningDelta(`[SkillManager] 실시간 핫리로드 스킬 주입: ${injectedSkills.map(s => '$' + s).join(', ')}`);
     }
 
-    // 2. Save durable checkpoint for restart/resume & Windows sync
-    this.handoff.saveCheckpoint({
-      sessionId: this.currentSession.sessionId,
-      lastPrompt: userPrompt,
-      workspaceDir: this.workspaceDir,
-      injectedSkills
-    });
+    if (!isToolContinuation) {
+      // 2. Save durable checkpoint for restart/resume & Windows sync
+      this.handoff.saveCheckpoint({
+        version: 2,
+        status: 'running',
+        autoResume: !managerMode && !executorMode && callbacks.fullAccess !== true,
+        resumeAttempts: 0,
+        sessionId: this.currentSession.sessionId,
+        lastPrompt: userPrompt,
+        workspaceDir: this.workspaceDir,
+        injectedSkills,
+        modelSelection: typeof callbacks.modelSelection === 'string' ? callbacks.modelSelection : 'auto',
+        accountRouterModelSelection: typeof callbacks.accountRouterModelSelection === 'string' ? callbacks.accountRouterModelSelection : null,
+        reasoningEffort,
+        toolProfile: ['file-read', 'file-search', 'file-edit', 'file-write', 'embedded-3f-status', 'threef-browser-status'].includes(callbacks.toolProfile) ? callbacks.toolProfile : null,
+        allowedTools: Array.isArray(callbacks.allowedTools) ? callbacks.allowedTools.filter(name => typeof name === 'string') : null,
+        recoveryDisabledReason: managerMode || executorMode ? 'scoped-executor-context-not-persisted' : callbacks.fullAccess === true ? 'full-access-session-requires-review' : ''
+      });
 
-    // Record user prompt
-    this.conversationHistory.push({ role: 'user', content: resolvedPrompt });
-    this.sessions.appendItem(this.currentSession.sessionId, {
-      type: 'user_message',
-      content: userPrompt,
-      resolvedContent: resolvedPrompt,
-      injectedSkills,
-      reasoningEffort
-    });
+      // Record user prompt only at the start of a turn. Recursive provider
+      // follow-ups must preserve the original prompt and tool result history.
+      this.conversationHistory.push({ role: 'user', content: resolvedPrompt });
+      this.sessions.appendItem(this.currentSession.sessionId, {
+        type: 'user_message',
+        content: userPrompt,
+        resolvedContent: resolvedPrompt,
+        injectedSkills,
+        reasoningEffort
+      });
+    }
 
     let turnSuccess = false;
     let attempts = 0;
@@ -849,7 +896,8 @@ class AgentEngine {
           modelIsEnabled = routerChain?.enabled === true && Array.isArray(routerChain.accounts)
             && routerChain.accounts.some(account => account.enabled !== false && account.provider
               && !['demo', 'unconfigured'].includes(account.provider)
-              && String(account.model || '').trim().toLowerCase() === explicitlySelectedRouterModel);
+              && [account.model, ...(Array.isArray(account.models) ? account.models.map(model => model?.id || model?.model || model?.name) : [])]
+                .some(model => String(model || '').trim().toLowerCase() === explicitlySelectedRouterModel));
         } catch (_) {}
       }
       if (!modelIsEnabled) {
@@ -875,6 +923,11 @@ class AgentEngine {
           : undefined);
       if (!activeTier) break;
       attempts++;
+      if (!isToolContinuation || callbacks.restartRecovery === true) {
+        this.handoff.updateCheckpoint(this.currentSession.sessionId, {
+          route: { tierId: activeTier.id, provider: activeTier.provider, model: routerModelSelection || activeTier.model }
+        });
+      }
       if (onTierResolved) onTierResolved(activeTier);
 
       try {
@@ -892,6 +945,7 @@ class AgentEngine {
           onToolEnd
         }, {
           reasoningEffort,
+          toolProfile: callbacks.toolProfile || null,
           signal: callbacks.signal,
           ...(executorMode && !callbacks.toolProfile && allowedTools?.size === 1 && allowedTools.has('guest_list_windows')
             ? { toolProfile: 'guest-window-read' } : {}),
@@ -1011,6 +1065,12 @@ class AgentEngine {
             if (onMessageDelta) onMessageDelta(response.content);
           } else {
             if (response.protocol === 'openai-compatible') {
+              this.sessions.appendItem(this.currentSession.sessionId, {
+                type: 'assistant_tool_calls',
+                toolCalls: response.toolCalls.map(call => ({
+                  id: call.id, name: call.name, arguments: call.args || {}
+                }))
+              });
               this.conversationHistory.push({
                 role: 'assistant',
                 content: response.content || null,
@@ -1022,19 +1082,33 @@ class AgentEngine {
               });
             }
             for (const call of response.toolCalls) {
+              const allowedProfileTools = callbacks.toolProfile === 'file-read' ? ['read_file']
+                : callbacks.toolProfile === 'file-search' ? ['search_files', 'read_file']
+                : callbacks.toolProfile === 'file-edit' ? ['read_file', 'edit_file']
+                : callbacks.toolProfile === 'file-write' ? ['read_file', 'write_file']
+                  : callbacks.toolProfile === 'embedded-3f-status' ? ['embedded_3f_status']
+                    : callbacks.toolProfile === 'threef-browser-status' ? ['browser_status'] : null;
+              if (allowedProfileTools && !allowedProfileTools.includes(call?.name)) {
+                const blocked = { error: `Tool call is outside the selected ${callbacks.toolProfile} tool profile.`, blocked: true };
+                if (onToolStart) onToolStart(call);
+                if (onToolEnd) onToolEnd({ call, result: blocked });
+                this.conversationHistory.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(blocked) });
+                this.sessions.appendItem(this.currentSession.sessionId, { type: 'tool_result', tool_call_id: call.id, tool: call.name, result: blocked });
+                continue;
+              }
               if (allowedTools && !allowedTools.has(call?.name)) {
                 const blocked = { error: 'Tool call is not allowed by this queued task.', blocked: true };
                 if (onToolStart) onToolStart(call);
                 if (onToolEnd) onToolEnd({ call, result: blocked });
                 this.conversationHistory.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(blocked) });
-                this.sessions.appendItem(this.currentSession.sessionId, { type: 'tool_result', tool: call.name, result: blocked });
+                this.sessions.appendItem(this.currentSession.sessionId, { type: 'tool_result', tool_call_id: call.id, tool: call.name, result: blocked });
                 continue;
               }
               if (this.tools.approvalPolicy === 'read-only' && isMutationToolName(call?.name) && !this.tools.isNotionMcpReadOnlyCall(call)) {
                 const blocked = { error: `Tool call '${call.name}' is blocked under read-only policy.`, blocked: true };
                 if (onToolEnd) onToolEnd({ call, result: blocked });
                 this.conversationHistory.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(blocked) });
-                this.sessions.appendItem(this.currentSession.sessionId, { type: 'tool_result', tool: call.name, result: blocked });
+                this.sessions.appendItem(this.currentSession.sessionId, { type: 'tool_result', tool_call_id: call.id, tool: call.name, result: blocked });
                 continue;
               }
               if (this._requiresToolApproval(call)) {
@@ -1044,10 +1118,11 @@ class AgentEngine {
                   const blocked = { error: approvalError.message, blocked: true };
                   if (onToolEnd) onToolEnd({ call, result: blocked });
                   this.conversationHistory.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(blocked) });
-                  this.sessions.appendItem(this.currentSession.sessionId, { type: 'tool_result', tool: call.name, result: blocked });
+                  this.sessions.appendItem(this.currentSession.sessionId, { type: 'tool_result', tool_call_id: call.id, tool: call.name, result: blocked });
                   continue;
                 }
               }
+              this.sessions.appendItem(this.currentSession.sessionId, { type: 'tool_start', tool_call_id: call.id, tool: call.name });
               if (onToolStart) onToolStart(call);
 
               let toolResult;
@@ -1072,6 +1147,7 @@ class AgentEngine {
               });
               this.sessions.appendItem(this.currentSession.sessionId, {
                 type: 'tool_result',
+                tool_call_id: call.id,
                 tool: call.name,
                 result: toolResult
               });
@@ -1089,6 +1165,13 @@ class AgentEngine {
           type: 'assistant_message',
           content: response.content
         });
+        try {
+          this.handoff.updateCheckpoint(this.currentSession.sessionId, {
+            status: 'completed', completedAt: Date.now(), recoveryDisabledReason: ''
+          });
+        } catch (checkpointError) {
+          console.warn('[AgentEngine] Completed turn checkpoint could not be updated:', checkpointError.message);
+        }
 
         if (managerDelegation) {
           this.sessions.appendItem(this.currentSession.sessionId, {
@@ -1160,6 +1243,8 @@ class AgentEngine {
           });
         case 'read_file':
           return await this.tools.readFile(args.path || args.file_path, args.start_line, args.end_line);
+        case 'search_files':
+          return await this.tools.searchFiles(args.query, args.path);
         case 'write_file':
           return await this.tools.writeFile(args.path || args.file_path, args.content);
         case 'edit_file':
@@ -1312,18 +1397,18 @@ class AgentEngine {
           toolProfile: options.toolProfile || null,
           approvalPolicy: this.tools.approvalPolicy
         });
-        this.accountRouterReadiness = {
+        this.accountRouterReadiness = Object.assign(this.accountRouterReadiness || {}, {
           available: true,
           connected: true,
           verified: true,
           state: 'connected',
           ...(response.routing ? { lastRoute: response.routing } : {}),
           message: 'AI Account Router 실제 요청 성공'
-        };
+        });
         return response;
       } catch (error) {
         const category = providerFailureCategory(error);
-        this.accountRouterReadiness = {
+        this.accountRouterReadiness = Object.assign(this.accountRouterReadiness || {}, {
           available: false,
           connected: false,
           verified: false,
@@ -1333,14 +1418,14 @@ class AgentEngine {
             : category === 'quota_rate_limit'
               ? 'AI Account Router 사용 한도 또는 요청 제한 상태입니다.'
               : 'AI Account Router 실제 요청에 실패했습니다.'
-        };
+        });
         throw error;
       }
     }
     if (this.isolated) {
       if (options.fullAccess === true) throw new Error('격리 실행에서는 Full access를 사용할 수 없습니다.');
       if (!this.providerAdapter) throw new Error('Provider calls require an injected synthetic adapter in isolated mode.');
-      return this.providerAdapter(tier, history, streamingHooks, { sessionId: this.currentSession?.sessionId, workspaceDir: this.workspaceDir, approvalPolicy: options.approvalPolicy, allowedTools: options.allowedTools, reasoningEffort });
+      return this.providerAdapter(tier, history, streamingHooks, { sessionId: this.currentSession?.sessionId, workspaceDir: this.workspaceDir, approvalPolicy: options.approvalPolicy, allowedTools: options.allowedTools, reasoningEffort, toolProfile: options.toolProfile || null });
     }
     if (!this.providerAdapter) {
       throw new Error(`No live provider adapter is configured for '${tier.provider || tier.id}'. Refusing to return a simulated answer.`);
@@ -1350,6 +1435,7 @@ class AgentEngine {
       workspaceDir: this.workspaceDir,
       reasoningEffort,
       approvalPolicy: options.approvalPolicy,
+      toolProfile: options.toolProfile || null,
       fullAccess: options.fullAccess === true,
       embeddedThreefMcp: options.embeddedThreefMcp || null,
       allowedTools: options.allowedTools,

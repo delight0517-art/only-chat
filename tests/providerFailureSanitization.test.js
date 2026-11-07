@@ -24,12 +24,10 @@ async function main() {
       notify: () => {},
       providerAdapter: async () => { throw syntheticError; }
     });
-    engine.priorityChain.setTiers(DEFAULT_PRESET_TIERS.slice(0, 1));
-    engine.priorityChain.setTiers([{
-      ...DEFAULT_PRESET_TIERS[0], tier: 2,
-      id: 'synthetic-attempted-tier',
-      model: 'gpt-6-luna'
-    }]);
+    engine.priorityChain.setTiers([
+      { ...DEFAULT_PRESET_TIERS[0], tier: 1, id: 'disabled-first', enabled: false },
+      { ...DEFAULT_PRESET_TIERS[0], tier: 2, id: 'synthetic-attempted-tier', model: 'gpt-6-luna', enabled: true }
+    ]);
 
     let surfacedFailure;
     try {
@@ -52,6 +50,8 @@ async function main() {
     assert.ok(warnings.some(line => line.includes('gpt-6-luna')), 'safe model must remain in the logs');
     assert.equal(providerFailureCategory(new Error('HTTP 403')), 'provider_failure', 'bare HTTP 403 is not enough to classify a sandbox block');
     assert.equal(providerFailureCategory(new Error('sandbox permission denied')), 'sandbox_permission_blocked');
+    assert.equal(providerFailureCategory(new Error('AI Account Router returned HTTP 503 (missing_credential).')), 'authentication');
+    assert.equal(providerFailureCategory(new Error('ChatGPT sign-in is required.')), 'authentication');
   } finally {
     console.warn = originalWarn;
     fs.rmSync(dataDir, { recursive: true, force: true });

@@ -38,6 +38,7 @@ const { TaskRegistryStore } = require('../../core/TaskRegistryStore.js');
 const { TaskMailboxDriveAdapter } = require('../../core/TaskMailboxDriveAdapter.js');
 const { MacWindowsDevelopment } = require('../../core/MacWindowsDevelopment.js');
 const { ForAiFeedbackInbox } = require('../../connectors/ForAiFeedbackInbox.js');
+const { recoverInterruptedTurn } = require('../../core/RestartRecovery.js');
 
 const QUOTA_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 const SESSION_SEARCH_TIMEOUT_MS = 20000;
@@ -120,8 +121,14 @@ class DesktopServer {
     if (!engineOptions.providerAdapter && !this.isolated && process.platform === 'darwin') {
       const antigravity = this.antigravityAdapter;
       const codex = this.codexAdapter;
-      engineOptions.providerAdapter = (tier, history, hooks, context) => {
+      let ollamaAdapterPromise = null;
+      engineOptions.providerAdapter = async (tier, history, hooks, context) => {
         if (tier.provider === 'antigravity-cli') return antigravity.call(tier, history, hooks, context);
+        if (tier.provider === 'ollama') {
+          ollamaAdapterPromise ||= import('../../features/provider/v1.mjs')
+            .then(({ createOllamaAdapter }) => createOllamaAdapter());
+          return (await ollamaAdapterPromise).call(tier, history, hooks, context);
+        }
         if (tier.provider === 'codex') return codex.call(tier, history, hooks, context).then(result => {
           codex.clearAuthenticationFailure(tier);
           return result;
@@ -161,6 +168,7 @@ class DesktopServer {
     this.macWindowsDevelopment = this.isolated ? null : new MacWindowsDevelopment({ dataDir: this.dataDir });
     engineOptions.macWindowsDevelopment = this.macWindowsDevelopment;
     this.engine = new AgentEngine(engineOptions);
+    this.turnEngineOptions = { ...engineOptions, dispatcherAutoStart: false, watchSkills: false };
     this.forAiInbox = this.isolated ? null : new ForAiFeedbackInbox({ dataDir: this.dataDir, dispatcher: this.engine.dispatcher });
     this.engine.forAiTaskGuard = task => this.forAiInbox?.isTaskAuthorized(task) === true;
     this.taskRegistryStore = this.isolated ? null : new TaskRegistryStore({ dataDir: this.dataDir });
@@ -176,22 +184,35 @@ class DesktopServer {
     if (this.codexAdapter) this.codexAdapter.googleTokenFile = this.engine.tools.google.tokenFile;
     if (this.codexAdapter) this.codexAdapter.macScreenBridge = () => ({ enabled: this.isMacScreenControlEnabled(), port: this.port, token: this.macScreenToken });
     this.activeTurns = 0;
+    this.turnRequestTail = Promise.resolve();
+    this.activeTurnControllers = new Set();
+    this.activeTurnEngines = new Map();
+    this.sessionTurnTails = new Map();
+    this.restartRequested = false;
+    this.requestServerRestart = options.requestServerRestart || (() => {
+      setTimeout(() => {
+        const httpServer = this.server;
+        this.stop();
+        httpServer?.closeAllConnections?.();
+        process.exitCode = 75;
+      }, 100).unref();
+    });
     this.pendingToolApprovals = new Map();
     this.sessionToolApprovals = new Map();
     this.newChatSessionAliases = new Map();
     this.pendingDispatcherToolApprovals = new Map();
     this.engine.dispatcherApprovalHandler = (task, request) => this._requestDispatcherToolApproval(task, request);
     this.engine.dispatcher.canStartTask = () => this.activeTurns === 0;
-    const dispatchedTurns = new Set();
+    this.dispatchedTurns = new Set();
     const startDispatchedTurn = ({ task }) => {
-      if (dispatchedTurns.has(task.id)) return;
-      dispatchedTurns.add(task.id);
+      if (this.dispatchedTurns.has(task.id)) return;
+      this.dispatchedTurns.add(task.id);
       this.activeTurns += 1;
     };
     this.engine.dispatcher.on('worker_started', startDispatchedTurn);
     this.engine.dispatcher.on('worker_resumed', startDispatchedTurn);
     const finishDispatchedTurn = ({ task }) => {
-      if (dispatchedTurns.delete(task.id)) this.activeTurns = Math.max(0, this.activeTurns - 1);
+      if (this.dispatchedTurns.delete(task.id)) this._decrementActiveTurns();
       void this.engine.dispatcher.tick();
     };
     this.engine.dispatcher.on('worker_completed', finishDispatchedTurn);
@@ -242,19 +263,118 @@ class DesktopServer {
         const url = `http://127.0.0.1:${this.port}`;
         this._startQuotaRefresh();
         if (this.schedulesEnabled) this.scheduleService.start();
+        Promise.resolve().then(() => this.resumeInterruptedTurn()).catch(error => {
+          console.error('[DesktopServer] Interrupted-turn recovery failed:', error);
+        });
         resolve({ port: this.port, url });
       });
       this.server.on('error', err => reject(err));
     });
   }
 
+  _acquireTurnRequestSlot() {
+    const previous = this.turnRequestTail || Promise.resolve();
+    let releaseNext;
+    this.turnRequestTail = new Promise(resolve => { releaseNext = resolve; });
+    return previous.then(() => {
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        releaseNext();
+      };
+    });
+  }
+
+  _acquireSessionTurnSlot(sessionId) {
+    if (!this.sessionTurnTails) this.sessionTurnTails = new Map();
+    const key = String(sessionId || '');
+    const previous = this.sessionTurnTails.get(key) || Promise.resolve();
+    let releaseNext;
+    const current = new Promise(resolve => { releaseNext = resolve; });
+    this.sessionTurnTails.set(key, current);
+    return previous.then(() => {
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (this.sessionTurnTails.get(key) === current) this.sessionTurnTails.delete(key);
+        releaseNext();
+      };
+    });
+  }
+
+  _createTurnEngine(sessionId, toolProfile, fullAccess) {
+    const session = this.engine.sessions.resumeSession(sessionId);
+    if (!session || session.source !== 'internal') throw new Error('Only Chat 대화 세션을 다시 읽을 수 없습니다.');
+    const workspaceDir = path.resolve(session.cwd || this.engine.defaultWorkspaceDir || this.engine.workspaceDir);
+    const turnEngine = new AgentEngine({
+      ...this.turnEngineOptions,
+      accountRouterReadiness: this.engine.accountRouterReadiness,
+      workspaceDir,
+      handoffStorageDir: path.join(this.dataDir, 'turn-handoffs', String(sessionId))
+    });
+    turnEngine.sessions = this.engine.sessions;
+    turnEngine.priorityChain.chain = structuredClone(this.engine.priorityChain.chain);
+    turnEngine.loadInternalSession(session);
+    // The file-read profile cannot mutate the workspace, so read-only sessions
+    // can share provider time without taking the workspace-wide execution lease.
+    if (toolProfile === 'file-read' && fullAccess !== true) {
+      turnEngine.workspaceExecutionLease = {
+        run: (_workspaceDir, _owner, execute) => execute()
+      };
+    }
+    if (typeof this.engine._executeToolCall === 'function') {
+      turnEngine._executeToolCall = this.engine._executeToolCall;
+    }
+    if (typeof this.engine.executeTurn === 'function' && this.engine.executeTurn !== AgentEngine.prototype.executeTurn) {
+      turnEngine.executeTurn = this.engine.executeTurn;
+    }
+    return turnEngine;
+  }
+
+  _decrementActiveTurns() {
+    this.activeTurns = Math.max(0, this.activeTurns - 1);
+    if (this.activeTurns === 0) {
+      try { this.hub?.flushPendingMutations?.(); } catch (_) {}
+    }
+  }
+
+  async resumeInterruptedTurn() {
+    if (this.isolated) return { status: 'not_idle' };
+    const releaseTurnSlot = await this._acquireTurnRequestSlot();
+    if (this.activeTurns > 0) {
+      releaseTurnSlot();
+      return { status: 'not_idle' };
+    }
+    this.activeTurns += 1;
+    try { return await recoverInterruptedTurn(this.engine); }
+    finally {
+      this._decrementActiveTurns();
+      void this.engine.dispatcher.tick();
+      releaseTurnSlot();
+    }
+  }
+
   stop() {
+    for (const engine of new Set([this.engine, ...(this.activeTurnEngines?.values() || [])])) {
+      if (!engine) continue;
+      try {
+        const checkpoint = engine.handoff?.loadCheckpoint?.();
+        if (checkpoint?.status === 'running') engine.handoff.updateCheckpoint(checkpoint.sessionId, {
+          status: 'restart_pending', restartRequestedAt: Date.now()
+        });
+      } catch (_) {}
+    }
+    for (const controller of this.activeTurnControllers || []) {
+      if (!controller.signal?.aborted) controller.abort(new Error('Only Chat 서버가 재시작됩니다.'));
+    }
     this.scheduleService?.stop();
     if (this.quotaRefreshTimer) clearInterval(this.quotaRefreshTimer);
     this.quotaRefreshTimer = null;
-    this.hub.stopWatchers();
-    this.engine.skills.stopWatching();
-    this.engine.dispatcher.stop();
+    this.hub?.stopWatchers?.();
+    this.engine?.skills?.stopWatching?.();
+    this.engine?.dispatcher?.stop?.();
     for (const [requestId, pending] of this.pendingDispatcherToolApprovals) {
       clearTimeout(pending.timer);
       this.pendingDispatcherToolApprovals.delete(requestId);
@@ -421,11 +541,29 @@ class DesktopServer {
       return;
     }
 
+    if (pathname === '/api/server/restart' && req.method === 'POST') {
+      if (!origin || !allowedOrigins.has(origin) || (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) {
+        res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'Only Chat 화면의 same-origin 요청만 서버 재시작을 요청할 수 있습니다.' }));
+        return;
+      }
+      res.writeHead(202, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, status: this.restartRequested ? 'already_requested' : 'restart_pending' }));
+      if (!this.restartRequested) {
+        this.restartRequested = true;
+        this.requestServerRestart();
+      }
+      return;
+    }
+
     if (pathname === '/api/mcp/embedded-3f' && req.method === 'POST') {
       const authorization = String(req.headers.authorization || '');
       const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
-      const context = this.embeddedThreefMcpSessions.get(token);
-      if (!context || context.expiresAt < Date.now() || context.sessionId !== this.engine.currentSession?.sessionId) {
+      const context = this.embeddedThreefMcpSessions?.get(token);
+      const turnEngine = this.activeTurnEngines?.get(context?.sessionId)
+        || (this.engine?.currentSession?.sessionId === context?.sessionId ? this.engine : null);
+      if (!context || context.expiresAt < Date.now()
+        || turnEngine?.currentSession?.sessionId !== context.sessionId) {
         return this._respondJson(res, { error: 'embedded_3f_mcp_session_expired' }, 401);
       }
       if (context.mcpSessionId && req.headers['mcp-session-id'] !== context.mcpSessionId) {
@@ -991,10 +1129,25 @@ class DesktopServer {
       try {
         const result = this.hub.mutateOrgan(body.organ, body.key, body.value, body.author || 'ai-developer', {
           expectedHash: body.expectedHash,
-          expectedSchemaVersion: body.expectedSchemaVersion
+          expectedSchemaVersion: body.expectedSchemaVersion,
+          deferIfBusy: body.deferIfBusy ?? (body.expectedHash == null),
+          lockOwner: body.lockOwner,
+          lockTtlMs: body.lockTtlMs
         });
-        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.writeHead(result.queued ? 202 : 200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
+    if (pathname === '/api/morph/flush' && req.method === 'POST') {
+      try {
+        const result = this.hub.flushPendingMutations();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...result }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
@@ -1059,7 +1212,7 @@ class DesktopServer {
           && typeof account.model === 'string' && account.model.trim() && account.model.trim().toLowerCase() !== 'unconfigured');
         const unverified = routerChain.providerState === 'unverified'
           || routerChain.accounts.some(account => account.availability === 'unverified');
-        this.engine.accountRouterReadiness = {
+        Object.assign(this.engine.accountRouterReadiness, {
           available: configured ? null : false,
           connected: false,
           verified: false,
@@ -1067,16 +1220,18 @@ class DesktopServer {
           message: unverified
             ? 'AI Account Router 계정 자격 증명이 아직 검증되지 않았습니다.'
             : configured ? 'AI Account Router 실제 요청 확인이 필요합니다.' : 'AI Account Router에 사용 가능한 계정이 없습니다.'
-        };
+        });
       }
       const status = this.getPriorityStatus();
       status.accountRouter = routerChain;
       status.routerIntegrationRevision = '2026-11-05-v1';
       status.routerModels = routerChain?.enabled === true && Array.isArray(routerChain.accounts)
         ? [...new Set(routerChain.accounts
-          .filter(account => account.enabled !== false && account.provider && !['demo', 'unconfigured'].includes(account.provider)
-            && typeof account.model === 'string' && account.model.trim() && account.model.trim().toLowerCase() !== 'auto')
-          .map(account => account.model.trim().toLowerCase()))]
+          .filter(account => account.enabled !== false && account.provider && !['demo', 'unconfigured'].includes(account.provider))
+          .flatMap(account => [account.model, ...(Array.isArray(account.models)
+            ? account.models.map(model => model?.id || model?.model || model?.name) : [])])
+          .filter(model => typeof model === 'string' && model.trim() && model.trim().toLowerCase() !== 'auto')
+          .map(model => model.trim().toLowerCase()))]
         : [];
       status.accountRouterReadiness = { ...(this.engine.accountRouterReadiness || {}) };
       status.defaultWorkspaceDir = this.engine.defaultWorkspaceDir || this.engine.workspaceDir;
@@ -1418,6 +1573,7 @@ class DesktopServer {
           id: activeSession.sessionId,
           sessionId: activeSession.sessionId
         };
+        delete session.conversationHistory;
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, session }));
       } else {
@@ -1502,6 +1658,17 @@ class DesktopServer {
       const ok = this.engine.priorityChain.setTierRank(tierId, rank);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok, status: this.getPriorityStatus() }));
+      return;
+    }
+
+    if (pathname === '/api/priority/configure-main' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      const result = this.engine.priorityChain.configureMainTier(body.mainTierId, {
+        enableTierIds: body.enableTierIds || [],
+        disableTierIds: body.disableTierIds || []
+      });
+      res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ...result, status: this.getPriorityStatus() }));
       return;
     }
 
@@ -2064,6 +2231,22 @@ class DesktopServer {
     if (pathname === '/api/turn' && req.method === 'POST') {
       const body = await this._readBody(req);
       const prompt = body.prompt || '';
+      let requestedWorkspaceDir = null;
+      if (body.workspaceDir !== undefined || body.workspaceWriteApproval !== undefined) {
+        if (this.isolated || body.workspaceWriteApproval !== true || typeof body.workspaceDir !== 'string' || !path.isAbsolute(body.workspaceDir)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '새 세션 작업공간은 명시 승인된 절대 경로로만 선택할 수 있습니다.' }));
+          return;
+        }
+        try {
+          requestedWorkspaceDir = fs.realpathSync(path.resolve(body.workspaceDir));
+          if (!fs.statSync(requestedWorkspaceDir).isDirectory()) throw new Error('not_directory');
+        } catch (_) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: '선택한 Only Chat 작업공간을 확인할 수 없습니다.' }));
+          return;
+        }
+      }
       const requestedSessionId = body.sessionId;
       const isNewChatSession = typeof requestedSessionId === 'string' && /^session_\d{10,16}$/.test(requestedSessionId);
       const isInternalSession = typeof requestedSessionId === 'string' && /^ses_[a-f0-9]{16}$/.test(requestedSessionId);
@@ -2083,6 +2266,11 @@ class DesktopServer {
         res.end(JSON.stringify({ error: '모델 선택 값이 올바르지 않습니다.' }));
         return;
       }
+      if (body.toolProfile !== undefined && !['file-edit', 'file-read', 'embedded-3f-status', 'threef-browser-status'].includes(body.toolProfile)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '도구 프로필이 올바르지 않습니다.' }));
+        return;
+      }
       const modelSelection = typeof body.modelSelection === 'string' ? body.modelSelection : 'auto';
       const normalizedModelSelection = modelSelection.trim().toLowerCase();
       const isFreeRouterModel = /^(?:openrouter\/free|[a-z0-9_.-]+\/[a-z0-9_.-]+:free)$/i.test(normalizedModelSelection);
@@ -2097,7 +2285,8 @@ class DesktopServer {
           accountRouterModelAllowed = routerChain?.enabled === true && Array.isArray(routerChain.accounts)
             && routerChain.accounts.some(account => account.enabled !== false && account.provider
               && !['demo', 'unconfigured'].includes(account.provider)
-              && String(account.model || '').trim().toLowerCase() === selectedAccountRouterModel);
+              && [account.model, ...(Array.isArray(account.models) ? account.models.map(model => model?.id || model?.model || model?.name) : [])]
+                .some(model => String(model || '').trim().toLowerCase() === selectedAccountRouterModel));
         } catch (_) {
           accountRouterModelAllowed = false;
         }
@@ -2170,11 +2359,25 @@ class DesktopServer {
         }
       }
 
-      if (this.activeTurns > 0) {
+      if (this.dispatchedTurns?.size > 0) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Only Chat에서 다른 작업을 실행 중입니다. 현재 작업이 끝난 뒤 다시 요청해 주세요.' }));
         return;
       }
+
+      let releaseTurnSlot = null;
+      let disconnectedWhileQueued = false;
+      const releaseIfQueuedClientClosed = () => {
+        disconnectedWhileQueued = true;
+        releaseTurnSlot?.();
+      };
+      res.once('close', releaseIfQueuedClientClosed);
+      releaseTurnSlot = await this._acquireTurnRequestSlot();
+      if (disconnectedWhileQueued || res.destroyed) {
+        releaseTurnSlot();
+        return;
+      }
+      res.once('finish', releaseTurnSlot);
 
       let announcedSessionId = null;
       try {
@@ -2186,11 +2389,17 @@ class DesktopServer {
             sessionId = null;
           }
           if (!sessionId) {
-            const created = this.engine.initSession({ workspaceDir: defaultWorkspaceDir });
+            const created = this.engine.initSession({ workspaceDir: requestedWorkspaceDir || defaultWorkspaceDir });
             sessionId = created.sessionId;
             const resumed = this.engine.sessions.resumeSession(sessionId);
             if (!resumed) throw new Error('New chat session disappeared before its turn started.');
             this.engine.loadInternalSession(resumed);
+          }
+          const aliasedSession = this.engine.sessions.resumeSession(sessionId);
+          if (requestedWorkspaceDir && path.resolve(aliasedSession?.cwd || defaultWorkspaceDir) !== requestedWorkspaceDir) {
+            res.writeHead(409, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: '이 Only Chat 세션은 이미 다른 작업공간에 연결되어 있습니다.' }));
+            return;
           }
           this.newChatSessionAliases.set(requestedSessionId, sessionId);
           this.modelSwitchScheduleStore.moveSession(requestedSessionId, sessionId);
@@ -2221,6 +2430,17 @@ class DesktopServer {
       }
 
       const turnSessionId = this.engine.currentSession?.sessionId;
+      let releaseSessionTurnSlot = null;
+      if (!managerMode) {
+        // Session selection above is serialized; once its ID is stable, unrelated
+        // chats may prepare and execute independently.
+        releaseTurnSlot();
+        releaseSessionTurnSlot = await this._acquireSessionTurnSlot(turnSessionId);
+        if (res.destroyed) {
+          releaseSessionTurnSlot();
+          return;
+        }
+      }
       const modelSwitchResolution = this.modelSwitchScheduleStore.resolveForRequest(turnSessionId, {
         model: normalizedModelSelection,
         effort: reasoningEffort,
@@ -2237,13 +2457,25 @@ class DesktopServer {
         }
       });
       if (modelSwitchResolution.blocked) {
+        releaseSessionTurnSlot?.();
         return this._respondJson(res, { error: '예약한 모델이 현재 준비되지 않아 요청을 실행하지 않았습니다. 로그인 또는 모델 설정을 확인한 뒤 예약을 다시 설정해 주세요.', schedule: modelSwitchResolution.schedule }, 409);
       }
       const effectiveModelSelection = modelSwitchResolution.apply?.model || normalizedModelSelection;
       const effectiveReasoningEffort = modelSwitchResolution.apply?.effort || reasoningEffort;
+      let turnEngine;
+      try {
+        turnEngine = managerMode ? this.engine : this._createTurnEngine(turnSessionId, body.toolProfile || null, body.fullAccess === true);
+      } catch (_) {
+        releaseSessionTurnSlot?.();
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Only Chat에서 독립 실행 세션을 준비하지 못했습니다.' }));
+        return;
+      }
 
       this.activeTurns += 1;
+      this.activeTurnEngines.set(turnSessionId, turnEngine);
       const turnController = new AbortController();
+      this.activeTurnControllers.add(turnController);
       res.once('close', () => {
         if (!res.writableEnded) turnController.abort(new Error('Only Chat client disconnected.'));
       });
@@ -2261,7 +2493,7 @@ class DesktopServer {
       if (modelSwitchResolution.apply) sendSse({ type: 'model_switch_schedule_applied', schedule: modelSwitchResolution.schedule });
 
       const requestToolApproval = request => new Promise(resolve => {
-        const currentSessionId = this.engine.currentSession?.sessionId;
+        const currentSessionId = turnEngine.currentSession?.sessionId;
         if (!currentSessionId || currentSessionId !== request.sessionId || res.destroyed) return resolve(false);
         const grants = this.sessionToolApprovals.get(currentSessionId);
         if (request.scopeRequiresExplicit !== true && (grants?.has('*') || grants?.has(request.name))) return resolve(true);
@@ -2270,7 +2502,7 @@ class DesktopServer {
           resolve(false);
         }, 120000);
         this.pendingToolApprovals.set(request.requestId, {
-          sessionId: currentSessionId, name: request.name, scopeRequiresExplicit: request.scopeRequiresExplicit === true, resolve, timer
+          sessionId: currentSessionId, engine: turnEngine, name: request.name, scopeRequiresExplicit: request.scopeRequiresExplicit === true, resolve, timer
         });
         sendSse({ type: 'tool_approval_required', requestId: request.requestId, sessionId: currentSessionId, name: request.name, args: request.args, scopeRequiresExplicit: request.scopeRequiresExplicit === true });
         res.once('close', () => {
@@ -2300,12 +2532,16 @@ class DesktopServer {
 
       try {
         if (overrideTierId) {
-          this.engine.priorityChain.resolveActiveTier(overrideTierId);
+          turnEngine.priorityChain.resolveActiveTier(overrideTierId);
         }
 
-        await this.engine.executeTurn(prompt, {
+        const executionPrompt = body.toolProfile === 'file-read'
+          ? `${prompt}\n\n[Only Chat file-read guidance]\nUse only read_file. If the result says middle lines were omitted, or the requested section is not present, call read_file again with exact start_line and end_line values. Do not infer content outside returned ranges. Base conclusions on the returned text and include one verbatim 12-160 character quote from it. A bounded result is not proof that omitted lines contain no match.`
+          : prompt;
+        await turnEngine.executeTurn(executionPrompt, {
           signal: turnController.signal,
           reasoningEffort: effectiveReasoningEffort,
+          toolProfile: body.toolProfile || null,
           fullAccess: body.fullAccess === true,
           routerModelSelection: accountRouterModelAllowed ? selectedAccountRouterModel
             : freeRouterModelAllowed && effectiveModelSelection === normalizedModelSelection ? normalizedModelSelection : null,
@@ -2340,9 +2576,9 @@ class DesktopServer {
           if (typeof err.model === 'string' && err.model) event.model = err.model.slice(0, 80);
           if (Number.isSafeInteger(err.rank) && err.rank > 0) event.rank = err.rank;
         }
-        if (turnSessionId && this.engine.currentSession?.sessionId === turnSessionId) {
+        if (turnSessionId && turnEngine.currentSession?.sessionId === turnSessionId) {
           try {
-            this.engine.sessions.appendItem(turnSessionId, {
+            turnEngine.sessions.appendItem(turnSessionId, {
               type: 'turn_error',
               category: event.category,
               ...(event.model ? { model: event.model } : {}),
@@ -2355,9 +2591,16 @@ class DesktopServer {
         sendSse(event);
         res.end();
       } finally {
+        this.activeTurnControllers.delete(turnController);
+        if (this.activeTurnEngines.get(turnSessionId) === turnEngine) this.activeTurnEngines.delete(turnSessionId);
+        releaseSessionTurnSlot?.();
         if (embeddedThreefMcpToken) this.embeddedThreefMcpSessions.delete(embeddedThreefMcpToken);
-        this.activeTurns = Math.max(0, this.activeTurns - 1);
+        this._decrementActiveTurns();
         void this.engine.dispatcher.tick();
+        if (turnEngine !== this.engine) {
+          turnEngine.dispatcher.stop();
+          turnEngine.skills.stopWatching();
+        }
       }
       return;
     }
@@ -2365,7 +2608,7 @@ class DesktopServer {
     if (pathname === '/api/tool-approval' && req.method === 'POST') {
       const body = await this._readBody(req);
       const pending = this.pendingToolApprovals.get(body.requestId);
-      if (!pending || pending.sessionId !== body.sessionId || this.engine.currentSession?.sessionId !== pending.sessionId
+      if (!pending || pending.sessionId !== body.sessionId || pending.engine?.currentSession?.sessionId !== pending.sessionId
         || !['approve', 'reject', 'allow_tool', 'turbo'].includes(body.decision)
         || (pending.scopeRequiresExplicit && !['approve', 'reject'].includes(body.decision))) {
         res.writeHead(409, { 'Content-Type': 'application/json' });

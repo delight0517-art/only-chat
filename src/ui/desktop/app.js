@@ -267,6 +267,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     refreshCodexQueueWhenVisible();
   }, 30000);
   document.addEventListener('visibilitychange', refreshCodexQueueWhenVisible);
+  // Keep shared AI Account Router profiles in sync while Only Chat is open.
+  // The status endpoint refreshes local account/model metadata; credentials
+  // still become connected only after a real provider request succeeds.
+  setInterval(() => {
+    if (!document.hidden) void refreshPriorityStatus();
+  }, 15000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) void refreshPriorityStatus();
+  });
   startNewSession();
   void Promise.allSettled([
     refreshPriorityStatus(),
@@ -277,7 +286,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     loadReaApps(),
     loadApprovalPolicy()
   ]);
-  window.addEventListener('focus', () => { void refreshAdminManagerStatus(); });
+  window.addEventListener('focus', () => {
+    void refreshPriorityStatus();
+    void refreshAdminManagerStatus();
+  });
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) void refreshAdminManagerStatus();
   });
@@ -569,6 +581,14 @@ function setupEventListeners() {
     if (e.metaKey !== e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && e.key.toLowerCase() === 'n') {
       e.preventDefault();
       startNewSession();
+    } else if (e.metaKey !== e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && e.key.toLowerCase() === 't' && drawerBrowser?.classList.contains('open')) {
+      e.preventDefault();
+      addBrowserTab();
+    } else if (e.metaKey !== e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && e.key.toLowerCase() === 'w' && drawerBrowser?.classList.contains('open')) {
+      if (typeof browserTabs !== 'undefined' && browserTabs.length > 1) {
+        e.preventDefault();
+        closeBrowserTab(activeBrowserTabId);
+      }
     } else if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.code === 'NumpadAdd' || (e.code === 'Equal' && e.shiftKey))) {
       e.preventDefault();
       adjustUiZoom(0.2);
@@ -618,6 +638,27 @@ function setupEventListeners() {
       if (!response.ok || !result.ok) throw new Error(result.error || '연결 해제 실패');
       renderWindowsInbox(result.status);
     } catch (error) { if (status) status.textContent = `연결 해제 실패: ${error.message}`; }
+  });
+
+  document.getElementById('btnRestartOnlyChatServer')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
+    const status = document.getElementById('serverRestartStatus');
+    if (button.disabled) return;
+    button.disabled = true;
+    if (status) status.textContent = '안전한 재시작을 요청하는 중…';
+    try {
+      const response = await fetch('/api/server/restart', {
+        method: 'POST',
+        headers: { 'Accept': 'application/json' },
+        credentials: 'same-origin'
+      });
+      const result = await response.json().catch(() => ({}));
+      if (response.status !== 202 || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (status) status.textContent = '재시작을 요청했습니다. 안전한 체크포인트가 있으면 앱이 다시 열린 뒤 이어갑니다.';
+    } catch (error) {
+      if (status) status.textContent = `재시작 요청 실패: ${error.message}`;
+      button.disabled = false;
+    }
   });
 
   // Settings Sub-sidebar Tabs Switching
@@ -693,6 +734,7 @@ function setupEventListeners() {
     const opening = !drawerBrowser.classList.contains('open');
     setExclusiveDrawerOpen(drawerBrowser, opening);
     if (opening) void refreshThreefControlStatus();
+    if (opening) renderBrowserTabs();
   });
   btnCloseBrowser.addEventListener('click', () => setExclusiveDrawerOpen(drawerBrowser, false));
   document.getElementById('btnBrowserNav').addEventListener('click', () => {
@@ -762,6 +804,8 @@ function setupEventListeners() {
     button.addEventListener('click', () => sendBrowserPanelAction(button.dataset.browserAction));
   }
   initializeBrowserSplitLayout();
+  document.getElementById('btnBrowserNewTab')?.addEventListener('click', () => addBrowserTab());
+  renderBrowserTabs();
   window.addEventListener('resize', syncNativeBrowserPanel);
   window.addEventListener('scroll', syncNativeBrowserPanel, true);
   drawerBrowser.addEventListener('transitionend', syncNativeBrowserPanel);
@@ -930,8 +974,9 @@ function priorityRouteHealth(tier) {
   const health = tier?.health || {};
   const failed = health.quotaState === 'provider-unavailable' || health.throttledReason === 'provider-error';
   const ready = tier?.providerReady?.connected === true;
+  const routerQuotaUnknown = tier?.provider === 'account-router' && !Number.isFinite(health.totalRemainingPercent);
   return {
-    label: failed ? '최근 생성 실패' : ready ? '실행 경로 연결됨' : '연결 확인 필요',
+    label: failed ? '최근 생성 실패' : ready ? routerQuotaUnknown ? '실행 연결됨 · 한도 미확인' : '실행 경로 연결됨' : '연결 확인 필요',
     className: failed || !ready ? 'disconnected' : 'connected'
   };
 }
@@ -2894,7 +2939,7 @@ async function loadSessions() {
     const status = document.getElementById('sessionListStatus');
     if (status) status.textContent = '';
     renderFilteredSessions();
-    if (workbenchSnapshot) renderWorkbenchTasks();
+    if (typeof workbenchSnapshot !== 'undefined' && workbenchSnapshot && typeof renderWorkbenchTasks === 'function') renderWorkbenchTasks();
   } catch (err) {
     if (requestId === sessionsLoadRequestId) {
       console.warn('Failed to load sessions:', err);
@@ -2916,7 +2961,7 @@ async function loadCodexQueueInbox() {
   if (!list || !count || codexQueueLoadInFlight) return;
   codexQueueLoadInFlight = true;
   try {
-    const response = await fetch('/api/codex-queue', { cache: 'no-store' });
+    const response = await fetch('/api/codex-queue', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
     if (!response.ok) throw new Error(`Codex queue request failed (${response.status}).`);
     const data = await response.json();
     if (!data || typeof data.available !== 'boolean' || !Array.isArray(data.items) || data.items.some(item => !item || typeof item.id !== 'string'
@@ -3788,13 +3833,57 @@ async function refreshConnectorsStatus() {
   } catch (_) {}
 }
 
+function showUrlCopyFallback(url, anchor, message) {
+  document.getElementById('googleLoginUrlFallback')?.remove();
+  const panel = document.createElement('div');
+  panel.id = 'googleLoginUrlFallback';
+  panel.setAttribute('role', 'status');
+  panel.setAttribute('aria-live', 'polite');
+  panel.style.cssText = 'display:grid;gap:8px;margin-top:8px;padding:10px;border:1px solid var(--border-color,#555);border-radius:8px;';
+
+  const note = document.createElement('p');
+  note.textContent = message;
+  note.style.margin = '0';
+  const input = document.createElement('input');
+  input.type = 'url';
+  input.readOnly = true;
+  input.value = url;
+  input.setAttribute('aria-label', 'Google 로그인 URL');
+  input.style.width = '100%';
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'btn-primary';
+  copy.textContent = "If it didn't open, click to copy URL";
+  copy.addEventListener('click', async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard_unavailable');
+      await navigator.clipboard.writeText(url);
+      copy.textContent = 'The link has been copied. Go to a browser and then paste it.';
+    } catch {
+      input.focus();
+      input.select();
+      const copied = document.execCommand('copy');
+      copy.textContent = copied ? 'The link has been copied. Go to a browser and then paste it.' : '주소가 선택됐습니다. 직접 복사해 주세요';
+    }
+  });
+  panel.append(note, input, copy);
+  (anchor?.parentElement || document.body).append(panel);
+}
+
 async function handleGoogleLogin() {
+  let loginUrl = '';
+  let loginButton = null;
   try {
     const res = await fetch('/api/connectors/google/auth-url');
     const data = await res.json();
     if (data.url) {
-      const popup = window.open(data.url, '_blank', 'width=600,height=700');
-      if (!popup) throw new Error('로그인 창이 차단됐습니다. 팝업을 허용한 뒤 다시 시도해 주세요.');
+      loginUrl = data.url;
+      loginButton = document.getElementById('btnLoginGoogleWorkspace');
+      document.getElementById('googleLoginUrlFallback')?.remove();
+      let popup = null;
+      try { popup = window.open(data.url, '_blank', 'width=600,height=700'); } catch (_) {}
+      showUrlCopyFallback(data.url, loginButton, 'If it didn\'t open, click to copy URL. You can then go to a browser and paste it.');
+      if (!popup) return;
       const refreshTimer = setInterval(() => {
         if (popup.closed) {
           clearInterval(refreshTimer);
@@ -3803,7 +3892,8 @@ async function handleGoogleLogin() {
       }, 500);
     }
   } catch (err) {
-    alert('구글 로그인 오류: ' + err.message);
+    if (loginUrl) showUrlCopyFallback(loginUrl, loginButton, `Google 로그인 창을 열지 못했습니다. If it didn't open, click to copy URL, then go to a browser and paste it. (${err.message})`);
+    else alert('구글 로그인 오류: ' + err.message);
   }
 }
 
@@ -3929,6 +4019,12 @@ async function navBrowser(url) {
     return;
   }
   document.getElementById('browserUrlInput').value = url;
+  const currentNavTab = typeof browserTabs !== 'undefined' ? browserTabs.find(t => t.id === activeBrowserTabId) : null;
+  if (currentNavTab) {
+    currentNavTab.url = url;
+    try { currentNavTab.title = new URL(url).hostname || url; } catch (_) { currentNavTab.title = url; }
+    if (typeof renderBrowserTabs === 'function') renderBrowserTabs();
+  }
   if (postNativeBrowserPanelAction('navigate', { url })) {
     consoleEl.textContent = `[3F Browser 이동 요청] ${url}`;
     return;
@@ -4308,8 +4404,104 @@ window.onlyChatBrowserResult = ({ action, text, error }) => {
     : action === 'aria' ? `[3F Browser 접근성 정보]\n\n${text}` : `[3F Browser 페이지 텍스트]\n\n${text}`;
 };
 
+let browserTabs = [{ id: 'tab-1', title: '새 탭', url: '' }];
+let activeBrowserTabId = 'tab-1';
+
+function renderBrowserTabs() {
+  const container = document.getElementById('browserTabStrip');
+  if (!container) return;
+  const newTabBtn = document.getElementById('btnBrowserNewTab');
+  container.querySelectorAll('.browser-tab-item').forEach(el => el.remove());
+  browserTabs.forEach(tab => {
+    const isActive = tab.id === activeBrowserTabId;
+    const tabEl = document.createElement('div');
+    tabEl.className = `browser-tab-item${isActive ? ' active' : ''}`;
+    tabEl.style.cssText = `display:flex;align-items:center;gap:4px;padding:3px 8px;border-radius:6px;font-size:11px;cursor:pointer;background:${isActive ? 'var(--bg-card, #e2e8f0)' : 'var(--bg-subtle, #f1f5f9)'};border:1px solid ${isActive ? 'var(--border-main, #94a3b8)' : 'var(--border-subtle, #cbd5e1)'};font-weight:${isActive ? '600' : '400'};max-width:140px;`;
+    tabEl.setAttribute('role', 'tab');
+    tabEl.setAttribute('aria-selected', String(isActive));
+    tabEl.setAttribute('aria-label', `${tab.title || '탭'}${isActive ? ' (현재 활성 탭)' : ''}`);
+    tabEl.title = tab.url || tab.title || '새 탭';
+    tabEl.tabIndex = isActive ? 0 : -1;
+    tabEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        switchBrowserTab(tab.id);
+      } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        const tabs = [...container.querySelectorAll('.browser-tab-item')];
+        const idx = tabs.indexOf(tabEl);
+        const nextIdx = e.key === 'ArrowRight' ? (idx + 1) % tabs.length : (idx - 1 + tabs.length) % tabs.length;
+        tabs[nextIdx]?.focus();
+      }
+    });
+    const titleSpan = document.createElement('span');
+    titleSpan.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
+    titleSpan.textContent = tab.title || '새 탭';
+    tabEl.appendChild(titleSpan);
+    tabEl.addEventListener('click', e => {
+      if (e.target.closest('.browser-tab-close')) return;
+      switchBrowserTab(tab.id);
+    });
+    if (browserTabs.length > 1) {
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'browser-tab-close';
+      closeBtn.setAttribute('aria-label', `${tab.title || '탭'} 닫기`);
+      closeBtn.style.cssText = 'border:none;background:transparent;cursor:pointer;padding:0 2px;font-size:10px;line-height:1;color:var(--text-dim,#64748b);';
+      closeBtn.textContent = '✕';
+      closeBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        closeBrowserTab(tab.id);
+      });
+      tabEl.appendChild(closeBtn);
+    }
+    if (newTabBtn) container.insertBefore(tabEl, newTabBtn);
+    else container.appendChild(tabEl);
+  });
+}
+
+function switchBrowserTab(tabId) {
+  const target = browserTabs.find(t => t.id === tabId);
+  if (!target) return;
+  activeBrowserTabId = tabId;
+  renderBrowserTabs();
+  const url = target.url || '';
+  document.getElementById('browserUrlInput').value = url;
+  document.getElementById('browserAriaConsole').textContent = url ? `[3F Browser 세션] ${url}` : '[3F Browser 새 탭]';
+  postNativeBrowserPanelAction('navigate', { url: url || 'about:blank' });
+}
+
+function addBrowserTab(url = '') {
+  const newId = `tab-${Date.now()}`;
+  browserTabs.push({ id: newId, title: url ? '새 페이지' : '새 탭', url });
+  switchBrowserTab(newId);
+}
+
+function closeBrowserTab(tabId) {
+  const index = browserTabs.findIndex(t => t.id === tabId);
+  if (index < 0) return;
+  browserTabs.splice(index, 1);
+  if (browserTabs.length === 0) {
+    browserTabs.push({ id: `tab-${Date.now()}`, title: '새 탭', url: '' });
+  }
+  if (activeBrowserTabId === tabId) {
+    const nextTab = browserTabs[Math.max(0, index - 1)];
+    switchBrowserTab(nextTab.id);
+  } else {
+    renderBrowserTabs();
+  }
+}
+
 window.onlyChatBrowserNavigateResult = ({ url }) => {
   if (typeof url !== 'string') return;
+  const activeTab = browserTabs.find(t => t.id === activeBrowserTabId);
+  if (activeTab) {
+    activeTab.url = url;
+    try {
+      activeTab.title = url ? (new URL(url).hostname || url) : '새 탭';
+    } catch (_) { activeTab.title = url || '새 탭'; }
+    renderBrowserTabs();
+  }
   document.getElementById('browserUrlInput').value = url;
   document.getElementById('browserAriaConsole').textContent = url ? `[3F Browser 세션] ${url}` : '[3F Browser 새 탭]';
 };
@@ -5203,6 +5395,50 @@ function providerAccountRows(providerId, status) {
     .filter(account => routerProviders.includes(account.provider) && account.provider !== 'demo');
 }
 
+function showRouterLoginUrlFallback(url, message) {
+  document.getElementById('routerLoginUrlFallback')?.remove();
+  const panel = document.createElement('section');
+  panel.id = 'routerLoginUrlFallback';
+  panel.setAttribute('role', 'status');
+  panel.setAttribute('aria-live', 'polite');
+  panel.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:10050;display:grid;gap:9px;width:min(520px,calc(100vw - 40px));padding:16px;background:var(--panel-bg,#242424);color:var(--text-color,#fff);border:1px solid var(--border-color,#666);border-radius:12px;box-shadow:0 10px 40px #0008;';
+  const note = document.createElement('p');
+  note.textContent = message;
+  note.style.margin = '0';
+  const input = document.createElement('input');
+  input.type = 'url';
+  input.readOnly = true;
+  input.value = url;
+  input.setAttribute('aria-label', 'ChatGPT 로그인 URL');
+  input.style.cssText = 'width:100%;box-sizing:border-box;';
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'btn-primary';
+  copy.textContent = "If it didn't open, click to copy URL";
+  copy.addEventListener('click', async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard_unavailable');
+      await navigator.clipboard.writeText(url);
+      copy.textContent = 'The link has been copied. Go to a browser and then paste it.';
+    } catch {
+      input.focus();
+      input.select();
+      const copied = document.execCommand('copy');
+      copy.textContent = copied ? 'The link has been copied. Go to a browser and then paste it.' : '주소가 선택됐습니다. 직접 복사해 주세요';
+    }
+  });
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'btn-secondary';
+  close.textContent = '닫기';
+  close.addEventListener('click', () => panel.remove());
+  actions.append(copy, close);
+  panel.append(note, input, actions);
+  document.body.append(panel);
+}
+
 async function providerAccountAction(action, accountId) {
   if (action === 'remove' && !confirm('선택한 계정을 삭제하시겠습니까?')) return;
   try {
@@ -5212,7 +5448,11 @@ async function providerAccountAction(action, accountId) {
     });
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || '계정 작업 실패');
-    if (result.pending) alert('로그인 완료 후 계정 목록이 자동 갱신됩니다.');
+    if (result.pending && result.authorizationUrl) {
+      showRouterLoginUrlFallback(result.authorizationUrl, result.opened === false
+        ? `AI Account Router에서 로그인 창을 열지 못했습니다${result.openError ? `: ${result.openError}` : ''}. 아래 주소를 복사해 브라우저에서 계속하세요.`
+        : '로그인 창이 보이지 않으면 아래 주소를 복사해 브라우저에서 계속하세요.');
+    } else if (result.pending) alert('로그인 완료 후 계정 목록이 자동 갱신됩니다.');
     await refreshPriorityStatus();
     await loadStagePriorityTiers();
   } catch (error) { alert(error.message); }
@@ -5302,12 +5542,45 @@ function reauthProvider(providerId) {
     openCodexReauth();
     return;
   }
-  alert('Codex CLI 계정은 Only Chat이 보관하거나 다시 인증하지 않습니다. 설치된 Codex CLI에서 계정 상태를 관리하세요.');
+  // For other providers (google, claude, openrouter, etc.), prompt or open connect modal for re-authentication
+  if (['claude', 'openrouter', 'ollama', 'copilot', 'gemini-fence', 'litellm'].includes(providerId)) {
+    openConnectModal(providerId);
+    return;
+  }
+  if (providerId === 'google') {
+    openConnectModal('google');
+    return;
+  }
+  openConnectModal(providerId);
 }
 
-function disconnectProvider(providerId) {
+async function disconnectProvider(providerOrTierId) {
   document.querySelectorAll('.kebab-popover').forEach(p => p.classList.remove('open'));
-  alert('Only Chat은 Codex CLI 계정을 연결 해제하거나 로컬 자격 증명을 변경하지 않습니다.');
+  const isTier = priorityStatus?.tiers?.some(t => t.id === providerOrTierId);
+  const targetLabel = isTier ? (priorityStatus?.tiers?.find(t => t.id === providerOrTierId)?.name || providerOrTierId) : providerOrTierId;
+
+  if (!confirm(`[${targetLabel}] 계정을 정말로 삭제하시겠습니까?`)) {
+    return;
+  }
+
+  try {
+    const payload = isTier ? { tierId: providerOrTierId } : { providerId: providerOrTierId };
+    const res = await fetch('/api/priority/disconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const d = await res.json();
+    if (d.ok) {
+      alert(`[계정 삭제 완료] ${targetLabel} 계정이 제거되었습니다.`);
+      await refreshPriorityStatus();
+      await loadStagePriorityTiers();
+    } else {
+      alert('계정 삭제에 실패했습니다: ' + (d.error || '알 수 없는 오류'));
+    }
+  } catch (err) {
+    alert('계정 삭제 오류: ' + err.message);
+  }
 }
 
 function openConnectModal(preselectProvider = 'google') {
@@ -5346,7 +5619,11 @@ async function handleConnectSubmit() {
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || '계정 연결을 시작하지 못했습니다.');
     closeConnectModal();
-    if (result.pending) alert('로그인 완료 후 계정 목록이 갱신됩니다.');
+    if (result.pending && result.authorizationUrl) {
+      showRouterLoginUrlFallback(result.authorizationUrl, result.opened === false
+        ? `AI Account Router에서 로그인 창을 열지 못했습니다${result.openError ? `: ${result.openError}` : ''}. 아래 주소를 복사해 브라우저에서 계속하세요.`
+        : '로그인 창이 보이지 않으면 아래 주소를 복사해 브라우저에서 계속하세요.');
+    } else if (result.pending) alert('로그인 완료 후 계정 목록이 갱신됩니다.');
     await refreshPriorityStatus();
     await loadStagePriorityTiers();
   } catch (error) { alert(error.message); }
