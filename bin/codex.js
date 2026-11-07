@@ -942,6 +942,16 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
       throw error;
     }
     if (result.sessionId) sessionId = result.sessionId;
+    const successfulChanges = Number(result.execution?.successfulFileChangeTools || 0)
+      + Number(result.execution?.successfulMutatingTools || 0);
+    if (successfulChanges > 0) {
+      substantiveProgress += successfulChanges;
+      blockerProgress.clear();
+      stalledSince = null;
+      stalledFingerprint = '';
+      stalledReason = '';
+      lastSubstantiveProgressAt = now();
+    }
     if (!result.ok) {
       if (fixedDuration && ['tool_call_limit', 'turn_timeout'].includes(result.category)) {
         consecutiveInterruptedTurns++;
