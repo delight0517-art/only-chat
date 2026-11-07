@@ -2962,7 +2962,7 @@ document.addEventListener('keydown', event => {
 async function loadSessions() {
   const requestId = ++sessionsLoadRequestId;
   try {
-    const res = await fetch('/api/sessions');
+    const res = await fetch('/api/sessions', { cache: 'no-store', signal: AbortSignal.timeout(10000) });
     if (!res.ok) throw new Error(`Session list request failed (${res.status}).`);
     const data = await res.json();
     if (requestId !== sessionsLoadRequestId) return;
@@ -2982,7 +2982,24 @@ async function loadSessions() {
       if (status) status.textContent = message;
       if (!cachedUnifiedData) {
         const list = document.getElementById('sessionList');
-        if (list) list.textContent = message;
+        if (list) {
+          const row = document.createElement('div');
+          row.className = 'nav-item';
+          const error = document.createElement('span');
+          error.className = 'nav-item-text';
+          error.textContent = message;
+          const retry = document.createElement('button');
+          retry.type = 'button';
+          retry.className = 'session-open-button';
+          retry.textContent = '다시 시도';
+          retry.setAttribute('aria-label', '세션 목록 다시 시도');
+          retry.addEventListener('click', () => {
+            retry.disabled = true;
+            return loadSessions();
+          });
+          row.append(error, retry);
+          list.replaceChildren(row);
+        }
       }
     }
   }

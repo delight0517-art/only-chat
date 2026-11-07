@@ -46,13 +46,30 @@ test('stale session-list responses cannot overwrite the latest refresh', async (
   assert.equal(isValidSessionListData({ ...validList, internal: [{ id: 'ses_0123456789abcdef', title: 'Unknown', source: 'external' }] }), false, 'unknown source types reject the response');
   const pending = [];
   const rendered = [];
+  const timeoutDurations = [];
   const listStatus = { textContent: '' };
-  const sidebarList = { textContent: '' };
+  const sidebarList = {
+    textContent: '',
+    children: [],
+    replaceChildren(...children) {
+      this.children = children;
+      this.textContent = children.map(child => child.children.map(node => node.textContent || '').join('')).join('');
+    },
+  };
+  const createElement = tagName => ({
+    tagName,
+    children: [],
+    listeners: {},
+    append(...children) { this.children.push(...children); },
+    setAttribute(name, value) { this[name] = value; },
+    addEventListener(name, callback) { this.listeners[name] = callback; },
+  });
   const context = vm.createContext({
     sessionsLoadRequestId: 0,
     cachedUnifiedData: null,
-    document: { getElementById: id => id === 'sessionListStatus' ? listStatus : id === 'sessionList' ? sidebarList : null },
-    fetch: () => new Promise(resolve => pending.push(resolve)),
+    document: { getElementById: id => id === 'sessionListStatus' ? listStatus : id === 'sessionList' ? sidebarList : null, createElement },
+    AbortSignal: { timeout: milliseconds => { timeoutDurations.push(milliseconds); return { milliseconds }; } },
+    fetch: (url, options) => new Promise(resolve => pending.push({ resolve, url, options })),
     renderFilteredSessions() { rendered.push(context.cachedUnifiedData.title); sidebarList.textContent = context.cachedUnifiedData.title; },
     console: { warn() {} }
   });
@@ -62,42 +79,54 @@ test('stale session-list responses cannot overwrite the latest refresh', async (
     unified: { sections: [{ id: 'recents', items: [] }], projects: [] }
   });
   const initialFailure = context.load();
-  pending[0]({ ok: false, status: 503, json: async () => ({ error: 'unavailable' }) });
+  assert.equal(pending[0].url, '/api/sessions');
+  assert.equal(pending[0].options.signal.milliseconds, 10000, 'session-list requests use a bounded timeout');
+  assert.deepEqual(timeoutDurations, [10000]);
+  pending[0].resolve({ ok: false, status: 503, json: async () => ({ error: 'unavailable' }) });
   await initialFailure;
   assert.match(sidebarList.textContent, /세션 목록을 불러오지 못했습니다/, 'initial load failure is visible when no cached list exists');
+  const retryButton = sidebarList.children[0].children[1];
+  assert.equal(retryButton.textContent, '다시 시도', 'initial load failure includes a visible retry action');
+  assert.equal(retryButton['aria-label'], '세션 목록 다시 시도');
+
+  const retry = retryButton.listeners.click();
+  pending[1].resolve({ ok: true, json: async () => listResponse('retry') });
+  await retry;
+  assert.equal(context.cachedUnifiedData.title, 'retry', 'retry loads the session list again');
+  assert.equal(listStatus.textContent, '', 'successful retry clears the accessible error announcement');
 
   const older = context.load();
   const newer = context.load();
-  pending[2]({ ok: true, json: async () => listResponse('newest') });
+  pending[3].resolve({ ok: true, json: async () => listResponse('newest') });
   await newer;
-  pending[1]({ ok: true, json: async () => listResponse('older') });
+  pending[2].resolve({ ok: true, json: async () => listResponse('older') });
   await older;
   assert.equal(context.cachedUnifiedData.title, 'newest');
-  assert.deepEqual(rendered, ['newest']);
+  assert.deepEqual(rendered, ['retry', 'newest']);
 
   const failed = context.load();
-  pending[3]({ ok: false, status: 503, json: async () => ({ error: 'unavailable' }) });
+  pending[4].resolve({ ok: false, status: 503, json: async () => ({ error: 'unavailable' }) });
   await failed;
   assert.equal(context.cachedUnifiedData.title, 'newest', 'HTTP failures retain the last valid sidebar data');
-  assert.deepEqual(rendered, ['newest'], 'HTTP failures do not render an error payload as an empty session list');
+  assert.deepEqual(rendered, ['retry', 'newest'], 'HTTP failures do not render an error payload as an empty session list');
   assert.equal(sidebarList.textContent, 'newest', 'HTTP failures retain the rendered previous session list');
   assert.match(listStatus.textContent, /세션 목록을 불러오지 못했습니다/, 'the latest HTTP failure is announced accessibly');
   const recovered = context.load();
-  pending[4]({ ok: true, json: async () => listResponse('recovered') });
+  pending[5].resolve({ ok: true, json: async () => listResponse('recovered') });
   await recovered;
   assert.equal(context.cachedUnifiedData.title, 'recovered');
   assert.equal(listStatus.textContent, '', 'a successful refresh clears the previous error announcement');
 
   const malformed = context.load();
-  pending[5]({ ok: true, json: async () => ({ internal: {}, unified: { sections: [], projects: [] } }) });
+  pending[6].resolve({ ok: true, json: async () => ({ internal: {}, unified: { sections: [], projects: [] } }) });
   await malformed;
   assert.equal(context.cachedUnifiedData.title, 'recovered', 'malformed HTTP 200 payloads retain the last valid data');
-  assert.deepEqual(rendered, ['newest', 'recovered'], 'malformed data does not reach the renderer');
+  assert.deepEqual(rendered, ['retry', 'newest', 'recovered'], 'malformed data does not reach the renderer');
   assert.match(listStatus.textContent, /세션 목록을 불러오지 못했습니다/, 'malformed payloads are announced accessibly');
 
   const malformedNested = context.load();
-  pending[6]({ ok: true, json: async () => ({ ...listResponse('nested-corrupt'), unified: { sections: [{ id: 'recents', items: [null] }], projects: [] } }) });
+  pending[7].resolve({ ok: true, json: async () => ({ ...listResponse('nested-corrupt'), unified: { sections: [{ id: 'recents', items: [null] }], projects: [] } }) });
   await malformedNested;
   assert.equal(context.cachedUnifiedData.title, 'recovered', 'malformed nested rows also retain the last valid data');
-  assert.deepEqual(rendered, ['newest', 'recovered'], 'nested malformed data never reaches the renderer');
+  assert.deepEqual(rendered, ['retry', 'newest', 'recovered'], 'nested malformed data never reaches the renderer');
 });
