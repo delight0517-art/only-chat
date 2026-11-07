@@ -2336,7 +2336,9 @@ class DesktopServer {
         res.end(JSON.stringify({ error: 'Full access 상태가 올바르지 않습니다.' }));
         return;
       }
-      if (body.fullAccess === true) {
+      const isTurbo = this.approvalPolicy === 'never';
+      const effectiveFullAccess = body.fullAccess === true || (isTurbo && body.fullAccess !== false);
+      if (effectiveFullAccess) {
         const chain = this.engine.priorityChain;
         const selectedTier = !chain.chain.enabled && typeof body.overrideTierId === 'string'
           ? chain.chain.tiers.find(tier => tier.id === body.overrideTierId)
@@ -2496,7 +2498,7 @@ class DesktopServer {
       const effectiveReasoningEffort = modelSwitchResolution.apply?.effort || reasoningEffort;
       let turnEngine;
       try {
-        turnEngine = managerMode ? this.engine : this._createTurnEngine(turnSessionId, body.toolProfile || null, body.fullAccess === true);
+        turnEngine = managerMode ? this.engine : this._createTurnEngine(turnSessionId, body.toolProfile || null, effectiveFullAccess);
       } catch (_) {
         releaseSessionTurnSlot?.();
         res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -2574,7 +2576,7 @@ class DesktopServer {
           signal: turnController.signal,
           reasoningEffort: effectiveReasoningEffort,
           toolProfile: body.toolProfile || null,
-          fullAccess: body.fullAccess === true,
+          fullAccess: effectiveFullAccess,
           routerModelSelection: accountRouterModelAllowed && selectedAccountRouterModel ? selectedAccountRouterModel
             : freeRouterModelAllowed && effectiveModelSelection === normalizedModelSelection ? normalizedModelSelection : null,
           accountRouterModelSelection: accountRouterModelAllowed && selectedAccountRouterModel ? selectedAccountRouterModel : null,

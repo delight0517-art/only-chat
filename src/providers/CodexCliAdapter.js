@@ -139,6 +139,34 @@ class CodexCliAdapter {
       else if (config.version === 1 && config.sessions && Object.hasOwn(config.sessions, sessionId)) route = config.sessions[sessionId];
       if (!route || typeof route !== 'object') return null;
       if (route.transport === 'spaceo') return { transport: 'spaceo' };
+      if (route.transport === 'ssh') {
+        const remote = route.ssh;
+        if (!remote || typeof remote !== 'object' || Array.isArray(remote)) return null;
+        const { host, user, identityFile, knownHostsFile, driverPath } = remote;
+        const port = remote.port === undefined ? 22 : remote.port;
+        if (typeof host !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(host) || host.includes('..')
+            || typeof user !== 'string' || !/^[A-Za-z_][A-Za-z0-9._-]{0,63}$/.test(user)
+            || !Number.isSafeInteger(port) || port < 1 || port > 65535
+            || typeof identityFile !== 'string' || !path.isAbsolute(identityFile)
+            || typeof knownHostsFile !== 'string' || !path.isAbsolute(knownHostsFile)
+            || typeof driverPath !== 'string' || !/^\/[A-Za-z0-9/._-]+$/.test(driverPath)
+            || driverPath.split('/').includes('..') || identityFile.includes('\n')
+            || knownHostsFile.includes('\n')) return null;
+        const identityStat = fs.lstatSync(identityFile);
+        const knownHostsStat = fs.lstatSync(knownHostsFile);
+        const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+        if (!identityStat.isFile() || (uid !== null && identityStat.uid !== uid)
+            || (identityStat.mode & 0o077) !== 0 || (identityStat.mode & 0o400) === 0
+            || !knownHostsStat.isFile() || (uid !== null && knownHostsStat.uid !== uid)
+            || (knownHostsStat.mode & 0o022) !== 0 || (knownHostsStat.mode & 0o400) === 0) return null;
+        const sshArgs = [
+          '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
+          '-o', 'StrictHostKeyChecking=yes', '-o', `UserKnownHostsFile=${knownHostsFile}`,
+          '-i', identityFile, '-p', String(port), `${user}@${host}`, driverPath, 'mcp'
+        ];
+        return { transport: 'ssh', command: '/usr/bin/ssh', args: sshArgs };
+      }
+      if (route.transport !== undefined && route.transport !== 'socket') return null;
       const socketPath = route.socketPath;
       const socketDir = path.resolve(this.dataDir, 'agent-workspaces');
       const socketDirStat = fs.lstatSync(socketDir);
@@ -160,7 +188,7 @@ class CodexCliAdapter {
         virtualDisplay = { agentID: String(route.agentID), displayID: display.displayID,
           frame: { x: frame.x, y: frame.y, width: frame.width, height: frame.height } };
       }
-      return { socketPath: resolvedSocket, virtualDisplay,
+      return { transport: 'socket', socketPath: resolvedSocket, virtualDisplay,
         cuaSession: virtualDisplay
           ? `${virtualDisplay.agentID}:${crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 24)}`
           : null };
@@ -300,6 +328,9 @@ class CodexCliAdapter {
     const workspaceDir = path.resolve(context.workspaceDir || process.cwd());
     if (!['on-request', 'never', 'read-only'].includes(approvalPolicy)) throw new Error('지원하지 않는 도구 승인 정책입니다.');
     const fullAccess = context.fullAccess === true;
+    if (fullAccess) {
+      trustedDeveloperInstructions += '\n\n[Full Access / Whole Drive Access]\n전체 디스크(Whole drive) 읽기 및 쓰기 접근이 활성화되어 있습니다. 초기 작업공간 경로에 한정되지 않고, 전체 파일 시스템의 파일을 읽고 수정 및 생성할 수 있습니다.';
+    }
     const exposeSpaceOMaintenance = process.platform === 'darwin' && approvalPolicy === 'on-request'
       && context.toolProfile !== 'no-tools';
     if (fullAccess && approvalPolicy === 'read-only') throw new Error('읽기 전용 승인 정책에서는 Full access를 사용할 수 없습니다.');
@@ -307,11 +338,11 @@ class CodexCliAdapter {
       ? this._agentWorkspaceRoute(context.sessionId) : null;
     const usesSpaceO = agentWorkspaceRoute?.transport === 'spaceo';
     if (usesSpaceO) {
-      trustedDeveloperInstructions += '\n\n이 대화의 Mac 앱 작업은 onlychat_agent_workspace의 SpaceO 전용 세션에서만 수행하세요. 화면 작업마다 이 연결에서 preset=exclusive인 빈 세션을 하나 만들고, 그 세션 ID로 격리 상태와 대상 앱의 창 소유권을 확인하세요. 작업을 완료하거나 중단하면 그 세션 ID로 spaceo_session_destroy를 호출하고 결과를 확인하세요. 세션 생성이나 격리 검증이 실패하면 작업을 멈추고 다른 화면 제어 경로로 전환하지 마세요.';
+      trustedDeveloperInstructions += '\n\nMac 앱의 화면 조작이 실제로 필요한 경우 SpaceO를 우선 사용하고, 세션 생성과 격리를 확인한 뒤에만 그 세션에서 조작하세요. SpaceO를 사용할 수 없으면 화면 조작만 보류하고 CLI·코드·로그로 가능한 작업은 계속하세요. 사용자가 현재 작업에서 메인 모니터 사용을 명시적으로 허용한 경우에만 그 허용 범위에서 대체 경로를 사용할 수 있으며, 이를 격리된 화면이라고 표현하지 마세요. Only Chat 자체 화면은 채팅창이 올바른지 객관적으로 확인할 때만 사용하고, 그 밖의 작업 내역과 모델 응답은 CLI 텍스트 경로로 확인하세요.';
     }
     const screenBridge = approvalPolicy === 'read-only' || context.toolProfile === 'no-tools' || agentWorkspaceRoute
       ? null : this.macScreenBridge?.();
-    const agentWorkspaceSocket = agentWorkspaceRoute?.socketPath || null;
+    const agentWorkspaceSocket = agentWorkspaceRoute?.transport === 'socket' ? agentWorkspaceRoute.socketPath : null;
     if (approvalPolicy === 'on-request') {
       const approve = context.requestWorkspaceWriteApproval;
       if (typeof approve !== 'function') {
@@ -329,7 +360,7 @@ class CodexCliAdapter {
         }
         if (exposeSpaceOMaintenance) reason += ' 사용자가 요청한 SpaceO 데몬 재시작을 세션 종료 후 실행할 수 있습니다.';
         if (screenBridge?.enabled === true) reason += ' 사용자가 켠 Mac 화면 제어로 화면을 읽거나 조작할 수도 있습니다.';
-        if (agentWorkspaceSocket) reason += ' 이 Only Chat 대화에 배정된 워크스테이션의 앱을 읽고 조작할 수 있습니다.';
+        if (agentWorkspaceRoute) reason += ' 이 Only Chat 대화에 배정된 워크스테이션의 앱을 읽고 조작할 수 있습니다.';
         approved = await approve({
           directory: workspaceDir,
           reason
@@ -381,6 +412,12 @@ class CodexCliAdapter {
           '-c', 'mcp_servers.onlychat_agent_workspace.enabled=true',
           '-c', `mcp_servers.onlychat_agent_workspace.command=${JSON.stringify(this.cuaDriverPath)}`,
           '-c', `mcp_servers.onlychat_agent_workspace.args=${JSON.stringify(['mcp', '--socket', agentWorkspaceSocket])}`);
+      }
+      if (agentWorkspaceRoute?.transport === 'ssh') {
+        args.splice(args.length - 3, 0,
+          '-c', 'mcp_servers.onlychat_agent_workspace.enabled=true',
+          '-c', `mcp_servers.onlychat_agent_workspace.command=${JSON.stringify(agentWorkspaceRoute.command)}`,
+          '-c', `mcp_servers.onlychat_agent_workspace.args=${JSON.stringify(agentWorkspaceRoute.args)}`);
       }
       if (agentWorkspaceRoute?.virtualDisplay) {
         const display = agentWorkspaceRoute.virtualDisplay;

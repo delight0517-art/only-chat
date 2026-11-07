@@ -160,18 +160,23 @@ function persistFullAccessSessionMode(sessionId = currentSessionId) {
 
 function renderFullAccessToggle() {
   if (!btnAccessToggle) return;
-  btnAccessToggle.setAttribute('aria-pressed', String(fullAccessEnabled));
-  btnAccessToggle.classList.toggle('enabled', fullAccessEnabled);
+  const isTurbo = activeApprovalPolicy === 'never';
+  const effectiveFullAccess = fullAccessEnabled || isTurbo;
+  btnAccessToggle.setAttribute('aria-pressed', String(effectiveFullAccess));
+  btnAccessToggle.classList.toggle('enabled', effectiveFullAccess);
   const label = btnAccessToggle.querySelector('.access-text');
-  if (label) label.textContent = fullAccessEnabled ? 'Full access · 현재 대화' : 'Workspace sandbox';
-  btnAccessToggle.title = fullAccessEnabled
-    ? '이 대화에서 작업공간 밖의 파일과 셸 경로도 사용할 수 있습니다. 도구 승인 질문은 보안 설정의 Turbo 정책을 따릅니다.'
-    : '현재 대화는 Only Chat 작업공간 안에서 실행됩니다.';
+  if (label) label.textContent = isTurbo ? 'Turbo Full access · 전체 디스크' : effectiveFullAccess ? 'Full access · 현재 대화' : 'Workspace sandbox';
+  btnAccessToggle.title = isTurbo
+    ? 'Turbo 모드: 전체 디스크(Whole drive) 읽기 및 쓰기 접근이 활성화되어 있으며 승인 질문을 생략합니다.'
+    : effectiveFullAccess
+      ? '이 대화에서 작업공간 밖의 파일과 셸 경로도 사용할 수 있습니다. 도구 승인 질문은 보안 설정의 Turbo 정책을 따릅니다.'
+      : '현재 대화는 Only Chat 작업공간 안에서 실행됩니다.';
 }
 
 function applyFullAccessModeForSession(sessionId, isNewSession = false) {
-  fullAccessEnabled = isNewSession ? true : fullAccessSessionModes[sessionId] === true;
-  if (isNewSession) persistFullAccessSessionMode(sessionId);
+  const isTurbo = activeApprovalPolicy === 'never';
+  fullAccessEnabled = isTurbo || (isNewSession ? true : fullAccessSessionModes[sessionId] === true);
+  if (isNewSession || isTurbo) persistFullAccessSessionMode(sessionId);
   renderFullAccessToggle();
 }
 
@@ -251,7 +256,12 @@ async function loadApprovalPolicy() {
     const data = await response.json();
     if (!APPROVAL_POLICY_VALUES.has(data.policy)) throw new Error('invalid policy');
     activeApprovalPolicy = data.policy;
+    if (activeApprovalPolicy === 'never') {
+      fullAccessEnabled = true;
+      persistFullAccessSessionMode();
+    }
     setApprovalPolicyControls(activeApprovalPolicy);
+    renderFullAccessToggle();
     setApprovalPolicyStatus('현재 승인 정책을 불러왔습니다.');
     for (const select of approvalPolicySelects) select.disabled = false;
   } catch (_) {
@@ -277,7 +287,12 @@ async function saveApprovalPolicy(policy) {
     const data = await response.json();
     if (data.ok !== true || data.policy !== policy) throw new Error('save failed');
     activeApprovalPolicy = policy;
+    if (activeApprovalPolicy === 'never') {
+      fullAccessEnabled = true;
+      persistFullAccessSessionMode();
+    }
     setApprovalPolicyControls(policy);
+    renderFullAccessToggle();
     setApprovalPolicyStatus('승인 정책이 저장되었습니다.');
   } catch (_) {
     setApprovalPolicyControls(previousPolicy);
@@ -2262,6 +2277,8 @@ async function executeTurnCore({
   let turnError = null;
 
   try {
+    const isTurbo = activeApprovalPolicy === 'never';
+    const effectiveFullAccess = isTurbo || fullAccessForTurn === true;
     const res = await fetch('/api/turn', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2273,7 +2290,7 @@ async function executeTurnCore({
         overrideTierId: activeTier?.id,
         managerMode: managerModeToggle?.checked === true,
         sandboxPolicy: 'workspace-write',
-        fullAccess: fullAccessForTurn
+        fullAccess: effectiveFullAccess
       }),
       signal: turnAbortController.signal
     });
