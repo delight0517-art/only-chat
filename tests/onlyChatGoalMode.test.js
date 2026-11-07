@@ -88,3 +88,11 @@ test('CLI only-chat goal works with active desktop server and streams turns', as
   assert.match(turns[0], /테스트 목표/);
   assert.match(turns[1], /계속 같은 Goal을 진행하세요/);
 });
+
+test('Goal loop safely aborts on consecutive errors and cleans up timers', () => {
+  assert.match(app, /event\.type === 'turn_error'/, 'executeTurnCore must recognize SSE turn_error event');
+  assert.match(app, /activeGoal\.consecutiveErrors\s*>=\s*3/, 'runGoalIterationTurn must stop after 3 consecutive errors');
+  assert.match(app, /cancelActiveGoal\(`반복된 오류로 인해 목표 추구를 안전하게 중단했습니다/, 'must announce error stop');
+  assert.match(app, /const goalObj = activeGoal;\s*activeGoal = null;/, 'cancelActiveGoal and finishActiveGoal must null activeGoal immediately');
+  assert.match(app, /beforeunload/, 'window beforeunload must cancel active goal');
+});

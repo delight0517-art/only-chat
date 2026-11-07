@@ -436,6 +436,12 @@ function setupEventListeners() {
     abortActiveTurn();
   });
 
+  window.addEventListener('beforeunload', () => {
+    if (activeGoal) {
+      cancelActiveGoal('앱 종료 또는 새로고침으로 목표 추구를 중단했습니다.');
+    }
+  });
+
   document.getElementById('btnNewChat').addEventListener('click', startNewSession);
 
   btnSidebarSearch.addEventListener('click', () => {
@@ -1882,6 +1888,10 @@ async function handleSend() {
   const assistantTimer = startAssistantTimer(assistantCard);
   timeline.scrollTop = timeline.scrollHeight;
 
+  if (activeGoal && !prompt.trim().startsWith('/goal')) {
+    cancelActiveGoal('새로운 메시지를 입력하여 이전 목표 추구를 중단했습니다.');
+  }
+
   const goalMatch = prompt.trim().match(/^\/goal(?:\s+((?:--fixed-duration\s+)?(?:\d{1,3}(?:m|h)\s+)?.*))?$/is);
   if (goalMatch) {
     const rawArgs = (goalMatch[1] || '').trim();
@@ -2073,7 +2083,9 @@ function parseClientGoalDuration(val) {
 
 function cancelActiveGoal(reason = '사용자가 목표 추구를 중단했습니다.') {
   if (!activeGoal) return;
-  if (activeGoal.timer) { clearTimeout(activeGoal.timer); activeGoal.timer = null; }
+  const goalObj = activeGoal;
+  activeGoal = null;
+  if (goalObj.timer) { clearTimeout(goalObj.timer); goalObj.timer = null; }
   const goalBanner = document.getElementById('goalModeBanner');
   if (goalBanner) goalBanner.hidden = true;
   const goalPill = document.getElementById('btnGoalToggle');
@@ -2082,16 +2094,17 @@ function cancelActiveGoal(reason = '사용자가 목표 추구를 중단했습�
   timeline.appendChild(card.row);
   const msg = document.createElement('div');
   msg.className = 'text-body';
-  msg.textContent = `🎯 [Goal 중단] ${reason} (총 ${activeGoal.iteration}회차 수행)`;
+  msg.textContent = `🎯 [Goal 중단] ${reason} (총 ${goalObj.iteration}회차 수행)`;
   card.content.appendChild(msg);
   timeline.scrollTop = timeline.scrollHeight;
-  activeGoal = null;
   setGeneratingState(false);
 }
 
 function finishActiveGoal(summary = '목표가 완료되었습니다.') {
   if (!activeGoal) return;
-  if (activeGoal.timer) { clearTimeout(activeGoal.timer); activeGoal.timer = null; }
+  const goalObj = activeGoal;
+  activeGoal = null;
+  if (goalObj.timer) { clearTimeout(goalObj.timer); goalObj.timer = null; }
   const goalBanner = document.getElementById('goalModeBanner');
   if (goalBanner) goalBanner.hidden = true;
   const goalPill = document.getElementById('btnGoalToggle');
@@ -2100,10 +2113,9 @@ function finishActiveGoal(summary = '목표가 완료되었습니다.') {
   timeline.appendChild(card.row);
   const msg = document.createElement('div');
   msg.className = 'text-body';
-  msg.textContent = `🎯 [Goal 완료] ${summary} (총 ${activeGoal.iteration}회차 수행 완료)`;
+  msg.textContent = `🎯 [Goal 완료] ${summary} (총 ${goalObj.iteration}회차 수행 완료)`;
   card.content.appendChild(msg);
   timeline.scrollTop = timeline.scrollHeight;
-  activeGoal = null;
   setGeneratingState(false);
 }
 
@@ -2177,9 +2189,23 @@ async function runGoalIterationTurn(turnPrompt) {
     cancelActiveGoal(`목표 진행이 차단되었습니다 (${blockedMatch[1] || '사유 미제시'})`);
   } else if (Date.now() >= activeGoal.deadline) {
     finishActiveGoal(`지정된 시간(${Math.round(activeGoal.durationMs / 60000)}분)이 만료되어 목표 추구를 마쳤습니다.`);
-  } else if (!turnResult.ok && turnResult.error && turnResult.error.name === 'AbortError') {
-    cancelActiveGoal('사용자가 작업을 중단했습니다.');
+  } else if (!turnResult.ok) {
+    if (turnResult.error && turnResult.error.name === 'AbortError') {
+      cancelActiveGoal('사용자가 작업을 중단했습니다.');
+    } else {
+      activeGoal.consecutiveErrors = (activeGoal.consecutiveErrors || 0) + 1;
+      if (activeGoal.consecutiveErrors >= 3) {
+        cancelActiveGoal(`반복된 오류로 인해 목표 추구를 안전하게 중단했습니다: ${turnResult.error?.message || '실행 오류'}`);
+      } else {
+        const retryDelay = activeGoal.consecutiveErrors * 4000;
+        appendTurnNotice(assistantCard, `⚠️ 실행 오류 발생 (${activeGoal.consecutiveErrors}/3). ${retryDelay / 1000}초 후 재시도합니다.`, 'warning');
+        activeGoal.timer = setTimeout(() => {
+          if (activeGoal) void runGoalIterationTurn(turnPrompt);
+        }, retryDelay);
+      }
+    }
   } else {
+    activeGoal.consecutiveErrors = 0;
     activeGoal.iteration++;
     const remainingMin = Math.max(1, Math.ceil((activeGoal.deadline - Date.now()) / 60000));
     const goalModeText = document.getElementById('goalModeText');
@@ -2254,6 +2280,9 @@ async function executeTurnCore({
             fullResponse += event.delta;
           } else if (event.type === 'turn_complete' && event.summary?.response?.content) {
             fullResponse = event.summary.response.content;
+          } else if (event.type === 'turn_error') {
+            turnError = new Error(event.message || event.error || event.category || '턴 실행 중 오류가 발생했습니다.');
+            if (assistantCard) assistantCard.workOutcome = 'error';
           }
           handleStreamEvent(event, assistantCard);
         } catch (_) {}
@@ -2262,7 +2291,9 @@ async function executeTurnCore({
 
     await refreshPriorityStatus();
     await loadSessions();
-    turnOk = true;
+    if (!turnError) {
+      turnOk = true;
+    }
 
   } catch (err) {
     turnError = err;
@@ -2950,6 +2981,9 @@ window.copyAssistantText = function(btn) {
 // ============================================================================
 
 function startNewSession() {
+  if (activeGoal) {
+    cancelActiveGoal('새 대화를 시작하여 이전 목표 추구를 중단했습니다.');
+  }
   currentSessionId = `session_${Date.now()}`;
   if (typeof applyFullAccessModeForSession === 'function') applyFullAccessModeForSession(currentSessionId, true);
   currentCodexThreadId = null;
@@ -3855,6 +3889,9 @@ function renderProjectGroups(container, projects) {
 }
 
 async function loadSession(sessionId, title, source = null) {
+  if (activeGoal) {
+    cancelActiveGoal('다른 대화로 전환하여 이전 목표 추구를 중단했습니다.');
+  }
   const hasComposerDraft = String(composerInput.value || '').trim().length > 0;
   if (sessionResumePendingCount === 0 && (hasComposerDraft || currentAbortController || isGenerating || isRecording)) {
     const status = document.getElementById('sessionListStatus');
