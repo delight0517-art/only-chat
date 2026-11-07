@@ -26,6 +26,8 @@ class MetamorphicHub extends EventEmitter {
     this.desktopUiDir = options.desktopUiDir || path.join(__dirname, '../ui/desktop');
     this.stateFile = path.join(this.dataDir, '.morph_state.json');
     this.watchEnabled = options.watchEnabled !== false;
+    this.watchDebounceMs = Number.isFinite(options.watchDebounceMs) && options.watchDebounceMs >= 0 ? options.watchDebounceMs : 40;
+    this.organLockTtlMs = Number.isFinite(options.organLockTtlMs) && options.organLockTtlMs > 0 ? options.organLockTtlMs : 5 * 60_000;
     this.canMutate = options.canMutate || (() => true);
 
     // Decoupled Organ Slots
@@ -37,9 +39,12 @@ class MetamorphicHub extends EventEmitter {
     };
 
     // Single Source of Truth & Collision Shield Ledger
-    this.collisionLedger = new Map(); // path -> { lockedBy, version, hash }
+    this.collisionLedger = new Map(); // organKind -> { lockedBy, acquiredAt, expiresAt }
+    this.pendingMutations = [];
     this.activeSseClients = new Set();
     this.watchers = [];
+    this._watchTimers = new Map();
+    this._recentSelfWriteUntil = new Map();
 
     this._ensureOrgansStructure();
     if (this.watchEnabled) this.startLiveWatchers();
@@ -155,21 +160,85 @@ class MetamorphicHub extends EventEmitter {
     console.log(`[MetamorphicHub] ⚡️ 신체 변형(핫리로드) 전송 완료: [${organKind}] (v${slot?.version || 1})`);
   }
 
+  pruneExpiredOrganLocks() {
+    const now = Date.now();
+    for (const [organKind, entry] of this.collisionLedger.entries()) {
+      if (Number.isFinite(entry.expiresAt) && entry.expiresAt <= now) {
+        this.collisionLedger.delete(organKind);
+      }
+    }
+  }
+
+  acquireOrganLock(organKind, ownerId, ttlMs = this.organLockTtlMs) {
+    this._organFile(organKind);
+    this.pruneExpiredOrganLocks();
+    const existing = this.collisionLedger.get(organKind);
+    if (existing && existing.lockedBy !== ownerId) {
+      return { acquired: false, holder: existing.lockedBy, expiresAt: existing.expiresAt };
+    }
+    const now = Date.now();
+    const entry = {
+      lockedBy: ownerId,
+      acquiredAt: existing?.lockedBy === ownerId ? existing.acquiredAt : now,
+      expiresAt: now + ttlMs
+    };
+    this.collisionLedger.set(organKind, entry);
+    return { acquired: true, holder: ownerId, expiresAt: entry.expiresAt };
+  }
+
+  releaseOrganLock(organKind, ownerId = null) {
+    const existing = this.collisionLedger.get(organKind);
+    if (!existing) return false;
+    if (ownerId && existing.lockedBy !== ownerId) return false;
+    this.collisionLedger.delete(organKind);
+    return true;
+  }
+
   /**
    * Surgical Mutation: AI or user changes a specific organ without touching others
    */
   mutateOrgan(organKind, key, value, author = 'ai-developer', options = {}) {
-    if (!this.canMutate()) throw new Error('Hot reload is blocked while a request or file write is in progress.');
     const targetConfigFile = this._organFile(organKind);
     if (!fs.existsSync(targetConfigFile)) {
       throw new Error(`Organ slot '${organKind}' not found.`);
     }
+    const contractVersion = 1;
+    if (options.expectedSchemaVersion != null && options.expectedSchemaVersion !== contractVersion) {
+      throw new Error('Unsupported morph organ contract version.');
+    }
+    if (options.lockOwner) {
+      const lockCheck = this.acquireOrganLock(organKind, options.lockOwner, options.lockTtlMs);
+      if (!lockCheck.acquired) {
+        throw new Error(`Organ '${organKind}' is currently locked by '${lockCheck.holder}'.`);
+      }
+    }
+
+    if (!this.canMutate()) {
+      if (options.deferIfBusy === true) {
+        const rawNow = fs.readFileSync(targetConfigFile, 'utf8');
+        const currentHash = this._hash(rawNow);
+        if (options.expectedHash != null && options.expectedHash !== currentHash) {
+          throw new Error('Organ changed since it was read; refresh and retry.');
+        }
+        if (options.expectedHash == null) {
+          this.pendingMutations = this.pendingMutations.filter(item =>
+            !(item.organKind === organKind && item.key === key && item.options?.expectedHash == null));
+        }
+        this.pendingMutations.push({
+          organKind,
+          key,
+          value,
+          author,
+          options: { ...options, deferIfBusy: false }
+        });
+        return { ok: true, queued: true, organ: organKind, key, value, contractVersion, pendingCount: this.pendingMutations.length };
+      }
+      throw new Error('Hot reload is blocked while a request or file write is in progress.');
+    }
 
     const raw = fs.readFileSync(targetConfigFile, 'utf8');
     const currentHash = this._hash(raw);
-    const contractVersion = 1;
     if (options.expectedHash != null && options.expectedHash !== currentHash) throw new Error('Organ changed since it was read; refresh and retry.');
-    if (options.expectedSchemaVersion != null && options.expectedSchemaVersion !== contractVersion) throw new Error('Unsupported morph organ contract version.');
     const data = JSON.parse(raw);
     const oldValue = data[key];
     data[key] = value;
@@ -177,17 +246,40 @@ class MetamorphicHub extends EventEmitter {
     data._updatedAt = Date.now();
 
     const tempFile = `${targetConfigFile}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    this._recentSelfWriteUntil.set(path.resolve(targetConfigFile), Date.now() + Math.max(150, this.watchDebounceMs * 4));
     try {
       fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), { flag: 'wx', mode: 0o600 });
       fs.renameSync(tempFile, targetConfigFile);
     } catch (error) {
+      this._recentSelfWriteUntil.delete(path.resolve(targetConfigFile));
       try { fs.unlinkSync(tempFile); } catch (_) {}
       throw error;
     }
 
     // Notify UI immediately
     this.broadcastMorph(organKind, { key, oldValue, newValue: value, data });
-    return { ok: true, organ: organKind, key, value, contractVersion, hash: this._hash(fs.readFileSync(targetConfigFile)) };
+    return { ok: true, queued: false, organ: organKind, key, value, contractVersion, hash: this._hash(fs.readFileSync(targetConfigFile)) };
+  }
+
+  flushPendingMutations() {
+    if (!this.canMutate() || this.pendingMutations.length === 0) {
+      return { flushed: 0, results: [], errors: [], remaining: this.pendingMutations.length };
+    }
+    const batch = this.pendingMutations.splice(0, this.pendingMutations.length);
+    const results = [];
+    const errors = [];
+    for (const item of batch) {
+      if (!this.canMutate()) {
+        this.pendingMutations.unshift(item);
+        break;
+      }
+      try {
+        results.push(this.mutateOrgan(item.organKind, item.key, item.value, item.author, item.options));
+      } catch (error) {
+        errors.push({ organ: item.organKind, key: item.key, error: error.message });
+      }
+    }
+    return { flushed: results.length, results, errors, remaining: this.pendingMutations.length };
   }
 
   getOrganData(organKind) {
@@ -202,9 +294,11 @@ class MetamorphicHub extends EventEmitter {
   }
 
   getHubStatus() {
+    this.pruneExpiredOrganLocks();
     return {
       slots: this.slots,
       activeClientsCount: this.activeSseClients.size,
+      pendingMutationsCount: this.pendingMutations.length,
       hotReload: {
         organData: 'live configuration update',
         rendererCss: 'live stylesheet update',
@@ -221,6 +315,27 @@ class MetamorphicHub extends EventEmitter {
     };
   }
 
+  _isIgnoredWatchPath(filename) {
+    if (!filename || typeof filename !== 'string') return true;
+    const normalized = filename.replace(/\\/g, '/');
+    const base = path.posix.basename(normalized);
+    if (!base) return true;
+    if (base.endsWith('.tmp') || base.endsWith('.swp') || base.endsWith('.swo') || base.endsWith('~') || base.startsWith('.#') || base === '.DS_Store') {
+      return true;
+    }
+    if (normalized === '.git' || normalized.startsWith('.git/') || normalized.includes('/.git/')) {
+      return true;
+    }
+    return false;
+  }
+
+  _classifyWatchOrgan(filename) {
+    if (filename.includes('theme') || filename.endsWith('.css')) return 'theme';
+    if (filename.includes('font')) return 'font';
+    if (filename.endsWith('.html') || filename.endsWith('.js')) return 'ui';
+    return 'features';
+  }
+
   startLiveWatchers() {
     this.stopWatchers();
     if (!this.watchEnabled) return;
@@ -230,17 +345,22 @@ class MetamorphicHub extends EventEmitter {
       if (!fs.existsSync(d)) continue;
       try {
         const watcher = fs.watch(d, { recursive: true }, (event, filename) => {
-          if (!filename) return;
-          // Debounce and classify
-          if (filename.includes('theme') || filename.endsWith('.css')) {
-            this.broadcastMorph('theme', { file: filename });
-          } else if (filename.includes('font')) {
-            this.broadcastMorph('font', { file: filename });
-          } else if (filename.endsWith('.html') || filename.endsWith('.js')) {
-            this.broadcastMorph('ui', { file: filename });
-          } else {
-            this.broadcastMorph('features', { file: filename });
-          }
+          if (this._isIgnoredWatchPath(filename)) return;
+          const resolvedFile = path.resolve(d, filename);
+          const suppressUntil = this._recentSelfWriteUntil.get(resolvedFile);
+          if (suppressUntil && Date.now() <= suppressUntil) return;
+          if (suppressUntil) this._recentSelfWriteUntil.delete(resolvedFile);
+
+          const organ = this._classifyWatchOrgan(filename);
+          const timerKey = `${organ}:${resolvedFile}`;
+          const prevTimer = this._watchTimers.get(timerKey);
+          if (prevTimer) clearTimeout(prevTimer);
+          const timer = setTimeout(() => {
+            this._watchTimers.delete(timerKey);
+            this.broadcastMorph(organ, { file: filename });
+          }, this.watchDebounceMs);
+          if (typeof timer.unref === 'function') timer.unref();
+          this._watchTimers.set(timerKey, timer);
         });
         this.watchers.push(watcher);
       } catch (_) {}
@@ -248,6 +368,10 @@ class MetamorphicHub extends EventEmitter {
   }
 
   stopWatchers() {
+    for (const timer of this._watchTimers.values()) {
+      clearTimeout(timer);
+    }
+    this._watchTimers.clear();
     for (const w of this.watchers) {
       try { w.close(); } catch (_) {}
     }

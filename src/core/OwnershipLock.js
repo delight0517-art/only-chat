@@ -14,7 +14,9 @@ const { execSync } = require('node:child_process');
 class OwnershipLock {
   constructor(options = {}) {
     this.workspaceDir = options.workspaceDir || process.cwd();
-    this.locks = new Map(); // normalizedFilePath -> { taskId, acquiredAt }
+    this.leaseTtlMs = Number.isFinite(options.leaseTtlMs) && options.leaseTtlMs > 0 ? options.leaseTtlMs : 10 * 60_000;
+    this.now = typeof options.now === 'function' ? options.now : () => Date.now();
+    this.locks = new Map(); // normalizedFilePath -> { taskId, acquiredAt, expiresAt }
     this.registeredModules = new Map(); // moduleName -> { kind: 'ui'|'logic'|'font', path }
   }
 
@@ -25,8 +27,25 @@ class OwnershipLock {
     return path.normalize(path.resolve(this.workspaceDir, filePath));
   }
 
+  /**
+   * Remove expired file locks so aborted or timed-out workers never block future tasks forever.
+   */
+  pruneExpiredLocks() {
+    const currentNow = this.now();
+    const reclaimed = [];
+    for (const [filePath, holder] of this.locks.entries()) {
+      if (Number.isFinite(holder.expiresAt) && holder.expiresAt <= currentNow) {
+        this.locks.delete(filePath);
+        reclaimed.push({ file: filePath, taskId: holder.taskId, acquiredAt: holder.acquiredAt, expiresAt: holder.expiresAt });
+      }
+    }
+    return reclaimed;
+  }
+
   /** Acquire conflict-free paths; overlapping paths remain available to their current owner. */
-  acquireLocks(taskId, filePaths = []) {
+  acquireLocks(taskId, filePaths = [], options = {}) {
+    this.pruneExpiredLocks();
+    const ttlMs = Number.isFinite(options.ttlMs) && options.ttlMs > 0 ? options.ttlMs : this.leaseTtlMs;
     const normalized = [...new Set(filePaths.map(f => this.normalizePath(f)))];
     const acquiredPaths = [];
     const blockedPaths = [];
@@ -38,7 +57,7 @@ class OwnershipLock {
       if (conflicts.length) {
         blockedPaths.push(requested);
         for (const [file, holder] of conflicts) {
-          blockers.push({ requestedPath: requested, file, taskId: holder.taskId });
+          blockers.push({ requestedPath: requested, file, taskId: holder.taskId, expiresAt: holder.expiresAt });
         }
       } else {
         acquiredPaths.push(requested);
@@ -46,8 +65,14 @@ class OwnershipLock {
     }
 
     // Keep independent files usable when another task owns only part of a batch.
+    const currentNow = this.now();
     for (const f of acquiredPaths) {
-      this.locks.set(f, { taskId, acquiredAt: Date.now() });
+      const existing = this.locks.get(f);
+      this.locks.set(f, {
+        taskId,
+        acquiredAt: existing?.taskId === taskId ? existing.acquiredAt : currentNow,
+        expiresAt: currentNow + ttlMs
+      });
     }
 
     const firstBlocker = blockers[0];
@@ -83,6 +108,40 @@ class OwnershipLock {
     for (const [f, holder] of this.locks.entries()) {
       if (holder.taskId === taskId && (!releaseSet || releaseSet.has(f))) this.locks.delete(f);
     }
+  }
+
+  /**
+   * Extend active locks held by `taskId`.
+   */
+  renewLocks(taskId, filePaths = null, ttlMs = this.leaseTtlMs) {
+    this.pruneExpiredLocks();
+    const renewSet = filePaths ? new Set(filePaths.map(f => this.normalizePath(f))) : null;
+    const currentNow = this.now();
+    let renewed = 0;
+    for (const [f, holder] of this.locks.entries()) {
+      if (holder.taskId === taskId && (!renewSet || renewSet.has(f))) {
+        holder.expiresAt = currentNow + ttlMs;
+        renewed += 1;
+      }
+    }
+    return renewed;
+  }
+
+  /**
+   * Hand off locks from `fromTaskId` to `toTaskId` when authorized.
+   */
+  transferLocks(fromTaskId, toTaskId, filePaths = null, ttlMs = this.leaseTtlMs) {
+    this.pruneExpiredLocks();
+    const transferSet = filePaths ? new Set(filePaths.map(f => this.normalizePath(f))) : null;
+    const currentNow = this.now();
+    const transferred = [];
+    for (const [f, holder] of this.locks.entries()) {
+      if (holder.taskId === fromTaskId && (!transferSet || transferSet.has(f))) {
+        this.locks.set(f, { taskId: toTaskId, acquiredAt: currentNow, expiresAt: currentNow + ttlMs });
+        transferred.push(f);
+      }
+    }
+    return transferred;
   }
 
   /**
@@ -133,11 +192,13 @@ class OwnershipLock {
   }
 
   getActiveLocks() {
+    this.pruneExpiredLocks();
     return Array.from(this.locks.entries()).map(([filePath, holder]) => ({
       file: filePath,
       fileName: path.basename(filePath),
       taskId: holder.taskId,
-      acquiredAt: holder.acquiredAt
+      acquiredAt: holder.acquiredAt,
+      expiresAt: holder.expiresAt
     }));
   }
 }

@@ -66,7 +66,10 @@ async function testParallelSystem() {
   // Attempt to acquire same file from another task
   const lock2 = lock.acquireLocks('task_worker_2', ['src/app.js']);
   assert.strictEqual(lock2.acquired, false);
-  assert.ok(lock2.reason.includes('병렬 충돌 방지를 위해 직렬화 대기합니다'));
+  assert.strictEqual(lock2.status, 'blocked');
+  assert.deepStrictEqual(lock2.blockedPaths, [path.join(tmpDir, 'src/app.js')]);
+  assert.strictEqual(lock2.blockers[0].taskId, 'task_worker_1');
+  assert.ok(lock2.reason.includes('task_worker_1'));
   console.log('  ✓ 동일 파일 동시 수정 시 충돌 방지 대기(Serialization) 정상 작동 확인');
 
   lock.releaseLocks('task_worker_1', ['src/app.js']);
@@ -75,7 +78,19 @@ async function testParallelSystem() {
   lock.releaseLocks('task_worker_1');
   const lock3 = lock.acquireLocks('task_worker_2', ['src/app.js']);
   assert.strictEqual(lock3.acquired, true);
-  console.log('  ✓ 이전 작업 완료 후 잠금 해제 및 다음 작업 락 획득 성공');
+  lock.releaseLocks('task_worker_2');
+
+  // TTL auto-expiry & transfer verification (prevents dead worker permanent deadlock)
+  let fakeNow = 1_000_000;
+  const ttlLock = new OwnershipLock({ workspaceDir: tmpDir, leaseTtlMs: 5_000, now: () => fakeNow });
+  assert.strictEqual(ttlLock.acquireLocks('stalled_worker', ['src/stalled.js']).acquired, true);
+  assert.strictEqual(ttlLock.acquireLocks('healthy_worker', ['src/stalled.js']).acquired, false);
+  fakeNow += 6_000;
+  assert.strictEqual(ttlLock.acquireLocks('healthy_worker', ['src/stalled.js']).acquired, true,
+    'expired lock from stalled worker must be automatically reclaimed');
+  assert.strictEqual(ttlLock.transferLocks('healthy_worker', 'handoff_worker').length, 1);
+  assert.strictEqual(ttlLock.getActiveLocks()[0].taskId, 'handoff_worker');
+  console.log('  ✓ 이전 작업 완료/만료 자동 회수 및 소유권 전이(transferLocks) 정상 작동 확인');
 
   // 4. Windows Handoff & Resume Test
   console.log('▶ Test 4: 재시작 자동 복구 및 Windows handoff 번들 생성 검증');

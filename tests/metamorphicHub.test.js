@@ -83,7 +83,39 @@ async function testMetamorphicHub() {
   // 3. Collision Shield Test (Prevent uncommitted branch drift)
   console.log('▶ Test 3: 단일 진실 원천(Single Source) 잠금 및 버전 일치성 검증');
   assert.strictEqual(hub.slots.theme.version, 2);
+  const lock1 = hub.acquireOrganLock('theme', 'worker-a', 200);
+  assert.strictEqual(lock1.acquired, true);
+  assert.strictEqual(hub.acquireOrganLock('theme', 'worker-b', 200).acquired, false);
+  assert.throws(() => hub.mutateOrgan('theme', 'accentCyan', '#000000', 'worker-b', { lockOwner: 'worker-b' }), /currently locked/);
+  hub.releaseOrganLock('theme', 'worker-a');
+  assert.strictEqual(hub.acquireOrganLock('theme', 'worker-b', 200).acquired, true);
+  hub.releaseOrganLock('theme', 'worker-b');
   console.log('  ✓ 모듈별 원자적 변경이 단일 레저에 기록되어 다중 버전 분기 방지 확인');
+
+  // 4. Temp-file ignore + Deferred Busy Queue Test
+  console.log('▶ Test 4: 임시 파일(.tmp) 감시 무시 및 활성 턴 지연 큐(deferIfBusy) 검증');
+  assert.strictEqual(hub._isIgnoredWatchPath('theme/theme.json.1234.abcd.tmp'), true);
+  assert.strictEqual(hub._isIgnoredWatchPath('.git/index.lock'), true);
+  assert.strictEqual(hub._isIgnoredWatchPath('theme/theme.json'), false);
+
+  let busy = true;
+  const busyHub = new MetamorphicHub({
+    workspaceDir: tmpDir,
+    dataDir: tmpDir,
+    desktopUiDir: tmpDir,
+    watchEnabled: false,
+    canMutate: () => !busy
+  });
+  assert.throws(() => busyHub.mutateOrgan('font', 'baseSize', '15px', 'agent'), /blocked while a request/);
+  const queued = busyHub.mutateOrgan('font', 'baseSize', '15px', 'agent', { deferIfBusy: true });
+  assert.strictEqual(queued.ok, true);
+  assert.strictEqual(queued.queued, true);
+  assert.strictEqual(busyHub.getHubStatus().pendingMutationsCount, 1);
+  busy = false;
+  const flushed = busyHub.flushPendingMutations();
+  assert.strictEqual(flushed.flushed, 1);
+  assert.strictEqual(busyHub.getOrganData('font').baseSize, '15px');
+  console.log('  ✓ 활성 턴 중 변형 요청 유실 방지 및 턴 종료 후 원자적 반영 확인');
 
   console.log('\n🎉 [성공] 핫리로드 _ 신체 변형 시스템 검증 100% 완료!');
   return true;
