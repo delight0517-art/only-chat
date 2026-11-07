@@ -55,6 +55,9 @@ async function verifyHelperRoutes() {
     assert.equal(typeof browserContext.window[globalName], 'object', `${asset} installs ${globalName} on window`);
     assert.equal(typeof browserContext.window[globalName]?.[methodName], 'function', `${asset} exposes its browser global`);
   }
+  const notionOauthRes = await request('/notion-oauth.js');
+  assert.equal(notionOauthRes.status, 200, 'notion-oauth.js is served');
+  assert.match(notionOauthRes.headers['Content-Type'] || '', /^application\/javascript(?:;|$)/);
   for (const unlistedPath of ['/unlisted.js', '/..%2FinternalSessionGrouping.js', '/%2e%2e%2FinternalSessionGrouping.js']) {
     const response = await request(unlistedPath);
     assert.equal(response.status, 404, `${unlistedPath} remains unserved`);

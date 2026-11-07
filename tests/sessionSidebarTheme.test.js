@@ -29,6 +29,8 @@ for (const id of ['railHomeBtn', 'railProjectsBtn', 'railHistoryBtn']) {
   assert.match(app, new RegExp(`${id}\\?\\.addEventListener`), `${id} navigates to its sidebar section`);
 }
 assert.match(app, /target\?\.scrollIntoView\(/, 'sidebar navigation scrolls to the requested section');
+assert.match(app, /ensureSidebarVisible\(\)/, 'sidebar navigation restores sidebar visibility if hidden');
+assert.match(app, /e\.key\.toLowerCase\(\) === 'b'/, 'Cmd+B or Ctrl+B toggles sidebar');
 
 console.log('session sidebar theme and startup wiring passed');
 

@@ -375,12 +375,38 @@ function setupEventListeners() {
   document.getElementById('btnRefreshWorkspaceOwnership')?.addEventListener('click', () => {
     void refreshWorkspaceOwnership();
   });
+  const sidebarEl = document.getElementById('sidebar');
+  const ensureSidebarVisible = () => {
+    if (sidebarEl && (sidebarEl.style.display === 'none' || sidebarEl.hidden)) {
+      sidebarEl.style.display = 'flex';
+      sidebarEl.hidden = false;
+      try { localStorage.setItem('onlychat.sidebar.visible', 'true'); } catch (_) {}
+    }
+  };
+  const toggleSidebar = () => {
+    if (!sidebarEl) return;
+    const isHidden = sidebarEl.style.display === 'none' || sidebarEl.hidden;
+    sidebarEl.style.display = isHidden ? 'flex' : 'none';
+    sidebarEl.hidden = !isHidden;
+    try { localStorage.setItem('onlychat.sidebar.visible', String(isHidden)); } catch (_) {}
+  };
+
+  try {
+    const savedSidebarVisible = localStorage.getItem('onlychat.sidebar.visible');
+    if (savedSidebarVisible === 'false' && sidebarEl) {
+      sidebarEl.style.display = 'none';
+      sidebarEl.hidden = true;
+    }
+  } catch (_) {}
+
   const focusSidebarSection = (button, target) => {
+    ensureSidebarVisible();
     document.querySelectorAll('.activity-rail .rail-item').forEach(item => item.classList.toggle('active', item === button));
     target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   railHomeBtn?.addEventListener('click', () => {
+    ensureSidebarVisible();
     document.querySelectorAll('.activity-rail .rail-item').forEach(item => item.classList.toggle('active', item === railHomeBtn));
     sidebarScrollable?.scrollTo({ top: 0, behavior: 'smooth' });
   });
@@ -630,6 +656,9 @@ function setupEventListeners() {
     if (e.metaKey !== e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && e.key.toLowerCase() === 'n') {
       e.preventDefault();
       startNewSession();
+    } else if (e.metaKey !== e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && e.key.toLowerCase() === 'b') {
+      e.preventDefault();
+      toggleSidebar();
     } else if (e.metaKey !== e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat && e.key.toLowerCase() === 't' && drawerBrowser?.classList.contains('open')) {
       e.preventDefault();
       addBrowserTab();
@@ -869,10 +898,7 @@ function setupEventListeners() {
   document.getElementById('btnRegisterAccount').addEventListener('click', handleRegisterAccount);
 
   // Sidebar toggle button in titlebar
-  const sidebarEl = document.getElementById('sidebar');
-  document.getElementById('btnToggleSidebar').addEventListener('click', () => {
-    sidebarEl.style.display = sidebarEl.style.display === 'none' ? 'flex' : 'none';
-  });
+  document.getElementById('btnToggleSidebar')?.addEventListener('click', toggleSidebar);
 
   // Auto-resize textarea
   composerInput.addEventListener('input', () => {
@@ -3081,7 +3107,7 @@ function setDropTargetFeedback(target, active) {
 }
 
 function attachSessionDropTarget(target, destination) {
-  if (!target || target.dataset.sessionDropReady === 'true') return;
+  if (!target || !target.dataset || target.dataset.sessionDropReady === 'true') return;
   target.dataset.sessionDropReady = 'true';
   target.classList.add('session-drop-target');
   target.setAttribute('aria-label', destination.type === 'section'
@@ -3139,8 +3165,10 @@ function attachSessionDropTarget(target, destination) {
   });
 }
 
-attachSessionDropTarget(document.getElementById('pinnedSessionGroup'), { type: 'pinned' });
-attachSessionDropTarget(document.querySelector('[data-drop-type="recents"]'), { type: 'recents' });
+const initialPinnedGroup = document.getElementById('pinnedSessionGroup');
+if (initialPinnedGroup) attachSessionDropTarget(initialPinnedGroup, { type: 'pinned' });
+const initialRecentsGroup = document.querySelector('[data-drop-type="recents"]');
+if (initialRecentsGroup) attachSessionDropTarget(initialRecentsGroup, { type: 'recents' });
 
 function hideSessionContextMenu({ restoreFocus = false } = {}) {
   const trigger = sessionContextTarget?.trigger;
@@ -3672,8 +3700,13 @@ function renderFilteredSessions({ forceSearch = false } = {}) {
     allItems = allItems.filter(s => s.source === 'internal' || !s.source);
   }
 
-  if (allItems.length === 0) recentsList.textContent = '해당 필터에 세션이 없습니다.';
-  else renderSessionItems(recentsList, allItems);
+  if (allItems.length === 0) {
+    recentsList.textContent = cachedUnifiedData?.isolated
+      ? 'SpaceO 격리 세션 모드 · 아직 기록된 세션이 없습니다.'
+      : '해당 필터에 세션이 없습니다.';
+  } else {
+    renderSessionItems(recentsList, allItems);
+  }
   const archived = currentFilter === 'all' || currentFilter === 'internal' ? internal.filter(session => session.archived) : [];
   const archiveGroup = document.getElementById('archivedSessionGroup');
   const archiveList = document.getElementById('archivedSessionList');

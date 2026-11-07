@@ -1200,6 +1200,11 @@ class DesktopServer {
       return;
     }
 
+    if (pathname === '/notion-oauth.js') {
+      this._serveFile(res, path.join(this.staticDir, 'notion-oauth.js'), 'application/javascript; charset=utf-8');
+      return;
+    }
+
     // API Routes
     if (pathname === '/api/status' && req.method === 'GET') {
       let routerChain = null;
@@ -1414,11 +1419,18 @@ class DesktopServer {
 
     if (pathname === '/api/sessions' && req.method === 'GET') {
       const internal = this.engine.sessions.listSessions();
-      const unified = this.nativeSessions.listUnifiedSessions();
+      let unified = this.nativeSessions.listUnifiedSessions();
+      if (this.isolated && (!unified || (!unified.sections?.length && !unified.projects?.length))) {
+        try {
+          const fallbackBridge = new NativeSessionBridge();
+          unified = fallbackBridge.listUnifiedSessions();
+        } catch (_) {}
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         internal,
-        unified
+        unified,
+        isolated: this.isolated
       }));
       return;
     }
