@@ -1213,13 +1213,15 @@ class DesktopServer {
         const unverified = routerChain.providerState === 'unverified'
           || routerChain.accounts.some(account => account.availability === 'unverified');
         Object.assign(this.engine.accountRouterReadiness, {
-          available: configured ? null : false,
-          connected: false,
+          available: configured ? (unverified ? null : true) : false,
+          connected: configured && !unverified,
           verified: false,
-          state: unverified ? 'unverified' : configured ? 'unknown' : 'unconfigured',
-          message: unverified
-            ? 'AI Account Router 계정 자격 증명이 아직 검증되지 않았습니다.'
-            : configured ? 'AI Account Router 실제 요청 확인이 필요합니다.' : 'AI Account Router에 사용 가능한 계정이 없습니다.'
+          state: !configured ? 'unconfigured' : unverified ? 'unverified' : 'configured',
+          message: !configured
+            ? 'AI Account Router에 사용 가능한 계정이 없습니다.'
+            : unverified
+              ? 'AI Account Router 계정 자격 증명이 아직 검증되지 않았습니다.'
+              : 'AI Account Router 연결됨'
         });
       }
       const status = this.getPriorityStatus();
@@ -2318,7 +2320,7 @@ class DesktopServer {
       }
       if (body.fullAccess === true) {
         const chain = this.engine.priorityChain;
-        const selectedTier = accountRouterModelAllowed ? null : !chain.chain.enabled && typeof body.overrideTierId === 'string'
+        const selectedTier = !chain.chain.enabled && typeof body.overrideTierId === 'string'
           ? chain.chain.tiers.find(tier => tier.id === body.overrideTierId)
           : normalizedModelSelection === 'auto'
             ? chain.resolveActiveTier()
@@ -2328,8 +2330,10 @@ class DesktopServer {
               && tier.health?.isThrottled !== true)
               .sort((a, b) => (Number(a.tier) || Number.MAX_SAFE_INTEGER) - (Number(b.tier) || Number.MAX_SAFE_INTEGER))[0];
         const codexConnected = selectedTier?.provider === 'codex' && this.codexAdapter?.getReadiness(selectedTier).connected === true;
-        const routerConnected = selectedTier?.provider === 'account-router' && accountRouterModelAllowed;
-        if (this.approvalPolicy === 'read-only' || (!codexConnected && !accountRouterModelAllowed && !routerConnected)) {
+        const routerConnected = (selectedTier?.provider === 'account-router' || normalizedModelSelection === 'auto' || Boolean(selectedAccountRouterModel)) && accountRouterModelAllowed;
+        const fallbackCodexAvailable = normalizedModelSelection === 'auto' && chain.chain.tiers.some(tier =>
+          tier.enabled !== false && tier.provider === 'codex' && this.codexAdapter?.getReadiness(tier).connected === true);
+        if (this.approvalPolicy === 'read-only' || (!codexConnected && !accountRouterModelAllowed && !routerConnected && !fallbackCodexAvailable)) {
           res.writeHead(409, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: this.approvalPolicy === 'read-only'
             ? '읽기 전용 정책에서는 Full access를 사용할 수 없습니다.'
@@ -2553,10 +2557,10 @@ class DesktopServer {
           reasoningEffort: effectiveReasoningEffort,
           toolProfile: body.toolProfile || null,
           fullAccess: body.fullAccess === true,
-          routerModelSelection: accountRouterModelAllowed ? selectedAccountRouterModel
+          routerModelSelection: accountRouterModelAllowed && selectedAccountRouterModel ? selectedAccountRouterModel
             : freeRouterModelAllowed && effectiveModelSelection === normalizedModelSelection ? normalizedModelSelection : null,
-          accountRouterModelSelection: accountRouterModelAllowed ? selectedAccountRouterModel : null,
-          modelSelection: accountRouterModelAllowed ? 'auto' : effectiveModelSelection,
+          accountRouterModelSelection: accountRouterModelAllowed && selectedAccountRouterModel ? selectedAccountRouterModel : null,
+          modelSelection: accountRouterModelAllowed && selectedAccountRouterModel ? 'auto' : effectiveModelSelection,
           managerMode,
           managerSystemMessage,
           managerExecutionAllowed,

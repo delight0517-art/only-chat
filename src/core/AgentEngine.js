@@ -477,13 +477,15 @@ class AgentEngine {
       if (!configured || !this.accountRouterReadiness?.verified) {
         const unverified = chain.providerState === 'unverified' || chain.accounts.some(account => account.availability === 'unverified');
         this.accountRouterReadiness = Object.assign(this.accountRouterReadiness || {}, {
-          available: configured ? null : false,
-          connected: false,
+          available: configured ? (unverified ? null : true) : false,
+          connected: configured && !unverified,
           verified: false,
-          state: unverified ? 'unverified' : configured ? 'unknown' : 'unconfigured',
-          message: unverified
-            ? 'AI Account Router 계정 자격 증명이 아직 검증되지 않았습니다.'
-            : configured ? 'AI Account Router 실제 요청 확인이 필요합니다.' : 'AI Account Router에 사용 가능한 계정이 없습니다.'
+          state: !configured ? 'unconfigured' : unverified ? 'unverified' : 'configured',
+          message: !configured
+            ? 'AI Account Router에 사용 가능한 계정이 없습니다.'
+            : unverified
+              ? 'AI Account Router 계정 자격 증명이 아직 검증되지 않았습니다.'
+              : 'AI Account Router 연결됨'
         });
       }
       const existingRouter = this.priorityChain.chain.tiers.find(tier => tier.provider === 'account-router');

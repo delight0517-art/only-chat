@@ -2440,12 +2440,12 @@ function handleStreamEvent(event, card) {
         && typeof event.sessionId === 'string' && /^ses_[a-f0-9]{16}$/.test(event.sessionId)) {
         const clientSessionId = currentSessionId;
         currentSessionId = event.sessionId;
-        const inheritedMode = fullAccessSessionModes[clientSessionId];
+        const inheritedMode = typeof fullAccessSessionModes !== 'undefined' ? fullAccessSessionModes[clientSessionId] : undefined;
         if (typeof inheritedMode === 'boolean') {
-          fullAccessEnabled = inheritedMode;
-          delete fullAccessSessionModes[clientSessionId];
-          persistFullAccessSessionMode(event.sessionId);
-          renderFullAccessToggle();
+          if (typeof fullAccessEnabled !== 'undefined') fullAccessEnabled = inheritedMode;
+          if (typeof fullAccessSessionModes !== 'undefined') delete fullAccessSessionModes[clientSessionId];
+          if (typeof persistFullAccessSessionMode === 'function') persistFullAccessSessionMode(event.sessionId);
+          if (typeof renderFullAccessToggle === 'function') renderFullAccessToggle();
         }
         currentCodexThreadId = null;
         void refreshModelSwitchSchedule();
@@ -2699,7 +2699,7 @@ window.copyAssistantText = function(btn) {
 
 function startNewSession() {
   currentSessionId = `session_${Date.now()}`;
-  applyFullAccessModeForSession(currentSessionId, true);
+  if (typeof applyFullAccessModeForSession === 'function') applyFullAccessModeForSession(currentSessionId, true);
   currentCodexThreadId = null;
   void refreshPriorityStatus();
   timeline.innerHTML = '';
@@ -3652,7 +3652,7 @@ async function loadSession(sessionId, title, source = null) {
 
   if (requestId !== sessionLoadRequestId) return false;
   currentSessionId = resumedSession?.sessionId || sessionId;
-  applyFullAccessModeForSession(currentSessionId, false);
+  if (typeof applyFullAccessModeForSession === 'function') applyFullAccessModeForSession(currentSessionId, false);
   currentCodexThreadId = resumedSession?.source === 'codex' && sessionId.startsWith('codex_')
     ? sessionId.slice('codex_'.length)
     : null;
