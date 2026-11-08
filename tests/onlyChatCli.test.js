@@ -256,7 +256,8 @@ async function main() {
       return new Response(turnEvents, { status: 200, headers: { 'content-type': 'text/event-stream' } });
     }
   });
-  assert.equal(goalWorkspaceRun.ok, true);
+  assert.equal(goalWorkspaceRun.ok, false, 'a Goal deadline without explicit completion is incomplete');
+  assert.equal(goalWorkspaceRun.category, 'goal_no_progress', 'repeated identical no-tool turns stop even in fixed-duration mode');
   assert.equal(goalWorkspaceTurns, 2, 'Goal keeps running sequential Only Chat turns until the deadline');
   assert.equal(goalWorkspaceContextReads, 2, 'Goal refreshes the ownership snapshot before each turn');
   assert.equal(goalWorkspaceApprovals.length, 2, 'each Goal turn rechecks the exact workspace scope');
@@ -323,7 +324,8 @@ async function main() {
     baseUrl: 'http://127.0.0.1:8899', prompt: 'start goal', durationMs: 1_000,
     fetchImpl: goalFetch, now: () => now, write: () => {}
   });
-  assert.equal(goal.ok, true);
+  assert.equal(goal.ok, false, 'duration expiry cannot be reported as success');
+  assert.equal(goal.category, 'goal_time_limit');
   assert.equal(goal.iteration, 2, 'the Goal performs sequential turns until its deadline');
   assert.match(goalRequests[1].prompt, /같은 Goal/);
   assert.equal(goalRequests[1].sessionId, 'ses_0123456789abcdef', 'continuation stays in the same Only Chat session');
@@ -346,7 +348,8 @@ async function main() {
     },
     now: () => now, write: () => {}
   });
-  assert.equal(fixedGoal.ok, true);
+  assert.equal(fixedGoal.ok, false, 'fixed-duration expiry cannot be reported as success without completion evidence');
+  assert.equal(fixedGoal.category, 'goal_time_limit');
   assert.equal(fixedGoal.iteration, 2, 'fixed-duration ignores an early GOAL_COMPLETE marker and continues to the deadline');
   assert.equal(fixedGoal.completedEarly, false);
   assert.match(fixedRequests[1].prompt, /전체 시간이 끝나기 전에는 GOAL_COMPLETE/);
@@ -573,6 +576,47 @@ async function main() {
   const ungroundedEnglishSourceAnalysis = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_ungrounded_english_source_analysis', prompt: longEnglishSourcePrompt,
     fetchImpl: async () => new Response([
+  let repeatedBlockerCalls = 0;
+  let repeatedBlockerNow = 1_000;
+  const repeatedBlockerGoal = await runOnlyChatGoal({
+    baseUrl: 'http://127.0.0.1:8899', prompt: 'recover storage safely', durationMs: 60 * 60_000, fixedDuration: true,
+    fetchImpl: async () => {
+      repeatedBlockerCalls++;
+      repeatedBlockerNow += 100;
+      return new Response([
+        `data: ${JSON.stringify({ type: 'message_delta', delta: 'GOAL_STEP_BLOCKED: Google Drive provider refused local eviction.' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`, 'data: [DONE]\n\n'
+      ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    now: () => repeatedBlockerNow, write: () => {}
+  });
+  assert.equal(repeatedBlockerCalls, 2, 'the same root blocker stops after one changed-input retry');
+  assert.equal(repeatedBlockerGoal.ok, false);
+  assert.equal(repeatedBlockerGoal.category, 'goal_no_progress');
+  assert.match(repeatedBlockerGoal.reason, /같은 근본 원인/);
+
+  let hourlyStallCalls = 0;
+  let hourlyStallNow = 1_000;
+  const hourlyStallGoal = await runOnlyChatGoal({
+    baseUrl: 'http://127.0.0.1:8899', prompt: 'investigate a blocked storage route', durationMs: 2 * 60 * 60_000, fixedDuration: true,
+    fetchImpl: async () => {
+      hourlyStallCalls++;
+      hourlyStallNow += hourlyStallCalls === 1 ? 100 : 60 * 60_000;
+      const message = hourlyStallCalls === 1
+        ? 'GOAL_STEP_BLOCKED: File Provider eviction is unavailable.'
+        : 'Still checking the same blocked route.';
+      return new Response([
+        `data: ${JSON.stringify({ type: 'message_delta', delta: message })}\n\n`,
+        `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`, 'data: [DONE]\n\n'
+      ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    now: () => hourlyStallNow, write: () => {}
+  });
+  assert.equal(hourlyStallCalls, 2, 'an unchanged blocker has a one-hour ceiling');
+  assert.equal(hourlyStallGoal.ok, false);
+  assert.equal(hourlyStallGoal.category, 'goal_no_progress');
+  assert.match(hourlyStallGoal.reason, /60분/);
+
       `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_ungrounded_english_source_analysis' })}\n\n`,
       `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
       `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file', args: { path: 'Sources/AutoWiFi/HealthProbe.swift' } }, result: { ok: true, content: 'actual source evidence' } } })}\n\n`,
@@ -953,7 +997,8 @@ async function main() {
     },
     now: () => now, write: () => {}
   });
-  assert.equal(interruptedGoal.ok, true);
+  assert.equal(interruptedGoal.ok, false, 'time expiry after a bounded turn remains incomplete');
+  assert.equal(interruptedGoal.category, 'goal_time_limit');
   assert.equal(interruptedGoal.iteration, 2, 'fixed-duration continues after one bounded tool-call turn');
   assert.equal(interruptedGoalRequests[1].sessionId, 'ses_0123456789abcdef', 'continuation uses the same Only Chat session');
   assert.match(interruptedGoalRequests[1].prompt, /tool_call_limit/, 'the next turn receives the prior bound as a no-repeat clue');
@@ -978,7 +1023,8 @@ async function main() {
     },
     now: () => now, write: () => {}
   });
-  assert.equal(stepBlockedGoal.ok, true);
+  assert.equal(stepBlockedGoal.ok, false, 'time expiry after a blocked subtask remains incomplete');
+  assert.equal(stepBlockedGoal.category, 'goal_time_limit');
   assert.equal(stepBlockedGoal.iteration, 2, 'a blocked subtask advances to a distinct next task in fixed-duration mode');
   assert.match(stepBlockedRequests[1].prompt, /one candidate overlaps an active lease/);
 
@@ -1029,8 +1075,9 @@ async function main() {
     now: () => now, write: () => {}
   });
   assert.equal(blockedGoal.ok, false);
-  assert.equal(blockedGoal.category, 'goal_blocked', 'fixed-duration stops instead of idling when no safe next step exists');
-  assert.equal(blockedGoal.reason, 'MCP workspace read returned an error; verify canonical root access.');
+  assert.equal(blockedGoal.category, 'goal_no_progress', 'a blocked Goal is reported as incomplete with a circuit-breaker checkpoint');
+  assert.match(blockedGoal.reason, /MCP workspace read returned an error; verify canonical root access/);
+  assert.match(blockedGoal.checkpoint.nextAction, /근거 있는 경로/);
 
   console.log('Only Chat CLI duration, scoped approval, and SSE response checks passed');
 }
