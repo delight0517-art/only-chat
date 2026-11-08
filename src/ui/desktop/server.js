@@ -570,9 +570,13 @@ class DesktopServer {
     }
 
     if (pathname === '/api/server/restart' && req.method === 'POST') {
-      if (!origin || !allowedOrigins.has(origin) || (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) {
+      const isLoopbackHost = req.headers.host && (req.headers.host.startsWith('127.0.0.1:') || req.headers.host.startsWith('localhost:'));
+      const isSameOriginHeader = origin && allowedOrigins.has(origin) && req.headers['sec-fetch-site'] === 'same-origin';
+      const isAuthorizedLoopback = !origin && isLoopbackHost && (req.headers['x-onlychat-control'] === '1' || req.headers['authorization']);
+
+      if (!isSameOriginHeader && !isAuthorizedLoopback) {
         res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify({ error: 'Only Chat 화면의 same-origin 요청만 서버 재시작을 요청할 수 있습니다.' }));
+        res.end(JSON.stringify({ error: 'Only Chat 화면의 same-origin 요청 또는 승인된 로컬 제어 호출만 서버 재시작을 요청할 수 있습니다.' }));
         return;
       }
       res.writeHead(202, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -581,6 +585,63 @@ class DesktopServer {
         this.restartRequested = true;
         this.requestServerRestart();
       }
+      return;
+    }
+
+    if (pathname === '/api/system/safe-reset' && req.method === 'POST') {
+      const isLoopbackHost = req.headers.host && (req.headers.host.startsWith('127.0.0.1:') || req.headers.host.startsWith('localhost:'));
+      const isSameOriginHeader = origin && allowedOrigins.has(origin) && req.headers['sec-fetch-site'] === 'same-origin';
+      const isAuthorizedLoopback = !origin && isLoopbackHost && (req.headers['x-onlychat-control'] === '1' || req.headers['authorization']);
+
+      if (!isSameOriginHeader && !isAuthorizedLoopback) {
+        res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'Only Chat 화면의 same-origin 요청 또는 승인된 로컬 제어 호출만 안전 초기화를 요청할 수 있습니다.' }));
+        return;
+      }
+
+      // 1. Release active turns and controllers
+      for (const controller of this.activeTurnControllers || []) {
+        if (!controller.signal?.aborted) controller.abort(new Error('안전 초기화로 작업이 중단되었습니다.'));
+      }
+      // 2. Abort all pending dispatcher tool approvals
+      for (const [requestId, pending] of this.pendingDispatcherToolApprovals) {
+        clearTimeout(pending.timer);
+        this.pendingDispatcherToolApprovals.delete(requestId);
+        pending.resolve(false);
+      }
+      // 3. Clear engine currentSession and reset default workspace
+      const defaultWorkspace = os.homedir();
+      this.engine.currentSession = null;
+      this.engine.workspaceDir = defaultWorkspace;
+
+      // 4. Clean up zombie/stale leases in dataDir and ~/.codex
+      let cleanedLeasesCount = 0;
+      try {
+        const leaseDir = path.join(this.dataDir, 'workspace-leases');
+        if (fs.existsSync(leaseDir)) {
+          for (const file of fs.readdirSync(leaseDir)) {
+            if (file.endsWith('.lock')) {
+              try {
+                const lockFile = path.join(leaseDir, file);
+                const data = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+                if (data.pid) {
+                  try { process.kill(data.pid, 0); } catch (e) {
+                    if (e.code === 'ESRCH') { fs.unlinkSync(lockFile); cleanedLeasesCount++; }
+                  }
+                }
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (_) {}
+
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({
+        ok: true,
+        message: 'Only Chat 작업 및 권한 락이 안전하게 초기화되었습니다.',
+        workspace: defaultWorkspace,
+        cleanedLeases: cleanedLeasesCount
+      }));
       return;
     }
 

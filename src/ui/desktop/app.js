@@ -477,6 +477,11 @@ function setupEventListeners() {
     abortActiveTurn();
   });
 
+  document.getElementById('btnPauseGoal')?.addEventListener('click', () => {
+    pauseActiveGoal('사용자가 목표 추구 배너에서 일시정지했습니다.');
+    abortActiveTurn();
+  });
+
   window.addEventListener('beforeunload', () => {
     if (activeGoal) {
       cancelActiveGoal('앱 종료 또는 새로고침으로 목표 추구를 중단했습니다.');
@@ -750,6 +755,36 @@ function setupEventListeners() {
       if (status) status.textContent = '재시작을 요청했습니다. 안전한 체크포인트가 있으면 앱이 다시 열린 뒤 이어갑니다.';
     } catch (error) {
       if (status) status.textContent = `재시작 요청 실패: ${error.message}`;
+      button.disabled = false;
+    }
+  });
+
+  document.getElementById('btnSafeResetSystem')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
+    const status = document.getElementById('safeResetStatus');
+    if (button.disabled) return;
+    if (!confirm('현재 진행 중인 Goal, 초안 및 작업공간 잠금을 안전하게 초기화하시겠습니까? (과거 대화는 유지됩니다)')) return;
+    button.disabled = true;
+    if (status) status.textContent = '안전 초기화 수행 중…';
+    try {
+      if (activeGoal) pauseActiveGoal('안전 초기화로 보관됨');
+      abortActiveTurn();
+      if (composerInput) composerInput.value = '';
+
+      const response = await fetch('/api/system/safe-reset', {
+        method: 'POST',
+        headers: { 'Accept': 'application/json' },
+        credentials: 'same-origin'
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (status) status.textContent = `초기화 완료: ${result.message} (작업공간: ${result.workspace})`;
+      startNewSession();
+      void loadSessions();
+      void refreshPriorityStatus();
+    } catch (error) {
+      if (status) status.textContent = `초기화 실패: ${error.message}`;
+    } finally {
       button.disabled = false;
     }
   });
@@ -2188,6 +2223,41 @@ function parseClientGoalDuration(val) {
   if (!match) return 30 * 60_000;
   const minutes = Number(match[1]) * (match[2] === 'h' ? 60 : 1);
   return Math.max(1, Math.min(180, minutes)) * 60_000;
+}
+
+function pauseActiveGoal(reason = '사용자가 목표 추구를 일시정지했습니다.') {
+  if (!activeGoal) return;
+  const goalObj = activeGoal;
+  activeGoal = null;
+  if (goalObj.timer) { clearTimeout(goalObj.timer); goalObj.timer = null; }
+  if (goalObj.stallTimer) { clearTimeout(goalObj.stallTimer); goalObj.stallTimer = null; }
+  const goalBanner = document.getElementById('goalModeBanner');
+  if (goalBanner) goalBanner.hidden = true;
+  const goalPill = document.getElementById('btnGoalToggle');
+  if (goalPill && !goalModeEnabled) goalPill.classList.remove('active');
+
+  // Persist paused goal state to localStorage
+  try {
+    const pausedRecord = {
+      goalPrompt: goalObj.goalPrompt,
+      durationMs: goalObj.durationMs,
+      iteration: goalObj.iteration,
+      sessionId: goalObj.sessionId,
+      substantiveProgress: goalObj.substantiveProgress,
+      pausedAt: Date.now(),
+      reason
+    };
+    localStorage.setItem('ONLYCHAT_PAUSED_GOAL', JSON.stringify(pausedRecord));
+  } catch (_) {}
+
+  const card = createAssistantContainer({ timing: false });
+  timeline.appendChild(card.row);
+  const msg = document.createElement('div');
+  msg.className = 'text-body';
+  msg.textContent = `⏸️ [Goal 일시정지] ${reason} (진행 ${goalObj.iteration}회차 상태 보관됨. 언제든 다시 재개할 수 있습니다.)`;
+  card.content.appendChild(msg);
+  timeline.scrollTop = timeline.scrollHeight;
+  setGeneratingState(false);
 }
 
 function cancelActiveGoal(reason = '사용자가 목표 추구를 중단했습니다.') {
@@ -4105,12 +4175,19 @@ function renderProjectGroups(container, projects) {
 async function loadSession(sessionId, title, source = null) {
   const hasComposerDraft = String(composerInput.value || '').trim().length > 0;
   if (sessionResumePendingCount === 0 && (hasComposerDraft || currentAbortController || isGenerating || isRecording)) {
-    const status = document.getElementById('sessionListStatus');
-    if (status) status.textContent = '초안·음성 입력·진행 중인 응답을 보존하려고 세션을 전환하지 않았습니다. 현재 작업을 마친 뒤 다시 열어 주세요.';
-    return false;
+    // If user clicked another session while a draft or active Goal exists, offer an automatic pause & switch
+    const shouldSwitch = confirm('진행 중인 목표(Goal) 또는 미전송 초안이 있습니다. 현재 작업을 안전하게 일시정지하고 세션을 전환하시겠습니까?');
+    if (!shouldSwitch) {
+      const status = document.getElementById('sessionListStatus');
+      if (status) status.textContent = '초안·음성 입력·진행 중인 응답을 보존하려고 세션을 전환하지 않았습니다. 현재 작업을 마친 뒤 다시 열어 주세요.';
+      return false;
+    }
+    if (activeGoal) pauseActiveGoal('다른 대화로 전환하여 이전 목표를 일시정지했습니다.');
+    abortActiveTurn();
+    if (composerInput) composerInput.value = '';
   }
   if (activeGoal) {
-    cancelActiveGoal('다른 대화로 전환하여 이전 목표 추구를 중단했습니다.');
+    pauseActiveGoal('다른 대화로 전환하여 이전 목표를 일시정지했습니다.');
   }
   const requestId = ++sessionLoadRequestId;
   let resumedSession = null;
