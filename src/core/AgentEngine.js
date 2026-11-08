@@ -639,7 +639,10 @@ class AgentEngine {
       commandRunner: this.tools.commandRunner,
       isTierReady: tier => this.priorityChain.isTierReady(tier),
       approvalPolicy: this.tools.approvalPolicy,
-      requireTaskOwnership: Boolean(task.registryTaskKey),
+      // Every dispatched worker needs the strict mutation gate. Registry-backed
+      // manager tasks receive a verified path lease below; legacy/recurring
+      // dispatches can still read, but cannot silently write without one.
+      requireTaskOwnership: true,
       watchSkills: false,
       dispatcherAutoStart: false,
       workspaceLeaseWaitMs: this.workspaceLeaseWaitMs,

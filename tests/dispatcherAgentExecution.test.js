@@ -126,6 +126,62 @@ test('dispatcher HTTP route runs an isolated AgentEngine task and reports its re
   }
 });
 
+test('dispatched file and shell mutations require a verified task ownership lease', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-dispatch-ownership-'));
+  let providerCalls = 0;
+  let commandCalls = 0;
+  let app;
+  try {
+    app = new DesktopServer({
+      isolated: true,
+      approvalPolicy: 'never',
+      dataDir,
+      workspaceDir: path.join(dataDir, 'workspace'),
+      port: 0,
+      enableQuotaRefresh: false,
+      commandRunner: async () => { commandCalls++; return { exitCode: 0, stdout: 'unexpected command execution' }; },
+      providerAdapter: async () => {
+        providerCalls++;
+        if (providerCalls === 1) return {
+          content: '',
+          toolCalls: [
+            { id: 'unowned-write', name: 'write_file', args: { path: 'unowned.txt', content: 'must not be written' } },
+            { id: 'unowned-shell', name: 'exec_command', args: { command: 'printf unexpected' } }
+          ]
+        };
+        return { content: 'The mutation attempts were refused.', toolCalls: [] };
+      }
+    });
+    fs.mkdirSync(app.engine.workspaceDir, { recursive: true });
+    app.engine.priorityChain.setTiers([DEFAULT_PRESET_TIERS[0]]);
+    app.engine.dispatcher.getMemoryMetrics = () => ({ allowedWorkers: 1 });
+    await app.start();
+
+    const blocked = new Promise(resolve => app.engine.dispatcher.once('worker_blocked', resolve));
+    const accepted = await request(app.port, '/api/dispatcher/enqueue', 'POST', {
+      id: 'unowned-mutation-e2e',
+      title: 'Reject unowned dispatcher mutations',
+      prompt: 'Try the allowed file and shell tools.',
+      allowedTools: ['write_file', 'exec_command']
+    });
+    assert.equal(accepted.status, 200);
+    const outcome = await blocked;
+    assert.equal(outcome.task.status, 'blocked');
+    assert.equal(fs.existsSync(path.join(app.engine.workspaceDir, 'unowned.txt')), false, 'an unowned dispatcher cannot write files');
+    assert.equal(commandCalls, 0, 'an unowned dispatcher cannot run shell commands');
+    assert.equal(outcome.task.executionEvidence.successfulCount, 0);
+    assert.equal(outcome.task.executionEvidence.failedCount, 2);
+    const toolResults = app.engine.sessions.readSession(outcome.task.sessionId)
+      .filter(item => item.type === 'tool_result')
+      .map(item => String(item.result?.error || ''));
+    assert.ok(toolResults.some(error => /검증된 Only Chat 작업 소유권 lease가 필요합니다/.test(error)));
+    assert.ok(toolResults.some(error => /셸의 변경 경로를 검증할 수 없어 셸 명령을 차단/.test(error)));
+  } finally {
+    if (app) app.stop();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('dispatcher falls back after an empty provider response before requiring a real workspace tool call', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-dispatch-tool-e2e-'));
   let providerCalls = 0;
@@ -255,7 +311,7 @@ test('dispatcher task allowlist blocks disallowed tools before approval and runn
   }
 });
 
-test('dispatcher waits for session-bound UI approval before executing a tool', async () => {
+test('dispatcher UI approval cannot replace a verified task ownership lease', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-dispatch-approval-'));
   let providerCalls = 0;
   let commandCalls = 0;
@@ -283,7 +339,7 @@ test('dispatcher waits for session-bound UI approval before executing a tool', a
       const task = app.engine.dispatcher.activeWorkers.get('approval-e2e')?.task;
       if (task?.pendingApproval) resolve(task.pendingApproval);
     }));
-    const completed = new Promise(resolve => app.engine.dispatcher.once('worker_completed', resolve));
+    const blocked = new Promise(resolve => app.engine.dispatcher.once('worker_blocked', resolve));
     const accepted = await request(app.port, '/api/dispatcher/enqueue', 'POST', {
       id: 'approval-e2e', title: 'Approval test', prompt: 'Run the requested safe command.', allowedTools: ['exec_command']
     });
@@ -304,13 +360,16 @@ test('dispatcher waits for session-bound UI approval before executing a tool', a
       taskId: 'approval-e2e', requestId: approval.requestId, sessionId: approval.sessionId, decision: 'approve'
     });
     assert.equal(replayed.status, 409, 'an approval request must be one-shot');
-    await completed;
-    assert.equal(commandCalls, 1);
+    const outcome = await blocked;
+    assert.match(outcome.reason, /실패한 Codex 도구 실행이 남아 있거나 성공 증거가 부족합니다/);
+    assert.equal(commandCalls, 0, 'approval alone must not authorize a shell command without path ownership');
     const snapshot = await request(app.port, '/api/dispatcher');
-    const task = snapshot.body.completedTasks.find(item => item.id === 'approval-e2e');
-    assert.equal(task.status, 'completed');
-    assert.equal(task.executionEvidence.successfulCount, 1);
+    const task = snapshot.body.terminalTasks.find(item => item.id === 'approval-e2e');
+    assert.equal(task.status, 'blocked');
+    assert.equal(task.executionEvidence.failedCount, 1);
     assert.equal(task.pendingApproval, null);
+    assert.ok(app.engine.sessions.readSession(task.sessionId).some(item => item.type === 'tool_result'
+      && item.tool === 'exec_command' && /셸의 변경 경로를 검증할 수 없어 셸 명령을 차단/.test(item.result?.error || '')));
   } finally {
     if (app) app.stop();
     fs.rmSync(dataDir, { recursive: true, force: true });
