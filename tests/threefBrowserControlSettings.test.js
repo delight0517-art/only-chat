@@ -26,7 +26,14 @@ async function main() {
     const desktopHtml = fs.readFileSync(require.resolve('../src/ui/desktop/index.html'), 'utf8');
     const desktopApp = fs.readFileSync(require.resolve('../src/ui/desktop/app.js'), 'utf8');
     assert.match(desktopServerSource, /engineOptions\.browser\s*=\s*this\.isolated\s*\?\s*null\s*:\s*this\.threefBridge/);
-    assert.match(desktopHtml, /<label for="threefControlEnabled"><input id="threefControlEnabled" type="checkbox"/);
+    const browserSettings = desktopHtml.match(/<div class="settings-panel-view" id="panelTabThreefBrowser">[\s\S]*?<\/div>\s*<\/div>/)?.[0];
+    assert.ok(browserSettings, '3F permissions belong to their own Settings tab');
+    assert.match(browserSettings, /<input id="threefControlEnabled" type="checkbox" checked>/,
+      'AI browser control remains enabled by default in Settings');
+    const browserDrawer = desktopHtml.match(/<aside class="drawer" id="drawerBrowser"[\s\S]*?<\/aside>/)?.[0];
+    assert.ok(browserDrawer, 'embedded browser drawer remains present');
+    assert.doesNotMatch(browserDrawer, /threefControlEnabled|macScreenControlEnabled|btnMacScreenPermissions/,
+      'permission controls do not consume space above the browser page');
     assert.match(desktopHtml, /id="btnThreefRefresh"/);
     assert.match(desktopApp, /function setThreefControlUi\(enabled\)/);
     assert.match(desktopApp, /layout\.insertBefore\(drawerBrowser, chat\.nextSibling\)/,
@@ -63,6 +70,12 @@ async function main() {
       'manual embedded browsing stays available when AI browser control is off');
     assert.match(desktopApp, /url \? `\[3F Browser 세션\] \$\{url\}` : '\[3F Browser 새 탭\]'/,
       'switching to a blank tab clears the outer address bar');
+    assert.match(desktopHtml, /id="browserTabStrip"/, 'embedded 3F browser includes multi-tab strip');
+    assert.match(desktopHtml, /id="btnBrowserNewTab"/, 'multi-tab strip includes new tab button');
+    assert.match(desktopApp, /function renderBrowserTabs\(\)/, 'app manages embedded browser tabs');
+    assert.match(desktopApp, /function switchBrowserTab\(tabId\)/, 'tab switching behavior is wired');
+    assert.match(desktopApp, /function addBrowserTab\(/, 'tab addition behavior is wired');
+    assert.match(desktopApp, /function closeBrowserTab\(tabId\)/, 'tab close behavior is wired');
     assert.match(desktopApp, /독립 3F Browser 연결됨/);
 
     const onlyChatAppSource = fs.readFileSync(path.join(__dirname, '..', 'macOS', 'OnlyChatApp.swift'), 'utf8');

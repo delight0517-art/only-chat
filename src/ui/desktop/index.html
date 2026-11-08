@@ -450,6 +450,10 @@
           <!-- Group: Features -->
           <details class="settings-menu-group">
             <summary class="settings-group-label">도구와 연결</summary>
+            <button class="settings-nav-item" data-tab="threef-browser">
+              <span class="settings-nav-icon">🌐</span>
+              <span class="settings-nav-text">3F Browser</span>
+            </button>
             <button class="settings-nav-item" data-tab="passwords">
               <span class="settings-nav-icon">🔐</span>
               <span class="settings-nav-text">Passwords & Vault</span>
@@ -1087,6 +1091,37 @@
           </div>
         </div>
 
+        <div class="settings-panel-view" id="panelTabThreefBrowser">
+          <h1 class="panel-main-title">3F Browser</h1>
+          <p class="panel-subtitle">AI 브라우저 조작과 화면 권한을 관리합니다. 페이지 화면을 가리지 않도록 권한 설정은 이곳에 모았습니다.</p>
+
+          <div class="settings-section-card">
+            <h3 class="section-card-title">AI 브라우저 조작</h3>
+            <p class="row-item-desc">켜져 있으면 AI가 3F Browser에서 주소 이동, 페이지 읽기와 탭 조작을 할 수 있습니다. 기본 설정은 켜짐입니다.</p>
+            <div class="threef-control-setting">
+              <label for="threefControlEnabled"><input id="threefControlEnabled" type="checkbox" checked> 3F Browser 제어 허용</label>
+              <button class="btn-secondary" id="btnThreefRefresh" type="button">연결 확인</button>
+              <span id="threefControlStatus" role="status" aria-live="polite">상태 확인 중</span>
+            </div>
+          </div>
+
+          <div class="settings-section-card">
+            <h3 class="section-card-title">Mac 화면·입력 권한</h3>
+            <p class="row-item-desc">이 권한은 3F Browser 안의 페이지 조작과 별개로 Mac 화면을 보고 마우스·키보드를 제어합니다. macOS 화면 기록 및 손쉬운 사용 권한은 시스템에서 직접 승인해야 합니다.</p>
+            <section class="mac-screen-control-card" aria-labelledby="macScreenControlTitle">
+              <strong id="macScreenControlTitle">🖥️ Mac 전체 화면 제어</strong>
+              <label for="macScreenControlEnabled"><input id="macScreenControlEnabled" type="checkbox"> AI 화면 보기·마우스·키보드 허용</label>
+              <p>켜면 기본 디스플레이 화면이 AI 대화에 공유될 수 있고 마우스·키보드를 조작할 수 있습니다. 기본값은 꺼짐입니다.</p>
+              <div class="mac-screen-control-actions">
+                <button class="btn-secondary" id="btnMacScreenPermissions" type="button">macOS 권한 확인/요청</button>
+                <button class="btn-secondary" id="btnMacScreenStatus" type="button">권한 상태 새로고침</button>
+              </div>
+              <span id="macScreenControlStatus" role="status" aria-live="polite">꺼짐</span>
+              <img id="macScreenPreview" alt="AI가 최근에 확인한 현재 Mac 화면" hidden>
+            </section>
+          </div>
+        </div>
+
         <!-- 6. Tab: Security & Privacy -->
         <div class="settings-panel-view" id="panelTabSecurity">
           <h1 class="panel-main-title">Security & Privacy</h1>
@@ -1302,24 +1337,6 @@
       </div>
 
       <button class="btn-secondary" id="btnBrowserThreef" style="padding: 7px; font-size: 11px; font-weight: 600;">3F Browser에서 주소 열기</button>
-      <div class="threef-control-setting">
-        <label for="threefControlEnabled"><input id="threefControlEnabled" type="checkbox" checked> 3F Browser 제어 허용</label>
-        <button class="btn-secondary" id="btnThreefRefresh" type="button">연결 확인</button>
-        <span id="threefControlStatus" role="status" aria-live="polite">상태 확인 중</span>
-      </div>
-
-      <section class="mac-screen-control-card" aria-labelledby="macScreenControlTitle">
-        <strong id="macScreenControlTitle">🖥️ Mac 전체 화면 제어</strong>
-        <label for="macScreenControlEnabled"><input id="macScreenControlEnabled" type="checkbox"> AI 화면 보기·마우스·키보드 허용</label>
-        <p>켜면 현재 기본 디스플레이 화면을 AI가 볼 수 있고 마우스·키보드를 조작할 수 있습니다. 화면에는 개인정보가 포함될 수 있습니다. 기본값은 꺼짐입니다.</p>
-        <div class="mac-screen-control-actions">
-          <button class="btn-secondary" id="btnMacScreenPermissions" type="button">macOS 권한 확인/요청</button>
-          <button class="btn-secondary" id="btnMacScreenStatus" type="button">권한 상태 새로고침</button>
-        </div>
-        <span id="macScreenControlStatus" role="status" aria-live="polite">꺼짐</span>
-        <img id="macScreenPreview" alt="AI가 최근에 확인한 현재 Mac 화면" hidden>
-      </section>
-
       <div style="display: flex; gap: 6px;">
         <button class="btn-secondary" id="btnBrowserAria" style="flex: 1; padding: 6px; font-size: 11px; font-weight: 600;">
           ⚡️ ARIA 트리 캡처 (150 토큰)

@@ -5914,6 +5914,11 @@ function switchSettingsTab(tabId) {
   } else if (tabId === 'plugins') {
     const p = document.getElementById('panelTabPlugins');
     if (p) p.classList.add('active');
+  } else if (tabId === 'threef-browser') {
+    const p = document.getElementById('panelTabThreefBrowser');
+    if (p) p.classList.add('active');
+    void refreshThreefControlStatus();
+    void loadMacScreenControlSetting();
   } else if (tabId === 'security') {
     const p = document.getElementById('panelTabSecurity');
     if (p) p.classList.add('active');
