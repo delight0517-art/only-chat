@@ -17,7 +17,10 @@ class ThreefBrowserBridge {
     this.openExternal = options.openExternal || null;
     this.policy = options.policy || null;
     this.isEnabled = options.isEnabled || (() => true);
-    this.descriptorPath = options.descriptorPath || path.join(os.homedir(), 'Library', 'Application Support', '3F Browser', 'only-chat-control.json');
+    this.qaTarget = options.qaTarget || null;
+    this.descriptorPath = options.descriptorPath || (this.qaTarget
+      ? path.join(os.tmpdir(), 'onlychat-3f-qa-target.json')
+      : path.join(os.homedir(), 'Library', 'Application Support', '3F Browser', 'only-chat-control.json'));
     this.readDescriptor = options.readDescriptor || (() => {
       const before = fs.lstatSync(this.descriptorPath);
       const validFile = stat => stat.isFile()
@@ -59,6 +62,9 @@ class ThreefBrowserBridge {
       if (descriptor?.schemaVersion !== 1 || descriptor.host !== '127.0.0.1'
         || !Number.isInteger(descriptor.port) || descriptor.port < 1 || descriptor.port > 65535
         || typeof descriptor.token !== 'string' || !/^[a-f0-9]{96}$/i.test(descriptor.token)) return null;
+      if (this.qaTarget && (descriptor.bundleIdentifier !== this.qaTarget.bundleIdentifier
+        || descriptor.executablePath !== this.qaTarget.executablePath
+        || !Number.isInteger(descriptor.processIdentifier) || descriptor.processIdentifier <= 0)) return null;
       return descriptor;
     } catch (_) { return null; }
   }
@@ -80,6 +86,21 @@ class ThreefBrowserBridge {
       const data = await response.json();
       return { unavailable: false, status: response.status, data };
     } catch (_) { return { unavailable: true }; }
+  }
+
+  async verifyTarget() {
+    if (!this.qaTarget) return { ok: true, mode: 'production-default' };
+    const descriptor = this._descriptor();
+    if (!descriptor) return { ok: false, error: 'QA 3F descriptor identity mismatch or unavailable' };
+    const response = await this._request('GET', '/v1/status');
+    if (response.unavailable || response.status !== 200
+      || response.data?.bundleIdentifier !== this.qaTarget.bundleIdentifier
+      || response.data?.executablePath !== this.qaTarget.executablePath
+      || response.data?.processIdentifier !== descriptor.processIdentifier) {
+      return { ok: false, error: 'QA 3F runtime identity mismatch' };
+    }
+    return { ok: true, mode: 'qa', bundleIdentifier: descriptor.bundleIdentifier,
+      executablePath: descriptor.executablePath, processIdentifier: descriptor.processIdentifier };
   }
 
   async _waitForRequestedPage(url) {

@@ -119,7 +119,13 @@ class DesktopServer {
     this.focusFencePolicy = new FocusFencePolicy();
     // Keep free-plan Notion's Aside/REA session separate from the general 3F browser.
     engineOptions.notionReaBrowser = this.isolated ? null : new NotionReaBrowser({ policy: this.focusFencePolicy });
-    this.threefBridge = options.threefBridge || new ThreefBrowserBridge({ openExternal: this.openExternal, policy: this.focusFencePolicy, isEnabled: () => this.isThreefControlEnabled() });
+    const threefQaTarget = options.threefQaTarget || null;
+    this.threefBridge = options.threefBridge || new ThreefBrowserBridge({
+      openExternal: this.openExternal, policy: this.focusFencePolicy,
+      isEnabled: () => this.isThreefControlEnabled(), qaTarget: threefQaTarget,
+      ...(threefQaTarget ? { descriptorPath: threefQaTarget.descriptorPath } : {})
+    });
+    this.threefQaTarget = threefQaTarget;
     this.antigravityAdapter = !this.isolated && process.platform === 'darwin'
       ? new AntigravityCliAdapter({ dataDir: this.dataDir }) : null;
     this.codexAdapter = !this.isolated && process.platform === 'darwin'
@@ -2877,6 +2883,7 @@ class DesktopServer {
   }
 
   _dispatchEmbeddedBrowserCommand(command) {
+    if (this.threefQaTarget) return Promise.reject(new Error('QA target requires standalone identity-verified 3F routing.'));
     if (!this.isThreefControlEnabled()) return Promise.reject(new Error('3F Browser 제어가 꺼져 있습니다.'));
     if (this.browserCommandWaiters.length >= 16) return Promise.reject(new Error('3F Browser 명령 대기열이 가득 찼습니다.'));
     const id = `threef-${++this.browserCommandSequence}`;

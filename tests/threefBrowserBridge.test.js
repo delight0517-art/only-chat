@@ -13,6 +13,15 @@ async function main() {
     fs.writeFileSync(descriptorPath, JSON.stringify({ schemaVersion: 1, host: '127.0.0.1', port: 43121, token: 'a'.repeat(96) }), { mode: 0o600 });
     const descriptorBridge = new ThreefBrowserBridge({ descriptorPath });
     assert.equal(descriptorBridge.isAvailable(), true, 'a valid owner-only regular descriptor remains available');
+    const qaIdentity = { bundleIdentifier: 'com.rogan.threef.browser.qa.snooze20261108', executablePath: '/tmp/3F Browser QA.app/Contents/MacOS/ThreeFBrowser' };
+    const qaDescriptorPath = path.join(descriptorRoot, 'qa-descriptor.json');
+    fs.writeFileSync(qaDescriptorPath, JSON.stringify({ schemaVersion: 1, host: '127.0.0.1', port: 43122, token: 'b'.repeat(96), ...qaIdentity, processIdentifier: process.pid }), { mode: 0o600 });
+    const qaBridge = new ThreefBrowserBridge({ descriptorPath: qaDescriptorPath, qaTarget: qaIdentity, fetchImpl: async () => ({ status: 200, json: async () => ({ bundleIdentifier: qaIdentity.bundleIdentifier, executablePath: qaIdentity.executablePath, processIdentifier: process.pid }) }) });
+    assert.equal((await qaBridge.verifyTarget()).ok, true, 'QA descriptor and live status identity must match');
+    const productionMismatch = new ThreefBrowserBridge({ descriptorPath: qaDescriptorPath, qaTarget: { ...qaIdentity, bundleIdentifier: 'com.rogan.threef.browser' } });
+    assert.equal(productionMismatch.isAvailable(), false, 'QA route rejects production bundle identity');
+    const wrongPID = new ThreefBrowserBridge({ descriptorPath: qaDescriptorPath, qaTarget: qaIdentity, fetchImpl: async () => ({ status: 200, json: async () => ({ bundleIdentifier: qaIdentity.bundleIdentifier, executablePath: qaIdentity.executablePath, processIdentifier: process.pid + 1 }) }) });
+    assert.equal((await wrongPID.verifyTarget()).ok, false, 'QA route fails closed on PID mismatch');
     const outsideDescriptor = path.join(descriptorRoot, 'outside.json');
     fs.writeFileSync(outsideDescriptor, fs.readFileSync(descriptorPath));
     fs.unlinkSync(descriptorPath);
