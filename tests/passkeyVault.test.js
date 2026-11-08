@@ -12,6 +12,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const { PasskeyVault } = require('../src/auth/PasskeyVault.js');
 const rendererSource = fs.readFileSync(path.join(__dirname, '../src/ui/desktop/app.js'), 'utf8');
+const vaultCssSource = fs.readFileSync(path.join(__dirname, '../src/ui/desktop/app.css'), 'utf8');
 const serverSource = fs.readFileSync(path.join(__dirname, '../src/ui/desktop/server.js'), 'utf8');
 const vaultListSource = rendererSource.slice(rendererSource.indexOf('async function refreshVaultList() {'), rendererSource.indexOf('\nasync function handleVaultSave()', rendererSource.indexOf('async function refreshVaultList() {')));
 const stageVaultStart = rendererSource.indexOf('async function refreshStageVault() {');
@@ -47,6 +48,49 @@ assert.match(stageVaultSource, /credential\.allowAiUse \? 'AI 승인됨' : 'AI �
 assert.match(stageVaultSource, /permission\.style\.cssText = credential\.allowAiUse\s*\?/);
 assert.match(stageVaultSource, /color:var\(--vault-allow-text\);background:var\(--vault-allow-bg\)/);
 assert.match(stageVaultSource, /color:var\(--vault-block-text\);background:var\(--vault-block-bg\)/);
+
+// Verify badge contrast after compositing its translucent badge background over the row.
+function cssHexColor(source, token, scopeStart = 0, scopeEnd = source.length) {
+  const scoped = source.slice(scopeStart, scopeEnd);
+  const match = scoped.match(new RegExp(`${token}:\\s*(#[0-9a-fA-F]{6})\\s*;`));
+  return match && match[1];
+}
+function cssRgba(source, token, scopeStart = 0, scopeEnd = source.length) {
+  const scoped = source.slice(scopeStart, scopeEnd);
+  const match = scoped.match(new RegExp(`${token}:\\s*rgba\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*([\\d.]+)\\s*\\)\\s*;`));
+  return match && match.slice(1).map(Number);
+}
+function channel(hex, offset) { return parseInt(hex.slice(offset, offset + 2), 16) / 255; }
+function luminance(rgb) {
+  const linear = rgb.map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+function contrast(foregroundHex, baseHex, tint, alpha) {
+  const base = [1, 3, 5].map(offset => channel(baseHex, offset));
+  const composite = base.map((value, index) => (tint[index] / 255) * alpha + value * (1 - alpha));
+  const a = luminance([1, 3, 5].map(offset => channel(foregroundHex, offset)));
+  const b = luminance(composite);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+const darkStart = vaultCssSource.indexOf('@media (prefers-color-scheme: dark)');
+assert.ok(darkStart >= 0, 'dark theme token block exists');
+for (const theme of [
+  { name: 'light', start: 0, end: darkStart },
+  { name: 'dark', start: darkStart, end: vaultCssSource.length }
+]) {
+  const row = cssHexColor(vaultCssSource, '--bg-subtle', theme.start, theme.end);
+  assert.ok(row, `${theme.name} bg-subtle row color is declared`);
+  for (const [label, textToken, bgToken] of [
+    ['approval', '--vault-allow-text', '--vault-allow-bg'],
+    ['blocked', '--vault-block-text', '--vault-block-bg']
+  ]) {
+    const foreground = cssHexColor(vaultCssSource, textToken, theme.start, theme.end);
+    const badge = cssRgba(vaultCssSource, bgToken, theme.start, theme.end);
+    assert.ok(foreground && badge, `${theme.name} ${label} badge color tokens are declared`);
+    const ratio = contrast(foreground, row, badge.slice(0, 3), badge[3]);
+    assert.ok(ratio >= 4.5, `${theme.name} ${label} badge contrast ${ratio.toFixed(2)}:1 >= 4.5:1`);
+  }
+}
 assert.match(rendererSource, /await Promise\.all\(\[refreshVaultList\(\), refreshStageVault\(\)\]\)/, 'deleting from either vault view refreshes both lists');
 const stageSaveStart = rendererSource.indexOf('async function handleStageVaultSave() {');
 const stageSave = rendererSource.slice(stageSaveStart, rendererSource.indexOf('\n// ===', stageSaveStart));

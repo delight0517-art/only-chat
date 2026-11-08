@@ -55,6 +55,12 @@ class HandoffAdapter {
     return record;
   }
 
+  updateCheckpoint(sessionId, update) {
+    const current = this.loadCheckpoint();
+    if (!current || current.sessionId !== sessionId || !update || typeof update !== 'object' || Array.isArray(update)) return false;
+    return this.saveCheckpoint({ ...current, ...update });
+  }
+
   /**
    * Read saved checkpoint to resume incomplete work
    */

@@ -329,14 +329,33 @@ class SessionStore {
     const init = records.find(record => record.type === 'session_init') || {};
     const sessionMetadata = records.filter(record => record.type === 'session_metadata')
       .reduce((value, event) => ({ ...value, ...event.metadata }), {});
-    const turns = records
-      .filter(record => record.type === 'user_message' || record.type === 'assistant_message' || record.type === 'turn_error')
-      .filter(record => record.type === 'turn_error' || typeof record.content === 'string')
-      .map(record => record.type === 'turn_error'
-        ? { role: 'assistant', outcome: 'error', error: {
+    const turns = [];
+    const conversationHistory = [];
+    for (const record of records) {
+      if (record.type === 'user_message' && typeof (record.resolvedContent || record.content) === 'string') {
+        const item = { role: 'user', content: record.resolvedContent || record.content };
+        turns.push(item);
+        conversationHistory.push(item);
+      } else if (record.type === 'assistant_message' && typeof record.content === 'string') {
+        const item = { role: 'assistant', content: record.content };
+        turns.push(item);
+        conversationHistory.push(item);
+      } else if (record.type === 'assistant_tool_calls' && Array.isArray(record.toolCalls)) {
+        const tool_calls = record.toolCalls.filter(call => typeof call?.id === 'string' && typeof call?.name === 'string')
+          .map(call => ({ id: call.id, type: 'function', function: {
+            name: call.name,
+            arguments: typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments || {})
+          } }));
+        if (tool_calls.length) conversationHistory.push({ role: 'assistant', content: null, tool_calls });
+      } else if (record.type === 'tool_result' && typeof record.tool_call_id === 'string') {
+        conversationHistory.push({ role: 'tool', tool_call_id: record.tool_call_id,
+          content: typeof record.result === 'string' ? record.result : JSON.stringify(record.result) });
+      } else if (record.type === 'turn_error') {
+        turns.push({ role: 'assistant', outcome: 'error', error: {
           category: record.category, model: record.model, rank: record.rank
-        } }
-        : { role: record.type === 'user_message' ? 'user' : 'assistant', content: record.content });
+        } });
+      }
+    }
     return {
       id: sessionId,
       sessionId,
@@ -344,7 +363,9 @@ class SessionStore {
       title: sessionMetadata.title || (typeof init.metadata?.title === 'string' ? init.metadata.title : 'Only Chat 세션'),
       cwd: init.workspaceDir,
       model: init.model,
-      turns
+      provider: init.provider,
+      turns,
+      conversationHistory
     };
   }
 }

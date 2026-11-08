@@ -763,3 +763,18 @@
 - [ ] 2026-11-06 KST current-source Only Chat AI Account Router live chat UI proof: in task-owned `agent-1` Xvfb Firefox, the current-source Only Chat web renderer sent the synthetic prompt `Reply exactly ONLYCHAT_CURRENT_SOURCE_UI_ROUTER_20261106.` and visibly displayed the exact GPT reply `ONLYCHAT_CURRENT_SOURCE_UI_ROUTER_20261106` (capture `capture_0ed1506de1c044b292e58c2a9b076fc5_0000000000000018`, temporary session `ses_10545a8701bb8c18`). Temporary data/workspace were used and host session reads were stubbed empty. Post-turn `/api/status` reported Router connected+verified, `lastRoute=chatgpt-secondary` rank 1 `gpt-6-luna`; remaining quota is `null`. `node src/features/provider/v1.test.mjs` passed. This verifies current-source web UI + Router response, not installed macOS WKWebView or quota failover; keep the overall TODO unchecked.
 - [ ] 2026-11-06 KST Only Chat Router isolated UI continuation: in a task-owned Xvfb/QEMU Firefox session rendering the current-source Only Chat web UI, submitted `Reply with exactly: ONLY_CHAT_UI_ROUTER_LIVE_20261106`; the temporary Only Chat session `ses_7ea3c8725daa28fb` recorded the exact assistant reply. Router API readback showed `chatgpt-secondary` rank 1, Luna, `providerState=verified`, `requestState=available`, with `remainingPercent=null`. Therefore Router login and at least one current-source UI completion work; quota-based 10% failover is still unverified, and this does not prove the installed native WKWebView. The installed app/backend remain old and native restart is pending the required isolated native-app route; preserve TODO-PRIO-01 unchecked.
 - [ ] 2026-11-06 KST follow-up: Only Chat로 AI Account Router의 server.js quota-header 처리와 AccountLibraryEngine.js threshold 처리 구간을 실제 read_file로 점검했고, 로그인 성공과 quota failover가 별개이며 remainingPercent=null은 10% 미만이 아님을 확인했다. Live Only Chat /api/status는 Router connected/verified 및 실제 요청 성공을 표시하고, Router API는 enabled ChatGPT 계정 1개·availability=available·remainingPercent=null·threshold 10%·reset 5h를 반환한다. Router의 account-chain 및 quota-routing-limits 집중 테스트 2개가 PASS했으나 합성 다중 계정 전환만 증명한다. 실계정은 한 개뿐이라 10% 실전환은 미검증; TODO-PRIO-01 계속 미완료.
+- [ ] **TODO-20261107-SESSION-GAPS. 이 대화에서 남겨진 미완료 항목 (UI / 라우터 / 35Closer 정리)**:
+  - **1. Only Chat Settings > Models 계정 관리 UI 정밀 구현 (Aside 브라우저 모델 관리 UI 패리티)**:
+    - 상단 제공자별(Aside, Claude, ChatGPT, OpenRouter, Ollama, Google 등) 행 우측 `•••` 버튼 클릭 시 인라인 하위 영역에 등록된 실제 계정 목록 표시.
+    - 계정이 없을 경우 `+` (계정 추가) 버튼 노출.
+    - 등록된 각 계정 행 우측에 미니 휴지통(`🗑`) 버튼 배치 및 클릭 시 확인 팝업(`confirm`) 후 실제 계정 연결 해제(`POST /api/priority/disconnect`).
+    - ChatGPT 계정 및 Antigravity(Google) 계정 등 2개 이상의 멀티 계정을 3개, 4개 이상 제한 없이 추가/삭제 가능하도록 복수 계정 슬롯 바인딩 지원.
+    - Aside 브라우저의 Models 설정 UI와 동일한 인터랙션/스타일 적용.
+  - **2. AI Account Router 브라우저 연동 및 FF 차단 대응**:
+    - AI 라우터(`AI Account Router.app` / `http://127.0.0.1:18880`)에서 브라우저 열기 시 15초 지연 현상 원인 규명 및 1-shot 즉시 실행 최적화.
+    - Focus Fence(FF)에 의해 Aside 브라우저가 차단되어 있는 macOS 정책 상태를 Router가 감지하여, 차단된 브라우저 호출을 방지하고 유효 브라우저로 안전 라우팅.
+    - 사용자 기본 메인 브라우저인 **Threef 브라우저(`com.rogan.threef.browser`, 3F Browser)**로 즉시 열리도록 `openChatGptLogin` 및 대시보드 브라우저 런처 통합.
+  - **3. 35Closer (서리파이 클로즈업 타이머) 바탕화면/오래된 창 자동 정리 기능 강화**:
+    - 밤새 방치된 터미널 창(Terminal.app, iTerm), Finder 창 등 3시간 이상 경과한 오래된 유휴 창을 외출/복귀 시 자동으로 감지해 닫기(`Away Window Cleaner`).
+    - 35Closer가 모니터링만 하지 않고 설정된 시간 기준 초과 창을 확실히 닫아 복귀 시 깔끔한 바탕화면이 유지되도록 정리 트리거 보장.
+

@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
-const { parseGoalDuration, parseChatCommand, safeToolError, loadOnlyChatWorkspaceContext, formatLockEvidenceSummary, formatOnlyChatWorkspaceContext, streamOnlyChatTurn, runOnlyChatGoal } = require('../bin/codex.js');
+const { parseGoalDuration, parseChatCommand, requestedEditAnchor, safeToolError, loadOnlyChatWorkspaceContext, formatLockEvidenceSummary, formatOnlyChatWorkspaceContext, executeExactApprovedCommands, streamOnlyChatTurn, runOnlyChatGoal } = require('../bin/codex.js');
 
 async function main() {
   for (const command of ['chat', 'goal']) {
@@ -22,14 +22,32 @@ async function main() {
   const scopedArgs = parseChatCommand(['--model', 'gpt-6-luna', '--approve-workspace-write', '/workspace/only-chat', '한 번 진행']);
   assert.equal(scopedArgs.approveWorkspaceWrite, '/workspace/only-chat');
   assert.equal(scopedArgs.model, 'gpt-6-luna');
+  const exactCommandArgs = parseChatCommand([
+    '--approve-workspace-write', '/workspace/pomodoro', '--approve-command', 'node --test test/scheduleTab.test.js', '--execute-approved-command', 'schedule test'
+  ]);
+  assert.deepEqual(exactCommandArgs.approveCommands, ['node --test test/scheduleTab.test.js']);
+  assert.equal(exactCommandArgs.executeCommandFallback, true);
+  assert.throws(() => parseChatCommand(['--execute-approved-command', 'no command']), /승인된 정확한 명령 하나/);
+  assert.throws(() => parseChatCommand(['--approve-command', 'node --test test/scheduleTab.test.js', 'schedule test']), /--approve-workspace-write/);
+  assert.throws(() => parseChatCommand(['--approve-workspace-write', '/workspace/pomodoro', '--approve-command', '', 'schedule test']), /정확한 명령 문자열/);
   assert.throws(() => parseChatCommand(['--approve-workspace-write', 'relative/path', 'unsafe']), /절대 경로/);
   assert.throws(() => parseChatCommand(['--approve-tool', 'exec_command', 'unsafe']), /승인 가능 도구/);
   const compactToolArgs = parseChatCommand(['--model', 'qwen2.5:3b', '--tool-profile', 'file-edit', '--approve-tool', 'edit_file', '파일 TODO 처리']);
   assert.equal(compactToolArgs.toolProfile, 'file-edit');
   const readOnlyToolArgs = parseChatCommand(['--model', 'qwen2.5:3b', '--tool-profile', 'file-read', 'TODO 상태 읽기']);
   assert.equal(readOnlyToolArgs.toolProfile, 'file-read');
+  const threefStatusArgs = parseChatCommand(['--model', 'qwen2.5:3b', '--tool-profile', 'embedded-3f-status', '3F Browser 연결 상태를 읽기']);
+  assert.equal(threefStatusArgs.toolProfile, 'embedded-3f-status');
+  const standaloneThreefStatusArgs = parseChatCommand(['--model', 'account-router:gpt-6-luna', '3F Browser 독립 앱 상태를 확인해.']);
+  assert.equal(standaloneThreefStatusArgs.toolProfile, 'threef-browser-status');
+  const explicitStandaloneThreefStatusArgs = parseChatCommand(['--model', 'account-router:gpt-6-luna', '--tool-profile', 'threef-browser-status', 'threef_browser_status를 호출해.']);
+  assert.equal(explicitStandaloneThreefStatusArgs.toolProfile, 'threef-browser-status');
   assert.throws(() => parseChatCommand(['--tool-profile', 'file-read', '--approve-tool', 'edit_file', '읽기만']), /file-read 프로필/);
   assert.throws(() => parseChatCommand(['--tool-profile', 'all', 'unsafe']), /tool-profile/);
+  assert.equal(requestedEditAnchor("In TODO_ROADMAP.md, prepend a bullet before the existing line beginning '- 2026-11-05 KST installed session-search live comparison:'"),
+    '- 2026-11-05 KST installed session-search live comparison:');
+  assert.equal(requestedEditAnchor('Move the line after the existing line beginning `## Next steps`.'), '## Next steps');
+  assert.equal(requestedEditAnchor('Append a note to TODO_ROADMAP.md.'), null, 'generic edits do not invent a line anchor');
   assert.equal(safeToolError({ error: 'MCP bridge failed Bearer abc.def; access_token=secret user@example.com' }),
     'MCP bridge failed Bearer [redacted]; access_token=[redacted] [redacted-email]');
   assert.equal(safeToolError({ isError: true, content: [{ type: 'text', text: 'File unavailable; access_token=hidden' }] }),
@@ -203,6 +221,107 @@ async function main() {
   assert.equal(approvedWorkspacePayload.workspaceWriteApproval, true, 'workspace routing carries the explicit one-run approval');
   assert.ok(workspaceWrites.some(text => text.includes('[Only Chat 작업공간 쓰기 승인: /workspace/only-chat]')));
 
+  const exactCommand = 'node --test test/scheduleTab.test.js';
+  const exactCommandEventArgs = { command: exactCommand, cwd: '/workspace/pomodoro' };
+  const exactCommandCall = { id: 'cmd-1', name: 'exec_command', args: exactCommandEventArgs };
+  const exactCommandEvents = [
+    { type: 'session_started', sessionId: 'ses_0123456789abcdef' },
+    { type: 'tool_approval_required', requestId: 'req-exact-command', sessionId: 'ses_0123456789abcdef', name: 'exec_command', args: exactCommandEventArgs, scopeRequiresExplicit: false },
+    { type: 'tool_start', call: exactCommandCall },
+    { type: 'tool_output', text: '✔ schedule editor saves wake fields (42ms)\nℹ tests 1\nℹ pass 1\nℹ fail 0\n' },
+    { type: 'tool_end', result: { call: exactCommandCall, result: { exitCode: 0, stdout: '✔ schedule editor saves wake fields (42ms)\nℹ tests 1\nℹ pass 1\nℹ fail 0\n', stderr: '' } } },
+    { type: 'message_delta', delta: 'The schedule test passed.' },
+    { type: 'turn_complete' }
+  ].map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n';
+  const exactCommandApprovals = [];
+  const exactCommandWrites = [];
+  let exactCommandRequestBody;
+  const exactCommandTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_exact_command', prompt: 'run the selected test',
+    approveWorkspaceWrite: '/workspace/pomodoro', approveCommands: [exactCommand],
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/api/tool-approval')) {
+        exactCommandApprovals.push(JSON.parse(options.body));
+        return new Response('{"ok":true}', { status: 200 });
+      }
+      exactCommandRequestBody = JSON.parse(options.body);
+      return new Response(exactCommandEvents, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    write: text => exactCommandWrites.push(text)
+  });
+  assert.equal(exactCommandTurn.ok, true);
+  assert.equal(exactCommandApprovals.length, 1);
+  assert.equal(exactCommandApprovals[0].decision, 'approve', 'exact command approval is one-call only and does not grant exec_command for the whole session');
+  assert.match(exactCommandRequestBody.prompt, /Only Chat CLI exact command authorization/);
+  assert.match(exactCommandRequestBody.prompt, /cwd: "\/workspace\/pomodoro"/);
+  assert.match(exactCommandRequestBody.prompt, /command 1: "node --test test\/scheduleTab\.test\.js"/);
+  assert.ok(exactCommandWrites.some(text => text.includes('ℹ pass 1')));
+
+  const unexecutedCommandTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_unexecuted_exact_command', prompt: 'run the selected test',
+    approveWorkspaceWrite: '/workspace/pomodoro', approveCommands: [exactCommand],
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_unexecuted_exact_command' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The requested test could not be read.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(unexecutedCommandTurn.ok, false, 'a completed model response is not command completion when an approved exact command was not run');
+  assert.equal(unexecutedCommandTurn.category, 'approved_command_not_executed');
+
+  const fallbackCalls = [];
+  const fallbackOutput = [];
+  const fallbackTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_exact_command_fallback', prompt: 'run the selected test',
+    approveWorkspaceWrite: '/workspace/pomodoro', approveCommands: [exactCommand], executeCommandFallback: true,
+    commandToolRegistryFactory: workspaceRoot => ({
+      execCommand: async (command, _onOutput, options) => {
+        fallbackCalls.push({ command, cwd: options.cwd, workspaceRoot });
+        return { exitCode: 0, stdout: 'tests 7\npass 7\nfail 0\n', stderr: '' };
+      }
+    }),
+    workspaceLeaseFactory: () => ({
+      run: async (workspaceRoot, sessionId, operation, options) => {
+        assert.equal(workspaceRoot, '/workspace/pomodoro');
+        assert.equal(sessionId, 'ses_exact_command_fallback');
+        assert.equal(options.waitMs, 2000);
+        return operation();
+      }
+    }),
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_exact_command_fallback' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The requested test could not be read.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => fallbackOutput.push(text)
+  });
+  assert.equal(fallbackTurn.ok, true);
+  assert.equal(fallbackTurn.category, 'approved_command_fallback');
+  assert.deepEqual(fallbackCalls, [{ command: exactCommand, cwd: '/workspace/pomodoro', workspaceRoot: '/workspace/pomodoro' }]);
+  assert.match(fallbackOutput.join(''), /CLI가 명시 승인된 정확한 명령을 작업공간 lease 안에서 실행했습니다/);
+  assert.match(fallbackOutput.join(''), /pass 7/);
+
+  const mismatchedCommandApprovals = [];
+  const mismatchedCommandTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_mismatched_command', prompt: 'run the selected test',
+    approveWorkspaceWrite: '/workspace/pomodoro', approveCommands: [exactCommand],
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/api/tool-approval')) {
+        mismatchedCommandApprovals.push(JSON.parse(options.body));
+        return new Response('{"ok":true}', { status: 200 });
+      }
+      const mismatch = exactCommandEvents.replace('/workspace/pomodoro', '/workspace/other').replace('req-exact-command', 'req-wrong-cwd');
+      return new Response(mismatch, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    write: () => {}
+  });
+  assert.equal(mismatchedCommandTurn.ok, false);
+  assert.equal(mismatchedCommandTurn.category, 'approval_required');
+  assert.deepEqual(mismatchedCommandApprovals, [], 'a matching command in another working directory is refused');
+
   let mismatchedScopeApprovalCount = 0;
   const mismatchedScopeTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_1793780000000', prompt: 'mismatch guard',
@@ -302,10 +421,37 @@ async function main() {
 
   const busyTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_busy', prompt: 'must not overlap',
-    fetchImpl: async () => new Response('{"error":"Only Chat busy"}', { status: 409 }), write: () => {}
+    fetchImpl: async () => new Response('{"error":"Only Chat busy"}', { status: 409 }), busyRetryDelaysMs: [], write: () => {}
   });
   assert.equal(busyTurn.ok, false);
   assert.equal(busyTurn.category, 'turn_busy', 'an active Only Chat turn is reported as a recoverable busy state');
+
+  const completedAfterBusy = [
+    { type: 'session_started', sessionId: 'ses_0123456789abcdef' },
+    { type: 'message_delta', delta: 'completed after waiting' },
+    { type: 'turn_complete' }
+  ].map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n';
+  let busyAttempts = 0;
+  const busyRetryOutput = [];
+  const retriedBusyTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_busy_retry', prompt: 'wait for the active task', busyRetryDelaysMs: [0, 0],
+    fetchImpl: async () => {
+      busyAttempts++;
+      if (busyAttempts < 3) return new Response('{"error":"Only Chat busy"}', { status: 409 });
+      return new Response(completedAfterBusy, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }, write: text => busyRetryOutput.push(text)
+  });
+  assert.equal(retriedBusyTurn.ok, true, 'CLI resumes a turn after the active Only Chat request finishes');
+  assert.equal(retriedBusyTurn.response, 'completed after waiting');
+  assert.equal(busyAttempts, 3, 'a 409 retry is bounded and reuses the original pending turn');
+  assert.ok(busyRetryOutput.some(text => /진행 중인 작업이 끝나기를 기다립니다/.test(text)), 'CLI tells the operator when it is waiting for the current Only Chat turn');
+
+  const conflictTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_conflict', prompt: 'do not retry a workspace conflict', busyRetryDelaysMs: [0, 0],
+    fetchImpl: async () => new Response('{"error":"session belongs to another workspace"}', { status: 409 }), write: () => {}
+  });
+  assert.equal(conflictTurn.ok, false);
+  assert.equal(conflictTurn.category, 'turn_conflict', 'non-busy conflicts are not mislabeled or retried');
 
   let now = 1_000;
   const goalRequests = [];
@@ -430,152 +576,6 @@ async function main() {
   assert.equal(repeatedCompletionGoal.ok, false);
   assert.equal(repeatedCompletionGoal.category, 'goal_no_progress');
 
-  let countedToolsNow = 1_000;
-  const countedTools = await streamOnlyChatTurn({
-    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_tools', prompt: 'read one item',
-    fetchImpl: async () => new Response([
-      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-1', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { name: 'read_file' }, result: { ok: true } } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'message_delta', delta: 'Read complete.' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
-      'data: [DONE]\n\n'
-    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
-    write: () => {}
-  });
-  assert.equal(countedTools.execution.toolCalls, 1);
-  assert.equal(countedTools.execution.successfulTools, 1);
-  assert.equal(countedTools.execution.failedTools, 0);
-
-  const failedToolOutput = [];
-  const failedToolTurn = await streamOnlyChatTurn({
-    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_failed_tool', prompt: 'edit the TODO',
-    fetchImpl: async () => new Response([
-      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_failed_tool' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'edit-1', name: 'edit_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'edit-1', name: 'edit_file' }, result: { ok: false, error: 'Target string not found' } } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'message_delta', delta: 'TODO updated successfully.' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
-      'data: [DONE]\n\n'
-    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
-    write: text => failedToolOutput.push(text)
-  });
-  assert.equal(failedToolTurn.ok, false, 'a completed model turn cannot override a failed edit tool');
-  assert.equal(failedToolTurn.category, 'tool_execution_failed');
-  assert.equal(failedToolTurn.execution.failedTools, 1);
-  assert.match(failedToolOutput.join(''), /도구 실패: edit_file/);
-
-  const successfulEditOutput = [];
-  const successfulEditTurn = await streamOnlyChatTurn({
-    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_successful_edit',
-    prompt: 'Read the anchor, then use edit_file to append one line to TODO_ROADMAP.md. Use read_file only for checking the result afterward.',
-    fetchImpl: async () => new Response([
-      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_successful_edit' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'edit-1', name: 'edit_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'edit-1', name: 'edit_file', args: { path: 'TODO_ROADMAP.md' } }, result: { ok: true } } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The requested TODO note is complete.' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
-      'data: [DONE]\n\n'
-    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
-    write: text => successfulEditOutput.push(text)
-  });
-  assert.equal(successfulEditTurn.ok, true, 'a successful requested file edit must not be reported as a missing read');
-  assert.equal(successfulEditTurn.execution.successfulMutatingTools, 1);
-  assert.match(successfulEditTurn.response, /mutation tool success/);
-  assert.match(successfulEditTurn.response, /independently read the target/);
-  assert.match(successfulEditOutput.join(''), /mutation tool success/);
-
-  const unverifiedReadTurn = await streamOnlyChatTurn({
-    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_unverified_read',
-    prompt: 'Read bin/codex.js lines 890-902 exactly with read_file. Do not call edit_file or write_file.',
-    fetchImpl: async () => new Response([
-      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_unverified_read' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'message_delta', delta: 'I read those lines and they say the CLI is ready.' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
-      'data: [DONE]\n\n'
-    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
-  });
-  assert.equal(unverifiedReadTurn.ok, false, 'model claims cannot replace a read_file result');
-  assert.equal(unverifiedReadTurn.category, 'read_evidence_missing');
-  assert.match(unverifiedReadTurn.response, /도구 결과가 없어/);
-
-  const verifiedReadTurn = await streamOnlyChatTurn({
-    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_verified_read',
-    prompt: 'Read bin/codex.js lines 890-902 exactly with read_file.',
-    fetchImpl: async () => new Response([
-      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_verified_read' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-1', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-1', name: 'read_file' }, result: { ok: true, content: 'const verifiedSource = true;' } } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The file contains invented content.' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
-      'data: [DONE]\n\n'
-    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
-  });
-  assert.equal(verifiedReadTurn.ok, true);
-  assert.match(verifiedReadTurn.response, /const verifiedSource = true;/);
-  assert.doesNotMatch(verifiedReadTurn.response, /invented content/);
-
-  const sourceAnalysisOutput = [];
-  const sourceAnalysisPrompt = 'Read Sources/AutoWiFi/HealthProbe.swift and Sources/AutoWiFi/NetworkQualityProbe.swift, analyze the throughput failure path.';
-  const sourceAnalysisTurn = await streamOnlyChatTurn({
-    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_source_analysis', prompt: sourceAnalysisPrompt,
-    fetchImpl: async () => new Response([
-      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_source_analysis' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file', args: { path: 'Sources/AutoWiFi/HealthProbe.swift' } }, result: { ok: true, content: 'RAW HEALTH SOURCE MUST NOT REPLACE ANALYSIS' } } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-quality', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-quality', name: 'read_file', args: { path: 'Sources/AutoWiFi/NetworkQualityProbe.swift' } }, result: { ok: true, content: 'RAW NETWORK SOURCE MUST NOT REPLACE ANALYSIS' } } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift starts a new path monitor. NetworkQualityProbe.swift reports typed failures.' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
-      'data: [DONE]\n\n'
-    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
-    write: text => sourceAnalysisOutput.push(text)
-  });
-  assert.equal(sourceAnalysisTurn.ok, true);
-  assert.match(sourceAnalysisTurn.response, /HealthProbe\.swift starts a new path monitor/);
-  assert.match(sourceAnalysisTurn.response, /NetworkQualityProbe\.swift reports typed failures/);
-  assert.doesNotMatch(sourceAnalysisTurn.response, /RAW .* SOURCE/);
-
-  const incompleteSourceAnalysis = await streamOnlyChatTurn({
-    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_incomplete_source_analysis', prompt: sourceAnalysisPrompt,
-    fetchImpl: async () => new Response([
-      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_incomplete_source_analysis' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file', args: { path: 'Sources/AutoWiFi/HealthProbe.swift' } }, result: { ok: true, content: 'health source' } } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-quality', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-quality', name: 'read_file', args: { path: 'Sources/AutoWiFi/NetworkQualityProbe.swift' } }, result: { ok: true, content: 'network source' } } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift was inspected; no other file was discussed.' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
-      'data: [DONE]\n\n'
-    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
-  });
-  assert.equal(incompleteSourceAnalysis.ok, false);
-  assert.equal(incompleteSourceAnalysis.category, 'source_analysis_incomplete');
-  assert.match(incompleteSourceAnalysis.response, /NetworkQualityProbe\.swift/);
-  assert.doesNotMatch(incompleteSourceAnalysis.response, /health source|network source/);
-
-  const exactSourceQuote = 'await window.api.updateSettings(patch);\nconst actual = await window.api.getSettings();';
-  const exactSourceQuoteTurn = await streamOnlyChatTurn({
-    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_exact_source_quote',
-    prompt: 'Read renderer/dashboard/schedule.js lines 65-78 and return only the verbatim source lines that call window.api.updateSettings and window.api.getSettings. Do not explain.',
-    toolProfile: 'file-read',
-    fetchImpl: async () => new Response([
-      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_exact_source_quote' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-schedule', name: 'read_file' } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-schedule', name: 'read_file', args: { path: 'renderer/dashboard/schedule.js', start_line: 65, end_line: 78 } }, result: { ok: true, content: exactSourceQuote } } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'message_delta', delta: 'Requested source read completed.' })}\n\n`,
-      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`, 'data: [DONE]\n\n'
-    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
-    write: () => {}
-  });
-  assert.equal(exactSourceQuoteTurn.ok, true, 'a negated "Do not explain" instruction is not a source-analysis request');
-  assert.match(exactSourceQuoteTurn.response, /Only Chat read_file 실제 결과:[\s\S]*renderer\/dashboard\/schedule\.js/);
-  assert.match(exactSourceQuoteTurn.response, /await window\.api\.updateSettings\(patch\)/);
-  assert.match(exactSourceQuoteTurn.response, /await window\.api\.getSettings\(\)/);
-
-  const longEnglishSourcePrompt = 'Analyze the Auto WiFi throughput recovery path using actual workspace files. Read and cite every exact file below: Sources/AutoWiFi/HealthProbe.swift, Sources/AutoWiFi/NetworkQualityProbe.swift, Sources/AutoWiFi/Persistence.swift, Sources/Algorithms/Hysteresis.swift, Tests/AlgorithmsRunner/Runner.swift.';
-  const ungroundedEnglishSourceAnalysis = await streamOnlyChatTurn({
-    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_ungrounded_english_source_analysis', prompt: longEnglishSourcePrompt,
-    fetchImpl: async () => new Response([
   let repeatedBlockerCalls = 0;
   let repeatedBlockerNow = 1_000;
   const repeatedBlockerGoal = await runOnlyChatGoal({
@@ -617,6 +617,321 @@ async function main() {
   assert.equal(hourlyStallGoal.category, 'goal_no_progress');
   assert.match(hourlyStallGoal.reason, /60분/);
 
+  let countedToolsNow = 1_000;
+  const countedTools = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_tools', prompt: 'read one item',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-1', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { name: 'read_file' }, result: { ok: true } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'Read complete.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(countedTools.execution.toolCalls, 1);
+  assert.equal(countedTools.execution.successfulTools, 1);
+  assert.equal(countedTools.execution.failedTools, 0);
+
+  const passOutputGrounding = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_command_pass_grounding', prompt: 'Run the requested checks and report the result.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'check-1', name: 'exec_command', args: { command: 'npm test' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'check-1', name: 'exec_command', args: { command: 'npm test' } }, result: { exitCode: 0, stdout: 'PASS policy\nPASS integration\n', stderr: '' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The project check encountered errors and issues in both areas.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`, 'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(passOutputGrounding.ok, true, 'successful PASS command output overrides a contradictory model failure summary');
+  assert.equal(passOutputGrounding.category, 'command_output_grounded');
+  assert.match(passOutputGrounding.response, /PASS policy\nPASS integration/);
+  assert.doesNotMatch(passOutputGrounding.response, /encountered errors|issues/);
+
+  const failedCommandGrounding = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_command_failure_grounding', prompt: 'Run the requested checks and report the result.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'check-2', name: 'exec_command', args: { command: 'npm test' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'check-2', name: 'exec_command', args: { command: 'npm test' } }, result: { exitCode: 1, stdout: '', stderr: 'Swift compile failed: missing type' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'All checks passed successfully.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`, 'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(failedCommandGrounding.ok, false, 'a nonzero command result overrides a contradictory model success summary');
+  assert.equal(failedCommandGrounding.category, 'tool_execution_failed');
+  assert.match(failedCommandGrounding.response, /종료 코드 1/);
+  assert.match(failedCommandGrounding.response, /missing type/);
+
+  const failedToolOutput = [];
+  const failedToolTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_failed_tool', prompt: 'edit the TODO',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_failed_tool' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'edit-1', name: 'edit_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'edit-1', name: 'edit_file' }, result: { ok: false, error: 'Target string not found' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'TODO updated successfully.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => failedToolOutput.push(text)
+  });
+  assert.equal(failedToolTurn.ok, false, 'a completed model turn cannot override a failed edit tool');
+  assert.equal(failedToolTurn.category, 'tool_execution_failed');
+  assert.equal(failedToolTurn.execution.failedTools, 1);
+  assert.match(failedToolOutput.join(''), /도구 실패: edit_file/);
+
+  const recoveredEditOutput = [];
+  const recoveredEditEvents = [
+    { type: 'session_started', sessionId: 'ses_edit_retry_recovered' },
+    { type: 'tool_start', call: { id: 'edit-failed', name: 'edit_file' } },
+    { type: 'tool_end', result: { call: { id: 'edit-failed', name: 'edit_file', args: { path: 'TODO_ROADMAP.md', target: 'stale anchor', replacement: '- [ ] verified retry evidence' } }, result: { ok: false, error: 'Target string not found' } } },
+    { type: 'tool_start', call: { id: 'edit-retry', name: 'edit_file' } },
+    { type: 'tool_end', result: { call: { id: 'edit-retry', name: 'edit_file', args: { path: 'TODO_ROADMAP.md', target: 'current anchor', replacement: '- [ ] verified retry evidence' } }, result: { ok: true } } },
+    { type: 'tool_start', call: { id: 'readback', name: 'read_file' } },
+    { type: 'tool_end', result: { call: { id: 'readback', name: 'read_file', args: { path: 'TODO_ROADMAP.md' } }, result: { content: '# Roadmap\n- [ ] verified retry evidence\n' } } },
+    { type: 'error', category: 'tool_execution_failed' }
+  ];
+  const recoveredEditTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_edit_retry_recovered',
+    prompt: 'Use edit_file to update TODO_ROADMAP.md, then use read_file to verify the replacement.',
+    fetchImpl: async () => new Response(recoveredEditEvents.map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n', {
+      status: 200, headers: { 'content-type': 'text/event-stream' }
+    }),
+    write: text => recoveredEditOutput.push(text)
+  });
+  assert.equal(recoveredEditTurn.ok, true, 'a failed edit retry is recovered only after a later successful edit and same-file readback');
+  assert.equal(recoveredEditTurn.category, 'mutation_recovered_after_retry');
+  assert.equal(recoveredEditTurn.recoveredFrom, 'tool_execution_failed');
+  assert.equal(recoveredEditTurn.execution.failedMutatingTools, 1);
+  assert.match(recoveredEditTurn.response, /later edit_file succeeded/);
+  assert.match(recoveredEditTurn.response, /subsequent read_file of the same path/);
+  assert.match(recoveredEditOutput.join(''), /후속 오류 tool_execution_failed 복구/);
+
+  const unverifiedRetryEvents = recoveredEditEvents.map(event => event.type === 'tool_end' && event.result?.call?.name === 'read_file'
+    ? { ...event, result: { ...event.result, result: { content: '# Roadmap\n- [ ] old content\n' } } }
+    : event);
+  const unverifiedRetryTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_edit_retry_unverified',
+    prompt: 'Use edit_file to update TODO_ROADMAP.md, then use read_file to verify the replacement.',
+    fetchImpl: async () => new Response(unverifiedRetryEvents.map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n', {
+      status: 200, headers: { 'content-type': 'text/event-stream' }
+    }),
+    write: () => {}
+  });
+  assert.equal(unverifiedRetryTurn.ok, false, 'a readback without the requested replacement cannot recover a failed edit');
+  assert.equal(unverifiedRetryTurn.category, 'tool_execution_failed');
+
+  const limitedRetryEvents = recoveredEditEvents.slice(0, -1).concat({ type: 'tool_start', call: { id: 'extra-read', name: 'read_file' } });
+  const limitedRetryTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_edit_retry_limit', maxToolCalls: 3,
+    prompt: 'Use edit_file to update TODO_ROADMAP.md, then use read_file to verify the replacement.',
+    fetchImpl: async () => new Response(limitedRetryEvents.map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n', {
+      status: 200, headers: { 'content-type': 'text/event-stream' }
+    }),
+    write: () => {}
+  });
+  assert.equal(limitedRetryTurn.ok, true, 'a tool-call limit after verified edit recovery must preserve the verified result');
+  assert.equal(limitedRetryTurn.category, 'mutation_recovered_after_retry');
+  assert.equal(limitedRetryTurn.recoveredFrom, 'tool_call_limit');
+
+  const successfulEditOutput = [];
+  const successfulEditTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_successful_edit',
+    prompt: 'Read the anchor, then use edit_file to append one line to TODO_ROADMAP.md. Use read_file only for checking the result afterward.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_successful_edit' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'edit-1', name: 'edit_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'edit-1', name: 'edit_file', args: { path: 'TODO_ROADMAP.md' } }, result: { ok: true } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The requested TODO note is complete.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => successfulEditOutput.push(text)
+  });
+  assert.equal(successfulEditTurn.ok, true, 'a successful requested file edit must not be reported as a missing read');
+  assert.equal(successfulEditTurn.execution.successfulMutatingTools, 1);
+  assert.match(successfulEditTurn.response, /mutation tool success/);
+  assert.match(successfulEditTurn.response, /independently read the target/);
+  assert.match(successfulEditOutput.join(''), /mutation tool success/);
+
+  const verifiedEditTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_verified_edit',
+    prompt: 'Use edit_file to update TODO_ROADMAP.md, then use read_file to verify the replacement.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_verified_edit' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'edit-verified', name: 'edit_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'edit-verified', name: 'edit_file', args: { path: 'TODO_ROADMAP.md', target: 'old text', replacement: '- [ ] verified change' } }, result: { ok: true } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'readback-verified', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'readback-verified', name: 'read_file', args: { path: 'TODO_ROADMAP.md' } }, result: { content: '# Roadmap\n- [ ] verified change\n' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The change is complete.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(verifiedEditTurn.ok, true);
+  assert.match(verifiedEditTurn.response, /verified file change/);
+  assert.match(verifiedEditTurn.response, /readback contains the requested replacement/);
+
+  const wrongEditAnchorOutput = [];
+  const wrongEditAnchorDecisions = [];
+  const wrongEditAnchorTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_wrong_edit_anchor',
+    prompt: "Prepend exactly one bullet before the existing line beginning '- 2026-11-05 KST installed session-search live comparison:' in TODO_ROADMAP.md.",
+    fetchImpl: async (url, init = {}) => {
+      if (url.endsWith('/api/tool-approval')) {
+        wrongEditAnchorDecisions.push(JSON.parse(init.body).decision);
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response([
+        `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_wrong_edit_anchor' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'tool_approval_required', requestId: 'reject-wrong-anchor', sessionId: 'ses_wrong_edit_anchor', name: 'edit_file', args: { path: 'TODO_ROADMAP.md', target: 'unrelated TODO-PRIO-01 line', replacement: '- 2026-11-06 evidence\\n- 2026-11-05 KST installed session-search live comparison:' } })}\n\n`,
+        `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+        'data: [DONE]\n\n'
+      ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    write: text => wrongEditAnchorOutput.push(text)
+  });
+  assert.equal(wrongEditAnchorTurn.ok, false, 'an edit whose target omits the user-requested anchor cannot be reported successful');
+  assert.equal(wrongEditAnchorTurn.category, 'edit_target_mismatch');
+  assert.deepEqual(wrongEditAnchorDecisions, ['reject'], 'Only Chat rejects the mismatched edit before tool execution');
+  assert.equal(wrongEditAnchorTurn.execution.successfulFileChangeTools, 0);
+  assert.match(wrongEditAnchorOutput.join(''), /기준 줄과 일치하지 않아 파일 변경을 거절/);
+
+  const verifiedEditBeforeMalformedOutput = [];
+  const verifiedEditMalformedTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_verified_edit_malformed_output',
+    prompt: 'Use edit_file to update TODO_ROADMAP.md, then use read_file to verify the replacement.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_verified_edit_malformed' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'edit-before-malformed', name: 'edit_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'edit-before-malformed', name: 'edit_file', args: { path: 'TODO_ROADMAP.md', target: 'old text', replacement: '- [x] verified before malformed output' } }, result: { ok: true } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'readback-before-malformed', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'readback-before-malformed', name: 'read_file', args: { path: 'TODO_ROADMAP.md' } }, result: { content: '# Roadmap\n- [x] verified before malformed output\n' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'Unclosed model tool markup: <tool_call>' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => verifiedEditBeforeMalformedOutput.push(text)
+  });
+  assert.equal(verifiedEditMalformedTurn.ok, true, 'a malformed final model response cannot erase a successful edit with exact readback');
+  assert.equal(verifiedEditMalformedTurn.category, 'verified_mutation_before_output_error');
+  assert.equal(verifiedEditMalformedTurn.recoveredFrom, 'invalid_provider_output');
+  assert.match(verifiedEditMalformedTurn.response, /verified file change/);
+  assert.match(verifiedEditMalformedTurn.response, /no other requested result is claimed/);
+  assert.match(verifiedEditBeforeMalformedOutput.join(''), /파일 변경 확인 · 후속 응답 오류 invalid_provider_output/);
+
+  const todoMutationPriorityTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_mutation_priority',
+    prompt: 'List one open TODO item and use edit_file to add a verification note to TODO_ROADMAP.md, then use read_file to verify the edit.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_todo_mutation_priority' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'todo-edit', name: 'edit_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'todo-edit', name: 'edit_file', args: { path: 'TODO_ROADMAP.md', target: 'old TODO evidence', replacement: '- [x] Verified TODO note' } }, result: { ok: true } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'todo-readback', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'todo-readback', name: 'read_file', args: { path: 'TODO_ROADMAP.md' } }, result: { content: '- [ ] **TODO-EXAMPLE. Open item**: pending\n- [x] Verified TODO note\n' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The TODO list was updated.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(todoMutationPriorityTurn.ok, true);
+  assert.match(todoMutationPriorityTurn.response, /verified file change/, 'explicit TODO edits take precedence over the TODO-list summary');
+  assert.doesNotMatch(todoMutationPriorityTurn.response, /Open item/);
+
+  const unverifiedReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_unverified_read',
+    prompt: 'Read bin/codex.js lines 890-902 exactly with read_file. Do not call edit_file or write_file.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_unverified_read' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'I read those lines and they say the CLI is ready.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  });
+  assert.equal(unverifiedReadTurn.ok, false, 'model claims cannot replace a read_file result');
+  assert.equal(unverifiedReadTurn.category, 'read_evidence_missing');
+  assert.match(unverifiedReadTurn.response, /도구 결과가 없어/);
+
+  const verifiedReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_verified_read',
+    prompt: 'Read bin/codex.js lines 890-902 exactly with read_file.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_verified_read' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-1', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-1', name: 'read_file' }, result: { ok: true, content: 'const verifiedSource = true;' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The file contains invented content.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  });
+  assert.equal(verifiedReadTurn.ok, true);
+  assert.match(verifiedReadTurn.response, /const verifiedSource = true;/);
+  assert.doesNotMatch(verifiedReadTurn.response, /invented content/);
+
+  const sourceAnalysisOutput = [];
+  const sourceAnalysisPrompt = 'Read Sources/AutoWiFi/HealthProbe.swift and Sources/AutoWiFi/NetworkQualityProbe.swift, analyze the throughput failure path.';
+  const sourceAnalysisTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_source_analysis', prompt: sourceAnalysisPrompt,
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_source_analysis' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file', args: { path: 'Sources/AutoWiFi/HealthProbe.swift' } }, result: { ok: true, content: 'HealthProbe.swift: starts a new path monitor.' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-quality', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-quality', name: 'read_file', args: { path: 'Sources/AutoWiFi/NetworkQualityProbe.swift' } }, result: { ok: true, content: 'NetworkQualityProbe.swift: reports typed failures.' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift says "starts a new path monitor." NetworkQualityProbe.swift says "reports typed failures."' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => sourceAnalysisOutput.push(text)
+  });
+  assert.equal(sourceAnalysisTurn.ok, true);
+  assert.match(sourceAnalysisTurn.response, /HealthProbe\.swift says "starts a new path monitor/);
+  assert.match(sourceAnalysisTurn.response, /NetworkQualityProbe\.swift says "reports typed failures/);
+  assert.doesNotMatch(sourceAnalysisTurn.response, /RAW .* SOURCE/);
+
+  const incompleteSourceAnalysis = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_incomplete_source_analysis', prompt: sourceAnalysisPrompt,
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_incomplete_source_analysis' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file', args: { path: 'Sources/AutoWiFi/HealthProbe.swift' } }, result: { ok: true, content: 'health source' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-quality', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-quality', name: 'read_file', args: { path: 'Sources/AutoWiFi/NetworkQualityProbe.swift' } }, result: { ok: true, content: 'network source' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift was inspected; no other file was discussed.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  });
+  assert.equal(incompleteSourceAnalysis.ok, false);
+  assert.equal(incompleteSourceAnalysis.category, 'source_analysis_incomplete');
+  assert.match(incompleteSourceAnalysis.response, /NetworkQualityProbe\.swift/);
+  assert.match(incompleteSourceAnalysis.response, /Only Chat read_file 실제 결과:[\s\S]*health source[\s\S]*network source/);
+
+  const exactSourceQuote = 'await window.api.updateSettings(patch);\nconst actual = await window.api.getSettings();';
+  const exactSourceQuoteTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_exact_source_quote',
+    prompt: 'Read renderer/dashboard/schedule.js lines 65-78 and return only the verbatim source lines that call window.api.updateSettings and window.api.getSettings. Do not explain.',
+    toolProfile: 'file-read',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_exact_source_quote' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-schedule', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-schedule', name: 'read_file', args: { path: 'renderer/dashboard/schedule.js', start_line: 65, end_line: 78 } }, result: { ok: true, content: exactSourceQuote } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'Requested source read completed.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`, 'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(exactSourceQuoteTurn.ok, true, 'a negated "Do not explain" instruction is not a source-analysis request');
+  assert.match(exactSourceQuoteTurn.response, /Only Chat read_file 실제 결과:[\s\S]*renderer\/dashboard\/schedule\.js/);
+  assert.match(exactSourceQuoteTurn.response, /await window\.api\.updateSettings\(patch\)/);
+  assert.match(exactSourceQuoteTurn.response, /await window\.api\.getSettings\(\)/);
+
+  const longEnglishSourcePrompt = 'Analyze the Auto WiFi throughput recovery path using actual workspace files. Read and cite every exact file below: Sources/AutoWiFi/HealthProbe.swift, Sources/AutoWiFi/NetworkQualityProbe.swift, Sources/AutoWiFi/Persistence.swift, Sources/Algorithms/Hysteresis.swift, Tests/AlgorithmsRunner/Runner.swift.';
+  const ungroundedEnglishSourceAnalysis = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_ungrounded_english_source_analysis', prompt: longEnglishSourcePrompt,
+    fetchImpl: async () => new Response([
       `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_ungrounded_english_source_analysis' })}\n\n`,
       `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-health', name: 'read_file' } })}\n\n`,
       `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-health', name: 'read_file', args: { path: 'Sources/AutoWiFi/HealthProbe.swift' } }, result: { ok: true, content: 'actual source evidence' } } })}\n\n`,
@@ -639,12 +954,33 @@ async function main() {
       `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'cat-health', name: 'exec_command', args: { command: '/bin/zsh -lc "cat Sources/AutoWiFi/HealthProbe.swift"' } } })}\n\n`,
       `data: ${JSON.stringify({ type: 'tool_output', text: 'struct HealthProbe { let verified = true }' })}\n\n`,
       `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'cat-health', name: 'exec_command', args: { command: '/bin/zsh -lc "cat Sources/AutoWiFi/HealthProbe.swift"' } }, result: { exitCode: 0, stdout: '', stderr: '' } } })}\n\n`,
-      `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift defines the measured throughput probe.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'HealthProbe.swift defines "struct HealthProbe { let verified = true }" as its measured throughput probe.' })}\n\n`,
       `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`, 'data: [DONE]\n\n'
     ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } })
   });
   assert.equal(codexCommandReadTurn.ok, true, 'a successful direct Codex cat of a requested workspace file is source evidence');
   assert.match(codexCommandReadTurn.response, /measured throughput probe/);
+
+  const commandOutput = [];
+  const commandOutputTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_command_output',
+    prompt: 'Run the requested read-only test and report its exact result.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_command_output' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'test-command', name: 'exec_command', args: { command: 'node test/example.test.js' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_output', text: 'tests 7\npass 7\naccess_token=secret-token-value' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'test-command', name: 'exec_command' }, result: { exitCode: 0, stdout: '', stderr: '' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'The test completed.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`, 'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => commandOutput.push(text)
+  });
+  assert.equal(commandOutputTurn.ok, true);
+  assert.equal(commandOutputTurn.execution.successfulMutatingTools, 1, 'shell execution remains a side-effect-capable tool');
+  assert.equal(commandOutputTurn.execution.successfulFileChangeTools, 0, 'shell success alone is not proof of a file change');
+  assert.match(commandOutput.join(''), /종료 코드: 0/);
+  assert.match(commandOutput.join(''), /tests 7\npass 7/);
+  assert.doesNotMatch(commandOutput.join(''), /secret-token-value/);
 
   const unsafeCodexCommandReadTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_unsafe_codex_command_read',
@@ -696,6 +1032,58 @@ async function main() {
   assert.match(genericCheckboxTodoListTurn.response, /- \[ \] 2026-11-05 local task without an ID prefix/);
   assert.match(genericCheckboxTodoListTurn.response, /- \[ \] Another unchecked row/);
   assert.doesNotMatch(genericCheckboxTodoListTurn.response, /체크박스를 찾지 못했습니다|체크박스가 없습니다/);
+
+  const todoApiCommandOutput = [];
+  const todoApiCommandTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_api_command',
+    prompt: 'TODO-202 검색 API canary 실행. 아래의 정확한 읽기 전용 명령으로 요청하고 파일 변경은 금지한다. 집계 JSON만 반환해라. COMMAND: node -e "fetch(\'http://127.0.0.1:8899/api/sessions/search/stream\'); if(type===\'complete\'||type===\'incomplete\') console.log(type)"',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_todo_api_command' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'todo-api-command', name: 'exec_command', args: { command: 'node search-canary.js' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'todo-api-command', name: 'exec_command' }, result: { exitCode: 0, stdout: '{"httpStatus":200,"progressEvents":3,"firstResult":true,"terminal":"cancelled-after-first-result"}', stderr: '' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'Search API returned a first result; the full scan was cancelled.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => todoApiCommandOutput.push(text)
+  });
+  assert.equal(todoApiCommandTurn.ok, true, 'a TODO API command that mentions complete/incomplete events is not a TODO status read');
+  assert.match(todoApiCommandTurn.response, /first result/);
+  assert.doesNotMatch(todoApiCommandTurn.response, /successful read_file result/);
+  assert.ok(todoApiCommandOutput.join('').includes('exec_command'));
+
+  const todoListWithoutReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_list_without_read',
+    prompt: 'TODO_ROADMAP.md에서 미완료 TODO 목록 하나를 찾아서 보고해.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_todo_list_without_read' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '미완료 TODO 체크박스가 없습니다.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(todoListWithoutReadTurn.ok, false, 'a TODO list answer needs successful read_file evidence');
+  assert.equal(todoListWithoutReadTurn.category, 'read_evidence_missing');
+  assert.match(todoListWithoutReadTurn.response, /성공한 read_file 결과가 없어 TODO를 확인하지 못했습니다/);
+
+  const failedTodoReadTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_list_failed_read',
+    prompt: 'TODO_ROADMAP.md에서 미완료 TODO 목록 하나를 찾아서 보고해.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_todo_list_failed_read' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'todo-read-fail', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'todo-read-fail', name: 'read_file', args: { path: 'TODO_ROADMAP.md' } }, result: { error: 'File not found: wrong-path' } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: '미완료 TODO 체크박스가 없습니다.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(failedTodoReadTurn.ok, false, 'a failed TODO file read must not become a successful answer');
+  assert.equal(failedTodoReadTurn.category, 'tool_execution_failed');
+  assert.match(failedTodoReadTurn.response, /read_file: File not found: wrong-path/);
+  assert.doesNotMatch(failedTodoReadTurn.response, /체크박스가 없습니다/);
 
   const groundedTodoOutput = [];
   const groundedTodoTurn = await streamOnlyChatTurn({
@@ -754,6 +1142,23 @@ async function main() {
   assert.match(exactTodoSectionTurn.response, /실제 탐색 응답 확인/);
   assert.doesNotMatch(exactTodoSectionTurn.response, /does not exist/);
 
+  const exactTitleBulletsTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_exact_title_bullets',
+    prompt: 'Read TODO-3FBROWSER-01 and return the exact title and bullet points. Do not paraphrase.',
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'todo-read', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'todo-read', name: 'read_file' }, result: exactTodoSection } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'I verified that the browser TODO is fully complete.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: () => {}
+  });
+  assert.equal(exactTitleBulletsTurn.ok, true);
+  assert.match(exactTitleBulletsTurn.response, /TODO-3FBROWSER-01\. Only Chat과 3F Browser 연결 확인/);
+  assert.match(exactTitleBulletsTurn.response, /실제 탐색 응답 확인/);
+  assert.doesNotMatch(exactTitleBulletsTurn.response, /fully complete/);
+
   const mismatchedTodoSectionTurn = await streamOnlyChatTurn({
     baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_todo_section_mismatch',
     prompt: 'TODO-3FBROWSER-01 exact requirements and acceptance-criteria from the source.',
@@ -805,6 +1210,58 @@ async function main() {
   assert.match(embeddedStatusTurn.response, /패널 열림/);
   assert.match(embeddedStatusTurn.response, /웹사이트 페이지 없음/);
   assert.ok(!embeddedStatusOutput.join('').includes('{}'), 'the malformed empty model response is withheld from the CLI user');
+
+  const standaloneStatusOutput = [];
+  let standaloneStatusRequest;
+  const standaloneStatusTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_standalone_3f_status_grounding',
+    prompt: 'Use threef_browser_status to report the independent 3F Browser status.',
+    toolProfile: 'threef-browser-status',
+    fetchImpl: async (_url, init) => {
+      standaloneStatusRequest = JSON.parse(init.body);
+      return new Response([
+        `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'standalone-status', name: 'browser_status' } })}\n\n`,
+        `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'standalone-status', name: 'browser_status' }, result: { enabled: true, available: true, isOpen: false, activeUrl: '', controlAvailable: true, statusText: '3F Browser 제어 서비스 연결됨 · 열린 페이지 없음' } } })}\n\n`,
+        `data: ${JSON.stringify({ type: 'message_delta', delta: 'The embedded panel is open.' })}\n\n`,
+        `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+        'data: [DONE]\n\n'
+      ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+    write: text => standaloneStatusOutput.push(text)
+  });
+  assert.equal(standaloneStatusRequest.toolProfile, 'threef-browser-status');
+  assert.equal(standaloneStatusTurn.ok, true);
+  assert.match(standaloneStatusTurn.response, /독립 브라우저 창 또는 페이지 없음/);
+  assert.doesNotMatch(standaloneStatusTurn.response, /패널 열림|The embedded panel/);
+  assert.ok(standaloneStatusOutput.join('').includes('독립 브라우저 창 또는 페이지 없음'));
+
+  const fileMutationWithThreefSourceOutput = [];
+  const fileMutationWithThreefSourceTurn = await streamOnlyChatTurn({
+    baseUrl: 'http://127.0.0.1:8899', sessionId: 'session_file_mutation_threef_source',
+    prompt: [
+      'Use edit_file to append a TODO note to TODO_ROADMAP.md, then use read_file to verify it.',
+      'The following code-fenced text is source content, not a request to operate the 3F browser:',
+      '```',
+      '- [ ] **TODO-3FBROWSER-01. Only Chat과 3F Browser가 실제 연결되어 탐색·페이지 읽기를 수행하는지 end-to-end 확인**',
+      '- embedded_3f_status and --tool-profile embedded-3f-status; page reading remains unverified.',
+      '```'
+    ].join('\n'),
+    fetchImpl: async () => new Response([
+      `data: ${JSON.stringify({ type: 'session_started', sessionId: 'ses_file_mutation_threef_source' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'edit-todo', name: 'edit_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'edit-todo', name: 'edit_file', args: { path: 'TODO_ROADMAP.md' } }, result: { path: 'TODO_ROADMAP.md', modified: true } } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_start', call: { id: 'read-todo', name: 'read_file' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'tool_end', result: { call: { id: 'read-todo', name: 'read_file', args: { path: 'TODO_ROADMAP.md' } }, result: '- [ ] **TODO-3FBROWSER-01. Only Chat과 3F Browser가 실제 연결되어 탐색·페이지 읽기를 수행하는지 end-to-end 확인**' } })}\n\n`,
+      `data: ${JSON.stringify({ type: 'message_delta', delta: 'Updated and read back.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'turn_complete' })}\n\n`,
+      'data: [DONE]\n\n'
+    ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    write: text => fileMutationWithThreefSourceOutput.push(text)
+  });
+  assert.equal(fileMutationWithThreefSourceTurn.ok, true, 'code-fenced TODO text mentioning browser read actions must not override a file mutation request');
+  assert.equal(fileMutationWithThreefSourceTurn.execution.successfulFileChangeTools, 1);
+  assert.match(fileMutationWithThreefSourceTurn.response, /Only Chat mutation tool success/);
+  assert.doesNotMatch(fileMutationWithThreefSourceTurn.response, /embedded_3f_read/);
 
   const navigateOutput = [];
   const embeddedNavigateTurn = await streamOnlyChatTurn({
@@ -914,7 +1371,8 @@ async function main() {
     ].join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } }),
     write: text => failedReadOutput.push(text)
   });
-  assert.equal(failedReadTurn.ok, true, 'a grounded tool failure can be delivered as a completed CLI response');
+  assert.equal(failedReadTurn.ok, false, 'a failed TODO read cannot be reported as a completed evidence request');
+  assert.equal(failedReadTurn.category, 'tool_execution_failed');
   assert.match(failedReadTurn.response, /Only Chat 도구 실행 실패 \(1건\):\nread_file: The path argument must be a string/);
   assert.doesNotMatch(failedReadTurn.response, /TODO-202 .*완료|access_token=hidden/);
   assert.ok(!failedReadOutput.join('').includes('{}'), 'malformed output is suppressed while the tool failure is recovered');

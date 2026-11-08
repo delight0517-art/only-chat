@@ -196,6 +196,7 @@ class DesktopServer {
     if (this.codexAdapter) this.codexAdapter.googleTokenFile = this.engine.tools.google.tokenFile;
     if (this.codexAdapter) this.codexAdapter.macScreenBridge = () => ({ enabled: this.isMacScreenControlEnabled(), port: this.port, token: this.macScreenToken });
     this.activeTurns = 0;
+    this.interactiveTurns = 0;
     this.turnRequestTail = Promise.resolve();
     this.activeTurnControllers = new Set();
     this.activeTurnEngines = new Map();
@@ -214,7 +215,7 @@ class DesktopServer {
     this.newChatSessionAliases = new Map();
     this.pendingDispatcherToolApprovals = new Map();
     this.engine.dispatcherApprovalHandler = (task, request) => this._requestDispatcherToolApproval(task, request);
-    this.engine.dispatcher.canStartTask = () => this.activeTurns === 0;
+    this.engine.dispatcher.canStartTask = () => this.interactiveTurns === 0;
     this.dispatchedTurns = new Set();
     const startDispatchedTurn = ({ task }) => {
       if (this.dispatchedTurns.has(task.id)) return;
@@ -372,8 +373,10 @@ class DesktopServer {
       return { status: 'not_idle' };
     }
     this.activeTurns += 1;
+    this.interactiveTurns += 1;
     try { return await recoverInterruptedTurn(this.engine); }
     finally {
+      this.interactiveTurns = Math.max(0, this.interactiveTurns - 1);
       this._decrementActiveTurns();
       void this.engine.dispatcher.tick();
       releaseTurnSlot();
@@ -2526,6 +2529,7 @@ class DesktopServer {
       }
 
       this.activeTurns += 1;
+      this.interactiveTurns += 1;
       this.activeTurnEngines.set(turnSessionId, turnEngine);
       const turnController = new AbortController();
       this.activeTurnControllers.add(turnController);
@@ -2648,6 +2652,7 @@ class DesktopServer {
         if (this.activeTurnEngines.get(turnSessionId) === turnEngine) this.activeTurnEngines.delete(turnSessionId);
         releaseSessionTurnSlot?.();
         if (embeddedThreefMcpToken) this.embeddedThreefMcpSessions.delete(embeddedThreefMcpToken);
+        this.interactiveTurns = Math.max(0, this.interactiveTurns - 1);
         this._decrementActiveTurns();
         void this.engine.dispatcher.tick();
         if (turnEngine !== this.engine) {

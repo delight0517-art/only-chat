@@ -35,6 +35,8 @@ function post(port, body) {
 test('a selected model routes only to matching configured tiers and auto preserves priority order', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-model-route-'));
   const called = [];
+  const toolProfiles = [];
+  let statusToolCalls = 0;
   let app;
   try {
     app = new DesktopServer({
@@ -44,8 +46,13 @@ test('a selected model routes only to matching configured tiers and auto preserv
       workspaceDir: path.join(dataDir, 'workspace'),
       enableQuotaRefresh: false,
       isTierReady: () => true,
-      providerAdapter: async tier => {
+      providerAdapter: async (tier, _history, _hooks, context) => {
         called.push(tier.model);
+        toolProfiles.push(context?.toolProfile || null);
+        if (context?.toolProfile === 'embedded-3f-status') {
+          if (_history.some(message => message.role === 'tool')) return { content: '3F Browser 제어 연결됨 · 열린 페이지 없음', toolCalls: [] };
+          return { content: '', toolCalls: [{ id: 'embedded-status', name: 'embedded_3f_status', args: {} }] };
+        }
         return { content: `response from ${tier.model}`, toolCalls: [] };
       }
     });
@@ -54,6 +61,12 @@ test('a selected model routes only to matching configured tiers and auto preserv
       { tier: 2, id: 'second', name: 'Second', provider: 'synthetic', model: 'beta-model', enabled: true }
     ]);
     app.engine.initSession({ title: 'Model routing test' });
+    const executeToolCall = app.engine._executeToolCall.bind(app.engine);
+    app.engine._executeToolCall = async call => {
+      if (call.name !== 'embedded_3f_status') return executeToolCall(call);
+      statusToolCalls++;
+      return { available: true, controlAvailable: true, activeUrl: 'about:blank', statusText: '3F Browser 제어 연결됨 · 열린 페이지 없음' };
+    };
     await app.start();
 
     const selected = await post(app.port, { prompt: 'use the chosen model', reasoningEffort: 'low', modelSelection: 'beta-model' });
@@ -66,18 +79,27 @@ test('a selected model routes only to matching configured tiers and auto preserv
     assert.match(automatic.text, /"type":"tier_resolved","tier":\{"tier":1,"id":"first"/);
     assert.deepEqual(called, ['beta-model', 'alpha-model']);
 
+    const statusProfile = await post(app.port, {
+      prompt: '3F Browser 상태를 확인해.', reasoningEffort: 'low', modelSelection: 'alpha-model', toolProfile: 'embedded-3f-status'
+    });
+    assert.equal(statusProfile.status, 200, 'desktop API accepts the narrow read-only 3F status profile');
+    assert.equal(toolProfiles.at(-1), 'embedded-3f-status', 'the profile reaches the provider adapter even in an isolated test runtime');
+    assert.deepEqual(called, ['beta-model', 'alpha-model', 'alpha-model', 'alpha-model']);
+    assert.equal(statusToolCalls, 1, 'AgentEngine allows the exact read-only status call in this profile');
+    assert.match(statusProfile.text, /3F Browser 제어 연결됨 · 열린 페이지 없음/);
+
     const unsupported = await post(app.port, { prompt: 'reject an unknown model', reasoningEffort: 'low', modelSelection: 'not-configured' });
     assert.equal(unsupported.status, 400);
-    assert.deepEqual(called, ['beta-model', 'alpha-model']);
+    assert.deepEqual(called, ['beta-model', 'alpha-model', 'alpha-model', 'alpha-model']);
 
     const malformed = await post(app.port, { prompt: 'reject malformed model choice', reasoningEffort: 'low', modelSelection: 42 });
     assert.equal(malformed.status, 400);
-    assert.deepEqual(called, ['beta-model', 'alpha-model']);
+    assert.deepEqual(called, ['beta-model', 'alpha-model', 'alpha-model', 'alpha-model']);
 
     assert.equal(app.engine.priorityChain.setManualTier('second'), true);
     const wrongManualModel = await post(app.port, { prompt: 'do not switch manual accounts', reasoningEffort: 'low', modelSelection: 'alpha-model' });
     assert.equal(wrongManualModel.status, 409);
-    assert.deepEqual(called, ['beta-model', 'alpha-model']);
+    assert.deepEqual(called, ['beta-model', 'alpha-model', 'alpha-model', 'alpha-model']);
   } finally {
     await app?.stop();
     fs.rmSync(dataDir, { recursive: true, force: true });

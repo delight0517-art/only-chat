@@ -41,6 +41,8 @@ test('Account Router tools share tasks across sessions and derive creator and cl
     const listed = await chatB._executeToolCall({ id: 'list-call-1', name: 'task_registry_list', args: { limit: 20 } });
     assert.equal(listed.length, 1);
     assert.equal(listed[0].taskKey, 'coordinated-change');
+    const listedWithMalformedOptionalLimit = await chatB._executeToolCall({ id: 'list-invalid-limit', name: 'task_registry_list', args: { limit: null } });
+    assert.equal(listedWithMalformedOptionalLimit.length, 1, 'invalid optional model parameters use the bounded default');
     const read = await chatB._executeToolCall({ id: 'read-call-1', name: 'task_registry_read', args: { taskKey: 'coordinated-change' } });
     assert.equal(read.creatorChatId, 'session-chat-a');
 

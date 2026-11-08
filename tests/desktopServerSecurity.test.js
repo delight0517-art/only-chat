@@ -17,6 +17,21 @@ async function request(port, headers = {}, pathname = '/api/status') {
   });
 }
 
+async function postJson(port, pathname, value) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(value);
+    const req = http.request({
+      host: '127.0.0.1', port, path: pathname, method: 'POST',
+      headers: { Host: `127.0.0.1:${port}`, Origin: `http://127.0.0.1:${port}`, 'Sec-Fetch-Site': 'same-origin', 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, res => {
+      let response = '';
+      res.setEncoding('utf8'); res.on('data', chunk => { response += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(response) }));
+    });
+    req.on('error', reject); req.end(body);
+  });
+}
+
 async function main() {
   const app = Object.create(DesktopServer.prototype);
   app.port = 0;
@@ -47,6 +62,34 @@ async function main() {
     ]);
     const retiredSync = await request(app.port, { Origin: localOrigin, 'Sec-Fetch-Site': 'same-origin' }, '/api/sync/push');
     assert.strictEqual(retiredSync.status, 409);
+
+    const feedbackApp = Object.create(DesktopServer.prototype);
+    let mailto = '';
+    feedbackApp.port = 0;
+    feedbackApp.openExternal = async value => { mailto = value; };
+    const feedbackServer = http.createServer((req, res) => feedbackApp._handleRequest(req, res));
+    try {
+      await new Promise(resolve => feedbackServer.listen(0, '127.0.0.1', resolve));
+      feedbackApp.port = feedbackServer.address().port;
+      const feedback = await postJson(feedbackApp.port, '/api/feedback/developer-email', {
+        source: '채팅\n오류 user@example.com',
+        error: 'Bearer abcdefghijklmnop user@example.com /Users/alice/private/file.txt sk-abcdefghijklmnop'
+      });
+      assert.strictEqual(feedback.status, 200);
+      assert.strictEqual(feedback.body.ok, true);
+      assert.match(mailto, /^mailto:/);
+      const emailBody = decodeURIComponent(new URL(mailto).searchParams.get('body'));
+      assert.match(emailBody, /\[이메일 숨김\]/);
+      assert.match(emailBody, /\[인증 정보 숨김\]/);
+      assert.match(emailBody, /\[토큰 숨김\]/);
+      assert.doesNotMatch(emailBody, /user@example\.com|\/Users\/alice|sk-abcdefghijklmnop/);
+      assert.match(emailBody, /대화 내용, 첨부 파일, 음성 녹음이 포함되지 않습니다/);
+
+      const invalidFeedback = await postJson(feedbackApp.port, '/api/feedback/developer-email', { source: 'chat', error: null });
+      assert.strictEqual(invalidFeedback.status, 400);
+    } finally {
+      await new Promise(resolve => feedbackServer.close(resolve));
+    }
 
     // The HTTP route queues work on the engine-owned dispatcher; worker execution is tested separately.
     const dispatcherApp = Object.create(DesktopServer.prototype);

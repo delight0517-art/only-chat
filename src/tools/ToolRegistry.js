@@ -9,7 +9,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn, exec } = require('node:child_process');
+const { spawn, exec, spawnSync } = require('node:child_process');
 const { GoogleConnector } = require('../connectors/GoogleConnector.js');
 const { NotionConnector } = require('../connectors/NotionConnector.js');
 const { NotionMcpConnector } = require('../connectors/NotionMcpConnector.js');
@@ -19,6 +19,8 @@ const { PasskeyVault } = require('../auth/PasskeyVault.js');
 const { BrowserWorkspace } = require('../workspace/BrowserWorkspace.js');
 const { SpaceKeeperConnector } = require('../connectors/SpaceKeeperConnector.js');
 const STORAGE_GUARD = '/Users/rogan/bin/storage-guard';
+const MAX_READ_FILE_CHARS = 24_000;
+const READ_FILE_WINDOW_CHARS = MAX_READ_FILE_CHARS / 2;
 const READ_ONLY_MUTATION_METHODS = new Set([
   'googleDriveCreate', 'googleDriveUpdate', 'gmailSend',
   'notionCreatePage', 'notionUpdatePage', 'notionAppendBlocks',
@@ -167,8 +169,11 @@ class ToolRegistry {
     this.browserWorkspace = options.browserWorkspace || new BrowserWorkspace(options.browserWorkspaceOptions || {});
   }
 
-  setWorkspace(dir) {
+  setWorkspace(dir, options = {}) {
     this.workspaceDir = path.resolve(dir);
+    if (Object.hasOwn(options, 'sandboxRoot')) {
+      this.sandboxRoot = options.sandboxRoot ? path.resolve(options.sandboxRoot) : null;
+    }
   }
 
   _assertMutationAllowed(method) {
@@ -280,19 +285,66 @@ class ToolRegistry {
    * Read file content
    */
   async readFile(filePath, startLine = 1, endLine = null) {
-    const fullPath = this.resolvePath(filePath);
-    if (!fs.existsSync(fullPath)) {
-      throw new Error(`File not found: ${filePath}`);
+    if (!Number.isSafeInteger(startLine) || startLine < 1) {
+      throw new Error('start_line must be a positive 1-based line number.');
     }
-    const content = fs.readFileSync(fullPath, 'utf8');
+    if (endLine !== null && (!Number.isSafeInteger(endLine) || endLine < startLine)) {
+      throw new Error('end_line must be an inclusive 1-based line number greater than or equal to start_line.');
+    }
+    const fullPath = this.resolvePath(filePath);
+    let content;
+    try {
+      content = await fs.promises.readFile(fullPath, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') throw new Error(`File not found: ${filePath}`);
+      throw error;
+    }
     const lines = content.split('\n');
+    if (startLine > lines.length) throw new Error(`start_line exceeds file length (${lines.length} lines).`);
     
     if (startLine > 1 || endLine !== null) {
       const s = Math.max(1, startLine) - 1;
       const e = endLine !== null ? Math.min(lines.length, endLine) : lines.length;
-      return lines.slice(s, e).join('\n');
+      content = lines.slice(s, e).join('\n');
     }
-    return content;
+    if (content.length <= MAX_READ_FILE_CHARS) return content;
+
+    const halfWindow = Math.floor(READ_FILE_WINDOW_CHARS);
+    const headBoundary = content.lastIndexOf('\n', halfWindow);
+    const headEnd = headBoundary > 0 ? headBoundary : halfWindow;
+    const tailBoundary = content.indexOf('\n', content.length - halfWindow);
+    const tailStart = tailBoundary >= 0 ? tailBoundary + 1 : content.length - halfWindow;
+    const omitted = content.slice(headEnd, tailStart);
+    const omittedLines = Math.max(1, (omitted.match(/\n/g) || []).length);
+    return `${content.slice(0, headEnd)}\n\n[Only Chat read_file bounded output: omitted ${omittedLines} middle lines (${omitted.length} characters). Call read_file again with start_line and end_line for a specific section.]\n\n${content.slice(tailStart)}`;
+  }
+
+  /** Search workspace text without invoking a shell. */
+  async searchFiles(query, filePath = '.') {
+    if (typeof query !== 'string' || !query.trim() || query.length > 300) {
+      throw new Error('search_files query must contain 1-300 characters.');
+    }
+    const fullPath = this.resolvePath(filePath);
+    const result = spawnSync('rg', [
+      '--line-number', '--no-heading', '--color', 'never', '--max-count', '50',
+      '--glob', '!node_modules/**', '--glob', '!.git/**', '--', query, fullPath
+    ], {
+      cwd: this.workspaceDir,
+      encoding: 'utf8',
+      timeout: 8000,
+      maxBuffer: 1024 * 1024
+    });
+    if (result.error) throw new Error(`search_files failed: ${result.error.message}`);
+    if (result.status !== 0 && result.status !== 1) {
+      throw new Error(`search_files failed with exit code ${result.status}: ${(result.stderr || '').slice(0, 1000)}`);
+    }
+    const lines = String(result.stdout || '').split('\n').filter(Boolean);
+    return {
+      query,
+      path: path.relative(this.workspaceDir, fullPath) || '.',
+      matches: lines.slice(0, 100),
+      ...(lines.length > 100 ? { truncated: true, matchLimit: 100 } : {})
+    };
   }
 
   /**
@@ -302,9 +354,7 @@ class ToolRegistry {
     if (this.approvalPolicy === 'read-only') throw new Error('write_file is blocked under read-only policy.');
     const fullPath = this.resolvePath(filePath);
     const dir = path.dirname(fullPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(fullPath, content, 'utf8');
     return { path: fullPath, bytes: Buffer.byteLength(content) };
   }
@@ -315,14 +365,12 @@ class ToolRegistry {
   async editFile(filePath, target, replacement) {
     if (this.approvalPolicy === 'read-only') throw new Error('edit_file is blocked under read-only policy.');
     const fullPath = this.resolvePath(filePath);
-    if (!fs.existsSync(fullPath)) {
-      throw new Error(`Cannot edit missing file: ${filePath}`);
-    }
+    if (!fs.existsSync(fullPath)) throw new Error(`Cannot edit missing file: ${filePath}`);
     const content = fs.readFileSync(fullPath, 'utf8');
-    if (!content.includes(target)) {
-      throw new Error(`Target string not found in ${filePath}`);
-    }
-    const updated = content.replaceAll(target, replacement);
+    if (!content.includes(target)) throw new Error(`Target string not found in ${filePath}`);
+    const firstMatch = content.indexOf(target);
+    if (content.indexOf(target, firstMatch + target.length) !== -1) throw new Error(`Target string must occur exactly once in ${filePath}`);
+    const updated = content.slice(0, firstMatch) + replacement + content.slice(firstMatch + target.length);
     fs.writeFileSync(fullPath, updated, 'utf8');
     return { path: fullPath, modified: true };
   }
@@ -482,7 +530,11 @@ class ToolRegistry {
 
   taskRegistryList(options = {}) {
     if (!this.taskRegistryStore) throw new Error('Shared task registry is unavailable in this runtime.');
-    return this.taskRegistryStore.listTasks({ status: options.status, limit: options.limit });
+    const requestedLimit = options?.limit;
+    const limit = Number.isSafeInteger(requestedLimit) && requestedLimit >= 1 && requestedLimit <= 200
+      ? requestedLimit
+      : 100;
+    return this.taskRegistryStore.listTasks({ status: options.status, limit });
   }
 
   taskRegistryRead(taskKey) {

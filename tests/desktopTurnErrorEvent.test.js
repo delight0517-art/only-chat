@@ -16,7 +16,8 @@ function renderError(message) {
     card,
     timeline,
     event: { type: 'error', ...(typeof message === 'string' ? { message } : message) },
-    document: { createElement: () => ({ className: '', textContent: '' }) }
+    refreshPriorityStatus: () => {},
+    document: { createElement: () => ({ className: '', textContent: '', setAttribute() {}, addEventListener() {} }) }
   });
   vm.runInContext(`${source.slice(start, end)}\nhandleStreamEvent(event, card);`, context);
   return { card, timeline };
@@ -26,7 +27,8 @@ function renderSessionStarted(sessionId) {
   const context = vm.createContext({
     event: { type: 'session_started', clientSessionId: 'session_1000000000000', sessionId },
     card: {},
-    timeline: { scrollTop: 0, scrollHeight: 0 }
+    timeline: { scrollTop: 0, scrollHeight: 0 },
+    refreshModelSwitchSchedule: () => {}
   });
   return vm.runInContext(`let currentSessionId = 'session_1000000000000'; let currentCodexThreadId = 'old-thread'; ${source.slice(start, end)}; handleStreamEvent(event, card); [currentSessionId, currentCodexThreadId]`, context);
 }
@@ -47,7 +49,7 @@ const categorizedText = categorized.card.content.children[0].textContent;
 assert.match(categorizedText, /실패 유형: 계정 인증 필요/);
 assert.match(categorizedText, /시도한 모델: GPT-6 Luna/);
 assert.match(categorizedText, /시도한 순위: 2순위/);
-assert.match(categorizedText, /해당 계정의 연결 상태를 확인한 뒤 다시 시도/);
+assert.match(categorizedText, /계정 인증이 풀렸습니다.*다시 로그인/s);
 assert.doesNotMatch(categorizedText, /secret@example\.com|private|hidden|stderr|token=/i);
 
 const fallback = renderError('');
@@ -63,7 +65,7 @@ assert.match(throttled.card.content.children[0].textContent, /한도 상태를 �
 const startedSessionState = renderSessionStarted('ses_0123456789abcdef');
 assert.equal(startedSessionState[0], 'ses_0123456789abcdef');
 assert.equal(startedSessionState[1], null, 'a new local session clears any prior Codex source binding');
-const staleStartedSessionState = vm.runInNewContext(`let currentSessionId = 'ses_fedcba9876543210'; let currentCodexThreadId = null; ${source.slice(start, end)}; handleStreamEvent({ type: 'session_started', clientSessionId: 'session_1000000000000', sessionId: 'ses_0123456789abcdef' }, {}); currentSessionId`);
+const staleStartedSessionState = vm.runInNewContext(`let currentSessionId = 'ses_fedcba9876543210'; let currentCodexThreadId = null; const refreshModelSwitchSchedule = () => {}; ${source.slice(start, end)}; handleStreamEvent({ type: 'session_started', clientSessionId: 'session_1000000000000', sessionId: 'ses_0123456789abcdef' }, {}); currentSessionId`);
 assert.equal(staleStartedSessionState, 'ses_fedcba9876543210', 'a late session-started event cannot replace a different selected chat');
 
 if (process.env.ONLY_CHAT_FOCUSED_ERROR_CARD === '1') process.exit(0);

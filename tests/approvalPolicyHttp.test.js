@@ -37,7 +37,7 @@ function pendingCall(app, requestId, sessionId) {
     resolvePromise(value);
   };
   const timer = setTimeout(() => {}, 60_000);
-  app.pendingToolApprovals.set(requestId, { sessionId, resolve, timer });
+  app.pendingToolApprovals.set(requestId, { sessionId, engine: app.engine, resolve, timer });
   return {
     promise,
     get resolveCount() { return resolveCount; },

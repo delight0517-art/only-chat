@@ -33,6 +33,16 @@ const MUTATING_TOOL_NAMES = new Set([
   'browser_workspace_snapshot', 'browser_workspace_restore', 'browser_workspace_focus', 'browser_workspace_open',
   'task_registry_create', 'task_registry_claim', 'task_registry_checkpoint', 'task_registry_send', 'task_registry_ack', 'task_registry_record_check', 'joint_development_create'
 ]);
+const FILE_CHANGE_TOOL_NAMES = new Set(['write_file', 'edit_file', 'apply_patch']);
+
+function isMutatingToolCall(tool, args = {}) {
+  if (tool === 'exec_command' || tool === 'bash') {
+    const command = String(args.command || '');
+    const boundedSedRead = /^sed -n ["']\d+(?:,\d+)?p["'] [A-Za-z0-9_./-]+$/.test(command);
+    return !boundedSedRead;
+  }
+  return MUTATING_TOOL_NAMES.has(tool);
+}
 
 function readableModelName(modelId) {
   const names = {
@@ -95,6 +105,33 @@ function redactToolMessage(value) {
     .replace(/\s+/g, ' ').trim().slice(0, 240);
 }
 
+function safeCommandOutput(value, limit = 6000) {
+  if (typeof value !== 'string' || !value) return '';
+  const redacted = value.split(/\r?\n/).map(line => redactToolMessage(line)).join('\n');
+  return redacted.length > limit ? redacted.slice(0, limit) + '\n[출력 생략: 표시 한도 초과]' : redacted;
+}
+
+function safeTraceValue(value, depth = 0) {
+  if (depth > 8) return '[depth limit]';
+  if (typeof value === 'string') {
+    const redacted = value
+      .replace(/\b(bearer\s+)[\w.~+/=-]+/gi, '$1[redacted]')
+      .replace(/\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret|cookie|authorization)\b\s*[:=]\s*["']?[^\s,"'}]+/gi, '$1=[redacted]')
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted-email]');
+    return redacted.length > 12000 ? `${redacted.slice(0, 12000)}\n[tool result truncated]` : redacted;
+  }
+  if (Array.isArray(value)) return value.slice(0, 100).map(item => safeTraceValue(item, depth + 1));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).slice(0, 100).map(([key, item]) => [
+      key,
+      /password|token|secret|cookie|authorization|api.?key|credential/i.test(key)
+        ? '[redacted]'
+        : safeTraceValue(item, depth + 1)
+    ]));
+  }
+  return value;
+}
+
 function safeToolError(value, depth = 0) {
   if (depth > 4 || value == null) return '';
   if (typeof value === 'string') {
@@ -134,13 +171,35 @@ function readFileText(value, depth = 0) {
   return typeof value.result === 'string' ? value.result : readFileText(value.result, depth + 1);
 }
 
+function promptIntentText(prompt) {
+  return String(prompt || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .split(/(?:명령|command)\s*:/i, 1)[0]
+    .replace(/https?:\/\/\S+|\b(?:127\.0\.0\.1|localhost):\d+\S*/gi, ' ');
+}
+
+function requestedEditAnchor(prompt) {
+  const text = promptIntentText(prompt);
+  const match = text.match(/\b(?:before|above)\s+(?:the\s+)?(?:existing\s+)?line\s+(?:beginning|starting\s+with)\s*(['"`])([\s\S]*?)\1/i)
+    || text.match(/\b(?:after|below)\s+(?:the\s+)?(?:existing\s+)?line\s+(?:beginning|starting\s+with)\s*(['"`])([\s\S]*?)\1/i)
+    || text.match(/(?:기존\s*)?(?:줄|행)\s*(?:이|가)?\s*시작(?:하는|하는\s*줄)?\s*(['"`])([\s\S]*?)\1\s*(?:앞|위|뒤|아래)/i);
+  const anchor = match?.[2]?.trim();
+  return anchor && anchor.length <= 500 ? anchor : null;
+}
+
+function asksForTodoStatus(prompt) {
+  return /(?:완료\s*여부|미완료|체크(?:박스)?\s*(?:상태|한\s*줄)|(?:현재\s*)?상태(?:를|가|인지|인가)|\b(?:is|whether)\s+.{0,40}\b(?:complete|completed|done)\b|\bstatus\s+of\s+TODO\b)/i.test(promptIntentText(prompt));
+}
+
 function isTodoEvidenceRequest(prompt) {
-  return /\bTODO-[A-Za-z0-9_-]+\b/i.test(String(prompt || ''))
-    && /(?:완료\s*여부|미완료|체크(?:박스)?\s*(?:상태|한\s*줄)|상태|complete|completed|done|status|정확한\s*(?:요구사항|원문|내용)|acceptance[-\s]*(?:checks?|criteria)|exact\s+(?:requirements|source|text))/i.test(String(prompt || ''));
+  const text = promptIntentText(prompt);
+  const asksForStatus = asksForTodoStatus(text);
+  const asksForRequirements = /(?:정확한\s*(?:요구사항|원문|내용|제목|항목|불릿)|acceptance[-\s]*(?:checks?|criteria)|exact\s+(?:requirements|source|text|title|bullet\s*points?))/i.test(text);
+  return /\bTODO-[A-Za-z0-9_-]+\b/i.test(text) && (asksForStatus || asksForRequirements);
 }
 
 function isTodoListEvidenceRequest(prompt) {
-  const text = String(prompt || '');
+  const text = promptIntentText(prompt);
   return !/\bTODO-[A-Za-z0-9_-]+\b/i.test(text)
     && /(?:TODO|투두|체크박스)/i.test(text)
     && /(?:미완료|unchecked|incomplete|open)/i.test(text)
@@ -167,8 +226,11 @@ function groundTodoListAnswer(prompt, readFileResults = []) {
 }
 
 function isSourceReadEvidenceRequest(prompt) {
-  const text = String(prompt || '');
+  const text = promptIntentText(prompt);
   if (isExplicitFileMutationRequest(text)) return false;
+  const contentIntent = text.replace(/읽기\s*전용|read[-\s]*only/gi, ' ');
+  if (contentIntent !== text
+    && !/(?:read_file|파일\s*(?:내용|원문)|(?:파일|소스|코드).{0,24}읽|읽.{0,24}(?:파일|소스|코드))/i.test(contentIntent)) return false;
   return /\bread_file\b/i.test(text)
     || (/\b(?:read|reading|inspect|inspecting|analy[sz]e|analysis|diagnos(?:e|is)|review|reviewing)\b/i.test(text)
       && /\b(?:files?|sources?|code|lines?)\b|\.[a-z0-9]{1,8}\b/i.test(text))
@@ -176,10 +238,11 @@ function isSourceReadEvidenceRequest(prompt) {
 }
 
 function isExplicitFileMutationRequest(prompt) {
-  const text = String(prompt || '');
+  const text = promptIntentText(prompt);
   if (/(?:do not|don't|never|avoid)\s+(?:(?:call|use|invoke)\s+)?(?:edit_file|write_file|apply_patch)\b|(?:edit_file|write_file|apply_patch).{0,32}(?:호출하지|사용하지|실행하지)\s*마/i.test(text)) return false;
+  if (/(?:파일|문서|소스|TODO).{0,80}(?:수정|추가|작성|삽입|교체|변경|삭제|붙여)(?:은|는|을|를|이)?\s*(?:하지\s*마|금지|하지\s*않|말아)|(?:수정|추가|작성|삽입|교체|변경|삭제|붙여).{0,40}(?:하지\s*마|금지|하지\s*않|말아).{0,40}(?:파일|문서|소스|TODO)/i.test(text)) return false;
   return /\b(?:edit_file|write_file|apply_patch)\b/i.test(text)
-    || (/\b(?:edit|write|append|modify|update|replace|create|delete|insert)\b/i.test(text)
+    || (/\b(?:edit|write|append|prepend|modify|update|replace|create|delete|insert)\b/i.test(text)
       && /\b(?:files?|documents?|sources?|TODO|roadmap)\b|\.[a-z0-9]{1,8}\b/i.test(text))
     || /(?:파일|문서|소스|TODO).{0,80}(?:수정|추가|작성|삽입|교체|변경|삭제|붙여)/i.test(text)
     || /(?:수정|추가|작성|삽입|교체|변경|삭제|붙여).{0,80}(?:파일|문서|소스|TODO)/i.test(text);
@@ -187,6 +250,32 @@ function isExplicitFileMutationRequest(prompt) {
 
 function groundSuccessfulMutationAnswer(count) {
   return `Only Chat mutation tool success: ${count} approved file-change tool call(s) returned success. This confirms the tool result only; independently read the target before treating the requested change as complete.`;
+}
+
+function verifiedEditChangeCount(successfulEdits, successfulOtherFileChanges) {
+  if (!successfulEdits.length || successfulOtherFileChanges || successfulEdits.some(edit => !edit.verified)) return 0;
+  return successfulEdits.length;
+}
+
+function groundVerifiedEditChangeAnswer(count) {
+  return `Only Chat verified file change: ${count} successful edit_file call(s) were followed by read_file of the same path, and the readback contains the requested replacement text.`;
+}
+
+function normalizedWorkspacePath(value) {
+  const normalized = String(value || '').replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
+  return normalized ? path.posix.normalize(normalized) : '';
+}
+
+function verifiedEditRetryCount(failedEditAttempts, successfulEdits, failedOtherMutatingTools, successfulOtherFileChanges) {
+  if (!failedEditAttempts.length || !successfulEdits.length || failedOtherMutatingTools || successfulOtherFileChanges) return 0;
+  if (successfulEdits.some(edit => !edit.verified)) return 0;
+  return failedEditAttempts.every(failure => successfulEdits.some(edit =>
+    edit.path === failure.path && edit.sequence > failure.sequence && edit.verified
+  )) ? failedEditAttempts.length : 0;
+}
+
+function groundVerifiedEditRetryAnswer(count, failureCategory) {
+  return `Only Chat verified edit retry: ${count} earlier edit_file attempt(s) failed, but a later edit_file succeeded and a subsequent read_file of the same path contained the requested replacement. The requested file change is verified. The turn ended with ${failureCategory}; no additional unverified actions are claimed.`;
 }
 
 function groundSourceReadAnswer(results = []) {
@@ -266,7 +355,7 @@ function validateSourceAnalysisResponse(prompt, answer, results = []) {
 }
 
 function groundTodoSectionAnswer(prompt, answer, readFileResults = []) {
-  if (!/정확한\s*(?:요구사항|원문|내용)|acceptance[-\s]*(?:checks?|criteria)|exact\s+(?:requirements|source|text)/i.test(String(prompt || ''))) return null;
+  if (!/정확한\s*(?:요구사항|원문|내용|제목|항목|불릿)|acceptance[-\s]*(?:checks?|criteria)|exact\s+(?:requirements|source|text|title|bullet\s*points?)/i.test(promptIntentText(prompt))) return null;
   const requestedId = /\bTODO-[A-Za-z0-9_-]+\b/i.exec(String(prompt || ''))?.[0];
   if (!requestedId) return null;
   const evidence = readFileResults.map(readFileText).filter(Boolean).join('\n');
@@ -293,7 +382,7 @@ function groundTodoSectionAnswer(prompt, answer, readFileResults = []) {
 
 function groundTodoStatusAnswer(prompt, answer, readFileResults = []) {
   const requestedId = /\bTODO-[A-Za-z0-9_-]+\b/i.exec(String(prompt || ''))?.[0];
-  if (!requestedId || !/(?:완료\s*여부|미완료|체크(?:박스)?\s*(?:상태|한\s*줄)|상태|complete|completed|done|status)/i.test(String(prompt || ''))) return answer;
+  if (!requestedId || !asksForTodoStatus(prompt)) return answer;
   const evidence = readFileResults.map(readFileText).filter(Boolean).join('\n');
   const row = [...evidence.matchAll(/^\s*-\s+\[([ xX])\]\s+\*\*(TODO-[A-Za-z0-9_-]+)\.\s*([^\n]*)/gmi)]
     .find(([, , id]) => id.toUpperCase() === requestedId.toUpperCase());
@@ -306,19 +395,29 @@ function groundTodoStatusAnswer(prompt, answer, readFileResults = []) {
 }
 
 function isEmbeddedThreefStatusRequest(prompt) {
-  return /\bembedded_3f_status\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:status|상태|연결|페이지)|3F Browser.{0,32}(?:상태|연결|페이지)/i.test(String(prompt || ''));
+  const text = promptIntentText(prompt);
+  return /\bembedded_3f_status\b|(?:embedded|임베디드).{0,24}(?:3F|쓰리[ -]?에프).{0,32}(?:browser|브라우저)/i.test(text);
+}
+
+function isStandaloneThreefStatusRequest(prompt) {
+  const text = promptIntentText(prompt);
+  return !isEmbeddedThreefStatusRequest(text)
+    && (/\bthreef_browser_status\b|(?:standalone|독립|단독).{0,32}(?:3F|쓰리[ -]?에프).{0,32}(?:browser|브라우저).{0,32}(?:status|상태|연결|페이지)|(?:3F|쓰리[ -]?에프).{0,32}(?:browser|브라우저).{0,32}(?:standalone|독립|단독)|(?:3F|쓰리[ -]?에프)\s*(?:browser|브라우저).{0,48}(?:status|상태|연결|열린\s*페이지|열려\s*있는\s*페이지)/i.test(text));
 }
 
 function isEmbeddedThreefReadRequest(prompt) {
-  return /\bembedded_3f_read\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:read|읽기|본문)|3F Browser.{0,32}(?:read|읽기|본문)/i.test(String(prompt || ''));
+  const text = promptIntentText(prompt);
+  return /\bembedded_3f_read\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:read|읽기|본문)|3F Browser.{0,32}(?:read|읽기|본문)/i.test(text);
 }
 
 function isEmbeddedThreefNavigateRequest(prompt) {
-  return /\bembedded_3f_navigate\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:navigate|이동|열기)|3F Browser.{0,32}(?:navigate|이동|열기)/i.test(String(prompt || ''));
+  const text = promptIntentText(prompt);
+  return /\bembedded_3f_navigate\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:navigate|이동|열기)|3F Browser.{0,32}(?:navigate|이동|열기)/i.test(text);
 }
 
 function isEmbeddedThreefHistoryRequest(prompt) {
-  return /\bembedded_3f_history\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:history|back|forward|reload|뒤로|앞으로|새로고침)|3F Browser.{0,32}(?:history|back|forward|reload|뒤로|앞으로|새로고침)/i.test(String(prompt || ''));
+  const text = promptIntentText(prompt);
+  return /\bembedded_3f_history\b|(?:embedded|임베디드).{0,24}3F.{0,32}(?:history|back|forward|reload|뒤로|앞으로|새로고침)|3F Browser.{0,32}(?:history|back|forward|reload|뒤로|앞으로|새로고침)/i.test(text);
 }
 
 function safeBrowserAddress(value) {
@@ -358,6 +457,37 @@ function groundToolFailureAnswer(results = []) {
   if (!results.length) return null;
   const failures = results.map(({ name, detail }) => `${name}: ${detail || '도구가 실패했지만 상세 오류를 반환하지 않았습니다.'}`);
   return `Only Chat 도구 실행 실패 (${failures.length}건):\n${failures.join('\n')}`;
+}
+
+function groundCommandOutcomeAnswer(results = [], answer = '') {
+  const commands = results.filter(item => ['exec_command', 'bash'].includes(item?.tool));
+  if (!commands.length) return null;
+  const failureClaim = /\b(?:failed|failure|errors?|issues?|problems?)\b|실패|오류|문제/i.test(answer)
+    && !/\b(?:no|without|zero)\s+(?:any\s+)?(?:failures?|errors?|issues?|problems?)\b|(?:실패|오류|문제)(?:가|는)?\s*없(?:습니다|다|음)?/i.test(answer);
+  const successClaim = /\b(?:pass(?:ed)?|success(?:ful|fully)?|completed|verified)\b|통과|성공|완료/i.test(answer);
+  const commandFailed = commands.some(item => item.failed === true || item.result?.exitCode !== 0);
+  if (commandFailed && successClaim) {
+    const details = commands.filter(item => item.failed === true || item.result?.exitCode !== 0).map(item => {
+      const result = item.result || {};
+      const exitCode = Number.isInteger(result.exitCode) ? result.exitCode : '확인 불가';
+      const detail = safeToolError(result) || safeCommandOutput(result.stderr || result.stdout, 1200) || '도구가 실패를 반환했습니다.';
+      return `${item.tool} 종료 코드 ${exitCode}: ${detail}`;
+    });
+    return { ok: false, category: 'tool_execution_failed', response: `Only Chat 명령 결과 실패 (${details.length}건):\n${details.join('\n')}` };
+  }
+  const everyCommandPassed = commands.every(item => item.failed !== true && item.result?.exitCode === 0);
+  if (!everyCommandPassed || !failureClaim) return null;
+  const passLines = commands.flatMap(item => safeCommandOutput(item.result?.stdout)
+    .split('\n').filter(line => /^\s*PASS\b/i.test(line))).slice(0, 12);
+  const hasExplicitFailureOutput = commands.some(item => /(?:^|\n)\s*(?:FAIL(?:ED)?|ERROR)\b|\berror:/i.test(
+    `${item.result?.stdout || ''}\n${item.result?.stderr || ''}`
+  ));
+  if (!passLines.length || hasExplicitFailureOutput) return null;
+  return {
+    ok: true,
+    category: 'command_output_grounded',
+    response: `Only Chat 명령 도구 출력으로 확인한 통과 항목 (종료 코드 0):\n${passLines.join('\n')}`
+  };
 }
 
 function isTaskRegistryListRequest(prompt) {
@@ -407,6 +537,19 @@ function groundEmbeddedThreefStatusAnswer(results = []) {
   const standardStatus = ['Only Chat 안의 3F Browser 연결됨', '3F Browser 제어 연결됨 · 열린 페이지 없음'];
   const statusDetail = statusText && !standardStatus.includes(statusText) ? ` 상태 안내: ${redactToolMessage(statusText)}.` : '';
   return `Only Chat embedded_3f_status 도구 결과: ${control}, ${panel}, ${page}.${statusDetail}`;
+}
+
+function groundStandaloneThreefStatusAnswer(results = []) {
+  const result = results.at(-1);
+  if (!result || typeof result !== 'object' || result.error || result.blocked || result.isError) {
+    return 'Only Chat threef_browser_status 도구 결과가 없어 독립 3F Browser 상태를 검증하지 못했습니다.';
+  }
+  const control = result.controlAvailable === true ? '제어 서비스 연결됨' : result.controlAvailable === false ? '제어 서비스 연결 안 됨' : '제어 서비스 연결 상태 알 수 없음';
+  const window = result.isOpen === true ? '독립 브라우저 창 열림' : result.isOpen === false ? '독립 브라우저 창 또는 페이지 없음' : '독립 브라우저 창 상태 알 수 없음';
+  const url = typeof result.activeUrl === 'string' ? result.activeUrl.trim() : '';
+  const page = safeBrowserAddress(url);
+  const status = typeof result.statusText === 'string' ? redactToolMessage(result.statusText) : '';
+  return `Only Chat threef_browser_status 실제 결과: ${control}, ${window}${page ? `, 페이지 ${page}` : ', 열린 웹 페이지 없음'}${status ? `. 상태 안내: ${status}` : ''}.`;
 }
 
 function groundEmbeddedThreefReadAnswer(results = []) {
@@ -664,30 +807,99 @@ function formatOnlyChatWorkspaceContext(context) {
   ].join('\n');
 }
 
-async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTools = [], approveWorkspaceWrite = null, workspaceContext = null, toolProfile = null, fetchImpl = fetch, write = text => process.stdout.write(text), signal, maxToolCalls = 12, timeoutMs = 120_000 } = {}) {
+function formatExactCommandDirective(commands = [], workspaceRoot = '') {
+  if (!commands.length || !workspaceRoot) return '';
+  return [
+    '[Only Chat CLI exact command authorization]',
+    'The user explicitly authorized these exact command strings in this exact workspace for this turn.',
+    'Call exec_command once for each command, using the exact command string and exact cwd below. Do not inspect files, substitute commands, or call any other tool.',
+    `cwd: ${JSON.stringify(workspaceRoot)}`,
+    ...commands.map((command, index) => `command ${index + 1}: ${JSON.stringify(command)}`)
+  ].join('\n');
+}
+
+async function executeExactApprovedCommands({ commands, workspaceRoot, sessionId, toolRegistryFactory, workspaceLeaseFactory } = {}) {
+  if (!Array.isArray(commands) || commands.length < 1 || commands.length > 5
+    || commands.some(command => typeof command !== 'string' || !command.trim() || /[\r\n\0]/.test(command) || command.length > 1000)
+    || typeof workspaceRoot !== 'string' || !path.isAbsolute(workspaceRoot)) {
+    throw new Error('정확한 명령 실행에는 검증된 작업공간과 1~5개의 유효한 명령이 필요합니다.');
+  }
+  const registry = toolRegistryFactory
+    ? toolRegistryFactory(workspaceRoot)
+    : new (require('../src/tools/ToolRegistry.js').ToolRegistry)({
+      workspaceDir: workspaceRoot,
+      approvalPolicy: 'on-request',
+      providerConnectionsEnabled: false,
+      googleConnector: {}, notionConnector: {}, notionMcpConnector: {}, spaceKeeperConnector: {}, vault: {},
+      browserEnabled: false, browserWorkspace: {}
+    });
+  const lease = workspaceLeaseFactory
+    ? workspaceLeaseFactory()
+    : new (require('../src/core/WorkspaceExecutionLease.js').WorkspaceExecutionLease)({ waitMs: 2000 });
+  const results = [];
+  await lease.run(workspaceRoot, sessionId || 'onlychat-exact-command', async () => {
+    for (const command of commands) {
+      const result = await registry.execCommand(command, null, {
+        cwd: workspaceRoot,
+        storageTask: `onlychat-${sessionId || 'cli'}-exact-command`
+      });
+      results.push({ command, ...result });
+      if (result.exitCode !== 0) break;
+    }
+  }, { waitMs: 2000 });
+  return results;
+}
+
+async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTools = [], approveCommands = [], approveWorkspaceWrite = null, workspaceContext = null, toolProfile = null, executeCommandFallback = false, commandToolRegistryFactory, workspaceLeaseFactory, fetchImpl = fetch, write = text => process.stdout.write(text), trace = null, signal, maxToolCalls = 12, timeoutMs = 120_000, busyRetryDelaysMs = [1000, 2000, 4000, 8000, 16000] } = {}) {
+  const requestedCommandCount = approveCommands.length;
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const activeSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   let response;
-  try {
-    response = await fetchImpl(`${baseUrl}/api/turn`, {
-      method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, prompt: workspaceContext ? `${prompt}\n\n${formatOnlyChatWorkspaceContext(workspaceContext)}` : prompt, reasoningEffort: /-(low|medium|high)$/.exec(String(model || ''))?.[1] || 'low', modelSelection: model, managerMode: false, fullAccess: false, sandboxPolicy: 'workspace-write', ...(toolProfile ? { toolProfile } : {}), ...(approveWorkspaceWrite ? { workspaceDir: workspaceContext?.workspaceRoot || approveWorkspaceWrite, workspaceWriteApproval: true } : {}) }), signal: activeSignal
-    });
-  } catch (requestError) {
-    if (timeoutSignal.aborted) return { ok: false, category: 'turn_timeout', sessionId };
-    throw requestError;
+  const workspaceRoot = workspaceContext?.workspaceRoot || approveWorkspaceWrite || '';
+  const requestPrompt = [prompt, workspaceContext ? formatOnlyChatWorkspaceContext(workspaceContext) : '', formatExactCommandDirective(approveCommands, workspaceRoot)].filter(Boolean).join('\n\n');
+  const requestBody = JSON.stringify({ sessionId, prompt: requestPrompt, reasoningEffort: /-(low|medium|high)$/.exec(String(model || ''))?.[1] || 'low', modelSelection: model, managerMode: false, fullAccess: false, sandboxPolicy: 'workspace-write', ...(toolProfile ? { toolProfile } : {}), ...(approveWorkspaceWrite ? { workspaceDir: workspaceRoot, workspaceWriteApproval: true } : {}) });
+  const retryDelays = Array.isArray(busyRetryDelaysMs) ? busyRetryDelaysMs.filter(ms => Number.isFinite(ms) && ms >= 0).slice(0, 5) : [];
+  let busyRetries = 0;
+  for (;;) {
+    try {
+      response = await fetchImpl(`${baseUrl}/api/turn`, {
+        method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
+        body: requestBody, signal: activeSignal
+      });
+    } catch (requestError) {
+      if (timeoutSignal.aborted) return { ok: false, category: 'turn_timeout', sessionId };
+      throw requestError;
+    }
+    if (response.status !== 409) break;
+    const detail = await response.text();
+    const isBusy = /Only Chat busy|Only Chat에서 다른 작업을 실행 중입니다|another task is running/i.test(detail);
+    if (!isBusy) return { ok: false, category: 'turn_conflict', sessionId };
+    if (busyRetries >= retryDelays.length) return { ok: false, category: 'turn_busy', sessionId };
+    if (busyRetries === 0) write('\n[Only Chat에서 진행 중인 작업이 끝나기를 기다립니다. 최대 31초까지 안전하게 재시도합니다.]\n');
+    const delayMs = retryDelays[busyRetries++];
+    try {
+      await new Promise((resolve, reject) => {
+        const onAbort = () => { clearTimeout(timer); reject(activeSignal.reason || new Error('Only Chat turn cancelled.')); };
+        const timer = setTimeout(() => { activeSignal.removeEventListener('abort', onAbort); resolve(); }, delayMs);
+        if (activeSignal.aborted) onAbort();
+        else activeSignal.addEventListener('abort', onAbort, { once: true });
+      });
+    } catch (_) {
+      return { ok: false, category: timeoutSignal.aborted ? 'turn_timeout' : 'turn_cancelled', sessionId };
+    }
   }
   if (!response.ok) {
     const body = await response.text();
-    if (response.status === 409) return { ok: false, category: 'turn_busy', sessionId };
     throw new Error(`Only Chat HTTP ${response.status}: ${body.slice(0, 240)}`);
   }
   const reader = response.body?.getReader();
   if (!reader) throw new Error('Only Chat did not return a readable event stream.');
   const decoder = new TextDecoder();
-  let buffer = '', resolvedSessionId = null, responseText = '', pendingToolMarker = '', error = null, completed = false, toolCalls = 0, successfulTools = 0, successfulMutatingTools = 0, failedTools = 0, failedMutatingTools = 0;
+  let buffer = '', resolvedSessionId = null, responseText = '', pendingToolMarker = '', error = null, completed = false, toolCalls = 0, successfulTools = 0, successfulMutatingTools = 0, successfulFileChangeTools = 0, failedTools = 0, failedMutatingTools = 0;
+  const exchange = trace || { model: null, modelResponse: '', toolEvents: [] };
   const todoEvidenceRequest = isTodoEvidenceRequest(prompt);
   const todoListEvidenceRequest = isTodoListEvidenceRequest(prompt);
+  const standaloneThreefStatusRequest = isStandaloneThreefStatusRequest(prompt);
   const embeddedThreefStatusRequest = isEmbeddedThreefStatusRequest(prompt);
   const embeddedThreefReadRequest = isEmbeddedThreefReadRequest(prompt);
   const embeddedThreefNavigateRequest = isEmbeddedThreefNavigateRequest(prompt);
@@ -695,15 +907,24 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   const taskRegistryListRequest = isTaskRegistryListRequest(prompt);
   const taskRegistryReadRequest = isTaskRegistryReadRequest(prompt);
   const fileMutationRequest = isExplicitFileMutationRequest(prompt);
-  const sourceReadRequest = isSourceReadEvidenceRequest(prompt)
+  const sourceReadRequest = toolProfile === 'file-read' || isSourceReadEvidenceRequest(prompt)
     || (isSourceAnalysisRequest(prompt) && requestedSourcePaths(prompt, workspaceContext?.workspaceRoot).length > 0);
   const sourceAnalysisRequest = sourceReadRequest && isSourceAnalysisRequest(prompt);
-  const evidenceGroundedRequest = todoEvidenceRequest || todoListEvidenceRequest || sourceReadRequest || fileMutationRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || embeddedThreefNavigateRequest || embeddedThreefHistoryRequest || taskRegistryListRequest || taskRegistryReadRequest;
+  const evidenceGroundedRequest = todoEvidenceRequest || todoListEvidenceRequest || sourceReadRequest || fileMutationRequest || standaloneThreefStatusRequest || embeddedThreefStatusRequest || embeddedThreefReadRequest || embeddedThreefNavigateRequest || embeddedThreefHistoryRequest || taskRegistryListRequest || taskRegistryReadRequest;
+  const editAnchor = fileMutationRequest ? requestedEditAnchor(prompt) : null;
   const readFileResults = [];
   let activeToolCall = null;
   let activeToolOutput = '';
   const toolFailureResults = [];
+  const commandOutcomeResults = [];
+  const failedEditAttempts = [];
+  const successfulEditChanges = [];
+  let failedOtherMutatingTools = 0;
+  let successfulOtherFileChanges = 0;
+  let editAnchorMismatchCount = 0;
+  let toolResultSequence = 0;
   const embeddedThreefStatusResults = [];
+  const standaloneThreefStatusResults = [];
   const embeddedThreefReadResults = [];
   const embeddedThreefNavigateResults = [];
   const embeddedThreefHistoryResults = [];
@@ -722,8 +943,12 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
         let event;
         try { event = JSON.parse(raw); } catch (_) { continue; }
         if (event.type === 'session_started') resolvedSessionId = event.sessionId || resolvedSessionId;
-        if (event.type === 'tier_resolved') write(`\n[Only Chat: ${event.tier?.name || '모델 확인'} · ${event.tier?.model || model}]\n`);
+        if (event.type === 'tier_resolved') {
+          exchange.model = { name: event.tier?.name || '', id: event.tier?.id || '', model: event.tier?.model || model || '' };
+          write(`\n[Only Chat: ${event.tier?.name || '모델 확인'} · ${event.tier?.model || model}]\n`);
+        }
         if (event.type === 'message_delta') {
+          exchange.modelResponse += String(event.delta || '');
           const nextResponseText = pendingToolMarker + String(event.delta || '');
           const markerIndex = nextResponseText.search(/<\/?tool_call>/i);
           if (markerIndex >= 0) {
@@ -748,6 +973,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           toolCalls++;
           activeToolCall = event.call || null;
           activeToolOutput = '';
+          exchange.toolEvents.push({ type: 'tool_start', tool: event.call?.name || 'unknown', args: safeTraceValue(event.call?.args || {}) });
           write(`\n[도구: ${event.call?.name || '알 수 없음'}]\n`);
           if (toolCalls > maxToolCalls) {
             error = { category: 'tool_call_limit', limit: maxToolCalls };
@@ -759,6 +985,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
           activeToolOutput = (activeToolOutput + event.text).slice(-32_000);
         }
         if (event.type === 'tool_end') {
+          const sequence = ++toolResultSequence;
           const call = event.result?.call || event.call;
           const tool = /^[a-z][a-z0-9_]{0,63}$/i.test(String(call?.name || '')) ? call.name : '알 수 없는 도구';
           const rawResult = event.result?.result;
@@ -769,47 +996,108 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
             && !rawResult.stdout && activeToolCall?.id === call?.id && activeToolOutput
             ? { ...rawResult, stdout: activeToolOutput }
             : rawResult;
+          exchange.toolEvents.push({ type: 'tool_end', tool, result: safeTraceValue(result) });
           const detail = safeToolError(result);
           const failed = result?.ok === false || result?.blocked === true || Boolean(detail)
             || ((tool === 'exec_command' || tool === 'bash') && result?.exitCode !== undefined && result.exitCode !== 0);
           if (failed) {
             failedTools++;
-            if (MUTATING_TOOL_NAMES.has(tool)) failedMutatingTools++;
+            if (isMutatingToolCall(tool, call?.args)) {
+              failedMutatingTools++;
+              if (tool === 'edit_file' && normalizedWorkspacePath(call?.args?.path)) {
+                failedEditAttempts.push({ path: normalizedWorkspacePath(call.args.path), sequence });
+              } else failedOtherMutatingTools++;
+            }
           }
           else {
             successfulTools++;
-            if (MUTATING_TOOL_NAMES.has(tool)) successfulMutatingTools++;
+            if (isMutatingToolCall(tool, call?.args)) successfulMutatingTools++;
           }
           if (failed) toolFailureResults.push({
             name: tool,
             detail: detail || redactToolMessage(result?.stderr || result?.error || result?.message || '')
           });
-          if (!failed && call?.name === 'read_file') readFileResults.push({ path: call.args?.path, result });
+          if (tool === 'exec_command' || tool === 'bash') commandOutcomeResults.push({ tool, result, failed });
+          if (!failed && call?.name === 'read_file') {
+            const readPath = normalizedWorkspacePath(call.args?.path);
+            const readText = readFileText(result);
+            for (const edit of successfulEditChanges) {
+              if (edit.path === readPath && sequence > edit.sequence && edit.replacement && readText.includes(edit.replacement)) {
+                edit.verified = true;
+              }
+            }
+            readFileResults.push({ path: call.args?.path, result });
+          }
           if (!failed && successfulCodexRead(call, result, workspaceContext?.workspaceRoot, requestedSourcePaths(prompt, workspaceContext?.workspaceRoot))) {
             readFileResults.push({ path: codexReadPath(call, workspaceContext?.workspaceRoot, requestedSourcePaths(prompt, workspaceContext?.workspaceRoot)), result: result.stdout });
           }
           if (!failed && call?.name === 'embedded_3f_status') embeddedThreefStatusResults.push(result);
+          if (!failed && call?.name === 'browser_status') standaloneThreefStatusResults.push(result);
           if (call?.name === 'embedded_3f_read') embeddedThreefReadResults.push(result);
           if (call?.name === 'embedded_3f_navigate') embeddedThreefNavigateResults.push(result);
           if (call?.name === 'embedded_3f_history') embeddedThreefHistoryResults.push({ action: call.args?.action, result });
           if (call?.name === 'task_registry_list') taskRegistryListResults.push(result);
           if (call?.name === 'task_registry_read') taskRegistryReadResults.push(result);
           write(`[도구 ${failed ? '실패' : '완료'}: ${tool}${detail ? ` · ${detail}` : ''}]\n`);
+          if (tool === 'exec_command' || tool === 'bash') {
+            const streamedOutput = activeToolCall?.id === call?.id ? activeToolOutput : '';
+            const stdout = safeCommandOutput(result?.stdout || streamedOutput);
+            const stderr = safeCommandOutput(result?.stderr || '');
+            const exitCode = Number.isInteger(result?.exitCode) ? result.exitCode : '확인 불가';
+            write(`종료 코드: ${exitCode}\nstdout:\n${stdout || '(없음)'}\nstderr:\n${stderr || '(없음)'}\n`);
+          }
+          if (!failed && FILE_CHANGE_TOOL_NAMES.has(tool)) {
+            successfulFileChangeTools++;
+            if (tool === 'edit_file' && normalizedWorkspacePath(call?.args?.path)
+              && typeof call.args?.replacement === 'string' && call.args.replacement.length > 0) {
+              successfulEditChanges.push({
+                path: normalizedWorkspacePath(call.args.path),
+                replacement: call.args.replacement,
+                sequence,
+                verified: false
+              });
+            } else successfulOtherFileChanges++;
+          }
           activeToolCall = null;
           activeToolOutput = '';
         }
         if (event.type === 'tool_approval_required') {
+          const editTargetMatchesRequestedAnchor = event.name !== 'edit_file' || !editAnchor
+            || (typeof event.args?.target === 'string' && event.args.target.includes(editAnchor));
+          if (!editTargetMatchesRequestedAnchor) {
+            editAnchorMismatchCount++;
+            const rejected = await fetchImpl(`${baseUrl}/api/tool-approval`, {
+              method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ requestId: event.requestId, sessionId: event.sessionId, decision: 'reject' }), signal: activeSignal
+            });
+            if (!rejected.ok) {
+              error = { category: 'approval_required', name: event.name };
+              await reader.cancel();
+              break;
+            }
+            write('[Only Chat 안전 차단: edit_file 대상이 요청에서 지정한 기준 줄과 일치하지 않아 파일 변경을 거절했습니다.]\n');
+            continue;
+          }
           const isExactWorkspaceWrite = event.name === 'codex_cli_workspace_write_scope'
             && event.scopeRequiresExplicit !== true
             && typeof approveWorkspaceWrite === 'string'
             && typeof event.args?.directory === 'string'
             && path.resolve(event.args.directory) === approveWorkspaceWrite;
-          if (!approveTools.includes(event.name) && !isExactWorkspaceWrite) {
+          const approvedCommandIndex = event.name === 'exec_command'
+            && event.scopeRequiresExplicit !== true
+            && typeof approveWorkspaceWrite === 'string'
+            && typeof event.args?.command === 'string'
+            && typeof event.args?.cwd === 'string'
+            && path.resolve(event.args.cwd) === approveWorkspaceWrite
+            ? approveCommands.indexOf(event.args.command)
+            : -1;
+          const isExactCommandApproval = approvedCommandIndex >= 0;
+          if (!approveTools.includes(event.name) && !isExactWorkspaceWrite && !isExactCommandApproval) {
             error = { category: 'approval_required', name: event.name };
             await reader.cancel();
             break;
           }
-          const decision = isExactWorkspaceWrite ? 'approve' : 'allow_tool';
+          const decision = isExactWorkspaceWrite || isExactCommandApproval ? 'approve' : 'allow_tool';
           const approved = await fetchImpl(`${baseUrl}/api/tool-approval`, {
             method: 'POST', headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
             body: JSON.stringify({ requestId: event.requestId, sessionId: event.sessionId, decision }), signal: activeSignal
@@ -819,8 +1107,11 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
             await reader.cancel();
             break;
           }
+          if (isExactCommandApproval) approveCommands.splice(approvedCommandIndex, 1);
           write(isExactWorkspaceWrite
             ? `[Only Chat 작업공간 쓰기 승인: ${approveWorkspaceWrite}]\n`
+            : isExactCommandApproval
+              ? '[Only Chat 명령 승인: 지정한 작업공간에서 정확히 일치하는 명령 1회]\n'
             : `[Only Chat 승인 범위: ${event.name}]\n`);
         }
         if (event.type === 'error') error = { category: event.category || 'provider_failure', model: event.model, rank: event.rank };
@@ -835,8 +1126,65 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
     reader.releaseLock();
   }
   if (!error && pendingToolMarker) error = { category: 'invalid_provider_output' };
-  const execution = { toolCalls, successfulTools, successfulMutatingTools, failedTools, failedMutatingTools };
+  const execution = { toolCalls, successfulTools, successfulMutatingTools, successfulFileChangeTools, failedTools, failedMutatingTools };
+  const recoveredEditRetries = fileMutationRequest
+    ? verifiedEditRetryCount(failedEditAttempts, successfulEditChanges, failedOtherMutatingTools, successfulOtherFileChanges)
+    : 0;
+  const recoveredEditResponse = recoveredEditRetries > 0
+    ? groundVerifiedEditRetryAnswer(recoveredEditRetries, error?.category || 'a later tool failure')
+    : null;
+  const verifiedEditChanges = fileMutationRequest
+    ? verifiedEditChangeCount(successfulEditChanges, successfulOtherFileChanges)
+    : 0;
+  if ((todoEvidenceRequest || todoListEvidenceRequest)
+    && !readFileResults.some(result => readFileText(result).trim())) {
+    const response = failedTools > 0
+      ? groundToolFailureAnswer(toolFailureResults)
+      : 'Only Chat 성공한 read_file 결과가 없어 TODO를 확인하지 못했습니다.';
+    write(response);
+    return {
+      ok: false,
+      category: failedTools > 0 ? 'tool_execution_failed' : error?.category || 'read_evidence_missing',
+      sessionId: resolvedSessionId,
+      response,
+      execution
+    };
+  }
+  if (standaloneThreefStatusRequest && standaloneThreefStatusResults.length === 0) {
+    const response = groundToolFailureAnswer(toolFailureResults)
+      || 'Only Chat browser_status 결과가 없어 독립 3F Browser 상태를 확인하지 못했습니다.';
+    write(response);
+    return { ok: false, category: 'tool_execution_failed', sessionId: resolvedSessionId, response, execution };
+  }
+  const groundedCommandOutcome = groundCommandOutcomeAnswer(commandOutcomeResults, responseText);
+  if (groundedCommandOutcome) {
+    write(groundedCommandOutcome.response);
+    return { ...groundedCommandOutcome, sessionId: resolvedSessionId, execution };
+  }
   if (error) {
+    if (recoveredEditResponse && ['tool_call_limit', 'tool_execution_failed', 'invalid_provider_output'].includes(error.category)) {
+      write(`[Only Chat 검증 완료 · 후속 오류 ${error.category} 복구]\n${recoveredEditResponse}`);
+      return {
+        ok: true,
+        category: 'mutation_recovered_after_retry',
+        recoveredFrom: error.category,
+        sessionId: resolvedSessionId,
+        response: recoveredEditResponse,
+        execution
+      };
+    }
+    if (verifiedEditChanges > 0 && ['tool_call_limit', 'tool_execution_failed', 'invalid_provider_output'].includes(error.category)) {
+      const response = `${groundVerifiedEditChangeAnswer(verifiedEditChanges)} The provider then ended with ${error.category}; no other requested result is claimed.`;
+      write(`[Only Chat 파일 변경 확인 · 후속 응답 오류 ${error.category}]\n${response}`);
+      return {
+        ok: true,
+        category: 'verified_mutation_before_output_error',
+        recoveredFrom: error.category,
+        sessionId: resolvedSessionId,
+        response,
+        execution
+      };
+    }
     if (sourceAnalysisRequest) {
       return { ok: false, ...error, sessionId: resolvedSessionId, response: responseText, execution };
     }
@@ -844,6 +1192,7 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
       ? groundTodoSectionAnswer(prompt, responseText, readFileResults)
         ?? (todoListEvidenceRequest ? groundTodoListAnswer(prompt, readFileResults) : null)
         ?? (sourceReadRequest && readFileResults.length ? groundSourceReadAnswer(readFileResults) : null)
+        ?? (standaloneThreefStatusRequest ? groundStandaloneThreefStatusAnswer(standaloneThreefStatusResults) : null)
         ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
         ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
         ?? (embeddedThreefNavigateRequest ? groundEmbeddedThreefNavigateAnswer(embeddedThreefNavigateResults) : null)
@@ -869,28 +1218,70 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
       execution
     };
   }
+  if (fileMutationRequest && editAnchorMismatchCount > 0 && verifiedEditChanges === 0) {
+    const response = 'Only Chat 명시된 기준 줄과 edit_file 대상이 일치하지 않아 변경을 거절했습니다. 요청한 위치의 수정은 검증되지 않았습니다.';
+    write(response);
+    return { ok: false, category: 'edit_target_mismatch', sessionId: resolvedSessionId, response, execution };
+  }
   if (failedMutatingTools > 0) {
+    if (recoveredEditResponse) {
+      write(recoveredEditResponse);
+      return { ok: true, category: 'mutation_recovered_after_retry', sessionId: resolvedSessionId, response: recoveredEditResponse, execution };
+    }
     return { ok: false, category: 'tool_execution_failed', sessionId: resolvedSessionId, response: responseText, execution };
   }
   const sourceAnalysisValidation = sourceAnalysisRequest
     ? validateSourceAnalysisResponse(prompt, responseText, readFileResults)
     : null;
   if (sourceAnalysisValidation && !sourceAnalysisValidation.passed) {
-    write(sourceAnalysisValidation.response);
-    return { ok: false, category: 'source_analysis_incomplete', sessionId: resolvedSessionId, response: sourceAnalysisValidation.response, execution };
+    const evidence = readFileResults.length ? groundSourceReadAnswer(readFileResults) : null;
+    const response = evidence ? `${sourceAnalysisValidation.response}\n\n${evidence}` : sourceAnalysisValidation.response;
+    write(response);
+    return { ok: false, category: 'source_analysis_incomplete', sessionId: resolvedSessionId, response, execution };
+  }
+  if (requestedCommandCount > 0 && approveCommands.length > 0) {
+    const executedCount = requestedCommandCount - approveCommands.length;
+    const response = `Only Chat가 승인된 정확한 명령 ${requestedCommandCount}개 중 ${executedCount}개만 실행해 요청을 완료하지 못했습니다.`;
+    if (executeCommandFallback) {
+      try {
+        const fallbackResults = await executeExactApprovedCommands({
+          commands: [...approveCommands], workspaceRoot, sessionId: resolvedSessionId || sessionId,
+          toolRegistryFactory: commandToolRegistryFactory, workspaceLeaseFactory
+        });
+        const fallbackOk = fallbackResults.length === approveCommands.length && fallbackResults.every(result => result.exitCode === 0);
+        const commandReport = fallbackResults.map(result => [
+          `$ ${result.command}`,
+          `종료 코드: ${result.exitCode}`,
+          result.stdout ? `stdout:\n${result.stdout}` : '',
+          result.stderr ? `stderr:\n${result.stderr}` : ''
+        ].filter(Boolean).join('\n')).join('\n');
+        const fallbackResponse = `Only Chat 모델이 도구 호출을 생략해 CLI가 명시 승인된 정확한 명령을 작업공간 lease 안에서 실행했습니다.\n${commandReport}`;
+        write(fallbackResponse);
+        return { ok: fallbackOk, category: 'approved_command_fallback', sessionId: resolvedSessionId, response: fallbackResponse, execution, commandResults: fallbackResults };
+      } catch (error) {
+        const fallbackResponse = `${response}\n정확 명령 fallback 실패: ${safeToolError(error)}`;
+        write(fallbackResponse);
+        return { ok: false, category: 'approved_command_fallback_failed', sessionId: resolvedSessionId, response: fallbackResponse, execution };
+      }
+    }
+    write(response);
+    return { ok: false, category: 'approved_command_not_executed', sessionId: resolvedSessionId, response, execution, unexecutedCommands: [...approveCommands] };
   }
   const groundedResponse = sourceAnalysisRequest
     ? sourceAnalysisValidation.response
-    : groundTodoSectionAnswer(prompt, responseText, readFileResults)
+    : (fileMutationRequest && verifiedEditChanges > 0
+      ? groundVerifiedEditChangeAnswer(verifiedEditChanges)
+      : fileMutationRequest && successfulFileChangeTools > 0 ? groundSuccessfulMutationAnswer(successfulFileChangeTools) : null)
+    ?? groundTodoSectionAnswer(prompt, responseText, readFileResults)
     ?? (todoListEvidenceRequest ? groundTodoListAnswer(prompt, readFileResults) : null)
     ?? (sourceReadRequest && readFileResults.length ? groundSourceReadAnswer(readFileResults) : null)
+    ?? (standaloneThreefStatusRequest ? groundStandaloneThreefStatusAnswer(standaloneThreefStatusResults) : null)
     ?? (embeddedThreefStatusRequest ? groundEmbeddedThreefStatusAnswer(embeddedThreefStatusResults) : null)
     ?? (embeddedThreefReadRequest ? groundEmbeddedThreefReadAnswer(embeddedThreefReadResults) : null)
     ?? (embeddedThreefNavigateRequest ? groundEmbeddedThreefNavigateAnswer(embeddedThreefNavigateResults) : null)
     ?? (embeddedThreefHistoryRequest ? groundEmbeddedThreefHistoryAnswer(embeddedThreefHistoryResults) : null)
     ?? (taskRegistryListRequest ? groundTaskRegistryListAnswer(taskRegistryListResults) : null)
     ?? (taskRegistryReadRequest ? groundTaskRegistryReadAnswer(prompt, taskRegistryReadResults) : null)
-    ?? (fileMutationRequest && successfulMutatingTools > 0 ? groundSuccessfulMutationAnswer(successfulMutatingTools) : null)
     ?? (evidenceGroundedRequest && successfulTools === 0 ? groundToolFailureAnswer(toolFailureResults) : null)
     ?? groundTodoStatusAnswer(prompt, responseText, readFileResults);
   if (evidenceGroundedRequest && groundedResponse !== responseText && completed) write(groundedResponse);
@@ -898,17 +1289,58 @@ async function streamOnlyChatTurn({ baseUrl, sessionId, prompt, model, approveTo
   return { ok: completed && Boolean(groundedResponse.trim()), sessionId: resolvedSessionId, response: groundedResponse, execution };
 }
 
-async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = false, model = 'gemini-3.8-flash-medium', approveTools = [], approveWorkspaceWrite = null, toolProfile = null, workspaceContextLoader = loadOnlyChatWorkspaceContext, fetchImpl = fetch, write = text => process.stdout.write(text), now = Date.now, signal } = {}) {
+async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = false, model = 'gemini-3.8-flash-medium', approveTools = [], approveCommands = [], approveWorkspaceWrite = null, toolProfile = null, workspaceContextLoader = loadOnlyChatWorkspaceContext, fetchImpl = fetch, write = text => process.stdout.write(text), now = Date.now, signal } = {}) {
   if (!/^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/.test(baseUrl || '')) throw new Error('Only Chat은 이 Mac의 loopback 주소로만 연결할 수 있습니다.');
   const deadline = now() + durationMs;
   let sessionId = `session_${now()}`, iteration = 0;
   const blockedSteps = [];
+  const blockerProgress = new Map();
   const interruptedTurns = [];
   let consecutiveInterruptedTurns = 0;
   let previousNoToolCompletionClaim = false;
   let previousNoToolResponse = '';
   let repeatedNoProgress = 0;
-  while (now() < deadline) {
+  let stalledSince = null;
+  let stalledReason = '';
+  let stalledFingerprint = '';
+  let lastSubstantiveProgressAt = now();
+  let substantiveProgress = 0;
+  const recordBlocker = reason => {
+    const fingerprint = redactToolMessage(reason).toLowerCase()
+      .replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/g, '<id>')
+      .replace(/\b\d{4}-\d{2}-\d{2}(?:[t ]\S+)?/g, '<time>')
+      .replace(/\b\d+(?:\.\d+)?\s*(?:bytes?|b|kib|mib|gib|kb|mb|gb)\b/g, '<size>')
+      .replace(/(?:\/users\/|\/private\/|\/tmp\/|[a-z]:\\)[^\s,;)]+/ig, '<path>')
+      .replace(/\b\d+\b/g, '<n>')
+      .replace(/\s+/g, ' ').trim();
+    const priorProgress = blockerProgress.get(fingerprint);
+    if (priorProgress === substantiveProgress) return false;
+    blockerProgress.set(fingerprint, substantiveProgress);
+    const observedAt = now();
+    if (stalledFingerprint !== fingerprint || stalledSince == null) {
+      lastSubstantiveProgressAt = observedAt;
+      stalledSince = observedAt;
+    }
+    stalledFingerprint = fingerprint;
+    stalledReason = reason;
+    return true;
+  };
+  const checkpoint = nextAction => ({
+    blockerFingerprint: stalledFingerprint || null,
+    blockerFirstSeenAt: stalledSince == null ? null : new Date(stalledSince).toISOString(),
+    lastSubstantiveProgressAt: new Date(lastSubstantiveProgressAt).toISOString(),
+    nextAction
+  });
+  const stopForStall = (reason, extra = {}) => {
+    const nextAction = '이 경로를 재시도하지 말고, 기록된 차단 원인을 피하는 별도의 근거 있는 경로를 선택하세요.';
+    write(`\n[Goal 미완료 · 차단 원인: ${reason} · 최초: ${checkpoint('').blockerFirstSeenAt || '미기록'} · 마지막 진전: ${checkpoint('').lastSubstantiveProgressAt} · 다음 조치: ${nextAction}]\n`);
+    return { ...extra, ok: false, category: 'goal_no_progress', reason, blockedSteps, sessionId, iteration, deadline, checkpoint: checkpoint(nextAction) };
+  };
+  while (true) {
+    if (stalledSince != null && now() - stalledSince >= 60 * 60 * 1000) {
+      return stopForStall(`같은 근본 원인으로 60분 동안 검증된 진전이 없습니다: ${stalledReason}`);
+    }
+    if (now() >= deadline) break;
     iteration++;
     const fixedDurationRules = fixedDuration
       ? ' 사용자가 지정한 전체 시간이 끝나기 전에는 GOAL_COMPLETE를 출력하거나 완료를 선언하지 마세요. 한 하위 작업이 막히면 GOAL_STEP_BLOCKED: <짧은 사유>를 출력하고 다음 반복에서 다른 안전한 하위 작업을 선택하세요. Goal 전체에 남은 안전한 작업이 없거나 전체 범위가 막혔을 때만 GOAL_BLOCKED: <짧은 사유와 다음 조치>로 종료하세요. 비밀값이나 개인 식별 정보는 사유에 넣지 마세요. 완료된 작업과 이미 막힌 하위 작업을 반복하지 마세요.'
@@ -936,7 +1368,7 @@ async function runOnlyChatGoal({ baseUrl, prompt, durationMs, fixedDuration = fa
           ? '통합 가드: 충돌 없음' : '통합 가드: 통합 대기';
         write(`[Only Chat 상태 확인: ${workspaceContext.activeBacklog.length}개 미완료 backlog · ${leaseSummary} · ${integrationSummary}]\n`);
       }
-      result = await streamOnlyChatTurn({ baseUrl, sessionId, prompt: nextPrompt, model, approveTools, approveWorkspaceWrite, workspaceContext, toolProfile, fetchImpl, write, signal: activeSignal, maxToolCalls: GOAL_TURN_TOOL_LIMIT, timeoutMs: GOAL_TURN_TIMEOUT_MS });
+      result = await streamOnlyChatTurn({ baseUrl, sessionId, prompt: nextPrompt, model, approveTools, approveCommands, approveWorkspaceWrite, workspaceContext, toolProfile, fetchImpl, write, signal: activeSignal, maxToolCalls: GOAL_TURN_TOOL_LIMIT, timeoutMs: GOAL_TURN_TIMEOUT_MS });
     } catch (error) {
       if (now() >= deadline) break;
       throw error;
@@ -1032,6 +1464,9 @@ function parseChatCommand(commandArgs) {
     else if (arg === '--duration') options.durationMs = parseGoalDuration(commandArgs[++i]);
     else if (arg === '--fixed-duration') options.fixedDuration = true;
     else if (arg === '--approve-tool') options.approveTools.push(commandArgs[++i] || '');
+    else if (arg === '--approve-command') options.approveCommands.push(commandArgs[++i] || '');
+    else if (arg === '--execute-approved-command') options.executeCommandFallback = true;
+    else if (arg === '--json') options.jsonOutput = true;
     else if (arg === '--tool-profile') options.toolProfile = commandArgs[++i] || '';
     else if (arg === '--approve-workspace-write') {
       const directory = commandArgs[++i] || '';
@@ -1042,7 +1477,11 @@ function parseChatCommand(commandArgs) {
   }
   options.prompt = positional.join(' ').trim();
   if (!options.prompt) throw new Error('요청 내용을 입력하세요.');
-  if (options.toolProfile && !['file-edit', 'file-read'].includes(options.toolProfile)) throw new Error('지원하는 Only Chat tool-profile은 file-read와 file-edit입니다.');
+  if (options.approveCommands.some(command => !command.trim() || /[\r\n\0]/.test(command) || command.length > 1000)) throw new Error('--approve-command에는 줄바꿈 없는 1,000자 이하의 정확한 명령 문자열이 필요합니다.');
+  if (options.approveCommands.length && !options.approveWorkspaceWrite) throw new Error('--approve-command는 --approve-workspace-write와 함께 사용해야 합니다.');
+  if (options.executeCommandFallback && (options.approveCommands.length !== 1 || !options.approveWorkspaceWrite)) throw new Error('--execute-approved-command는 승인된 정확한 명령 하나와 작업공간 경로가 필요합니다.');
+  if (!options.toolProfile && isStandaloneThreefStatusRequest(options.prompt)) options.toolProfile = 'threef-browser-status';
+  if (options.toolProfile && !['file-edit', 'file-read', 'embedded-3f-status', 'threef-browser-status'].includes(options.toolProfile)) throw new Error('지원하는 Only Chat tool-profile은 file-read, file-edit, embedded-3f-status, threef-browser-status입니다.');
   if (options.toolProfile === 'file-read' && options.approveTools.includes('edit_file')) throw new Error('file-read 프로필에서는 edit_file 승인을 사용할 수 없습니다.');
   if (options.approveTools.some(name => !['edit_file', 'embedded_3f_navigate', 'embedded_3f_act', 'embedded_3f_history'].includes(name))) {
     throw new Error('승인 가능 도구는 파일 편집 또는 3F 브라우저 작업으로 제한됩니다.');
@@ -1050,19 +1489,68 @@ function parseChatCommand(commandArgs) {
   return options;
 }
 
+function parsePriorityCommand(commandArgs) {
+  const options = { mainTierId: '', enableTierIds: [], disableTierIds: [] };
+  for (let i = 0; i < commandArgs.length; i++) {
+    const arg = commandArgs[i];
+    if (arg === '--main') options.mainTierId = commandArgs[++i] || '';
+    else if (arg === '--enable') options.enableTierIds.push(commandArgs[++i] || '');
+    else if (arg === '--disable') options.disableTierIds.push(commandArgs[++i] || '');
+    else if (arg === '--help' || arg === '-h') return { help: true };
+    else throw new Error(`알 수 없는 priority 옵션: ${arg}`);
+  }
+  if (!options.mainTierId || [...options.enableTierIds, ...options.disableTierIds].some(id => !id)
+    || new Set([...options.enableTierIds, ...options.disableTierIds]).size !== options.enableTierIds.length + options.disableTierIds.length) {
+    throw new Error('사용법: my-codex priority --main TIER_ID [--enable TIER_ID] [--disable TIER_ID]');
+  }
+  return options;
+}
+
+async function configureOnlyChatPriority({ baseUrl, mainTierId, enableTierIds = [], disableTierIds = [], fetchImpl = fetch } = {}) {
+  if (!/^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/.test(baseUrl || '')) throw new Error('Only Chat 설정은 이 Mac의 loopback 주소로만 변경할 수 있습니다.');
+  const response = await fetchImpl(`${baseUrl}/api/priority/configure-main`, {
+    method: 'POST',
+    headers: { Host: new URL(baseUrl).host, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mainTierId, enableTierIds, disableTierIds })
+  });
+  let result;
+  try { result = await response.json(); } catch (_) { result = {}; }
+  if (!response.ok || result.ok !== true) throw new Error(result.error || `Only Chat 설정 변경 실패 (HTTP ${response.status}).`);
+  return result;
+}
+
 async function main() {
   switch (command) {
+    case 'priority': {
+      const options = parsePriorityCommand(args.slice(1));
+      if (options.help) {
+        console.log('사용법: my-codex priority --main TIER_ID [--enable TIER_ID] [--disable TIER_ID]');
+        break;
+      }
+      const baseUrl = process.env.ONLY_CHAT_URL || 'http://127.0.0.1:8899';
+      const result = await configureOnlyChatPriority({ baseUrl, ...options });
+      console.log(JSON.stringify({
+        ok: true,
+        mainTierId: result.mainTierId,
+        enabled: result.status?.enabled,
+        tiers: (result.status?.tiers || []).map(({ id, tier, provider, model, enabled }) => ({ id, tier, provider, model, enabled }))
+      }, null, 2));
+      break;
+    }
     case 'chat':
     case 'goal': {
       if (args.slice(1).some(arg => arg === '--help' || arg === '-h')) {
         console.log(command === 'goal'
-          ? '사용법: my-codex goal --duration 3h [--fixed-duration] [--model MODEL] [--tool-profile file-read|file-edit] [--approve-tool edit_file] [--approve-workspace-write ABSOLUTE_PATH] "Goal"'
-          : '사용법: my-codex chat [--model MODEL] [--tool-profile file-read|file-edit] [--approve-tool edit_file] [--approve-workspace-write ABSOLUTE_PATH] "요청"');
+          ? '사용법: my-codex goal --duration 3h [--fixed-duration] [--model MODEL] [--tool-profile file-read|file-edit|embedded-3f-status|threef-browser-status] [--approve-tool edit_file] [--approve-workspace-write ABSOLUTE_PATH] [--approve-command EXACT_COMMAND] "Goal"'
+          : '사용법: my-codex chat [--json] [--model MODEL] [--tool-profile file-read|file-edit|embedded-3f-status|threef-browser-status] [--approve-tool edit_file] [--approve-workspace-write ABSOLUTE_PATH] [--approve-command EXACT_COMMAND [--execute-approved-command]] "요청"');
         break;
       }
       const options = parseChatCommand(args.slice(1));
+      if (!options.toolProfile && isStandaloneThreefStatusRequest(options.prompt)) options.toolProfile = 'threef-browser-status';
+      if (command === 'goal' && options.executeCommandFallback) throw new Error('--execute-approved-command는 단일 chat 명령에서만 사용할 수 있습니다.');
       const baseUrl = process.env.ONLY_CHAT_URL || 'http://127.0.0.1:8899';
       if (command === 'goal') {
+        if (options.jsonOutput) throw new Error('--json 교환 기록은 현재 단일 chat 요청에서만 지원합니다.');
         if (!options.durationMs) throw new Error('사용법: my-codex goal --duration 3h [--approve-tool edit_file] [--approve-workspace-write ABSOLUTE_PATH] "Goal"');
         const result = await runOnlyChatGoal({ ...options, baseUrl });
         if (!result.ok) process.exitCode = 1;
@@ -1071,9 +1559,30 @@ async function main() {
         const workspaceContext = options.approveWorkspaceWrite || options.toolProfile === 'file-edit'
           ? await loadOnlyChatWorkspaceContext({ baseUrl, workspaceRoot: options.approveWorkspaceWrite || undefined })
           : null;
-        const result = await streamOnlyChatTurn({ ...options, baseUrl, workspaceContext, sessionId: `session_${Date.now()}` });
-        if (!result.ok) { console.error(`\n요청 중단: ${result.category}${result.name ? ` · ${result.name}` : ''}`); process.exitCode = 1; }
-        else console.log(`\n\n응답 완료 · 세션 ${result.sessionId || '확인 불가'}`);
+      const trace = { model: null, modelResponse: '', toolEvents: [] };
+      const transcript = [];
+      const result = await streamOnlyChatTurn({ ...options, executeCommandFallback: options.executeCommandFallback, baseUrl, workspaceContext, trace,
+        write: options.jsonOutput ? chunk => transcript.push(String(chunk)) : undefined,
+        sessionId: `session_${Date.now()}` });
+      if (options.jsonOutput) {
+        console.log(JSON.stringify({
+          schema: 'only-chat.exchange.v1',
+          transport: 'Only Chat local SSE CLI',
+          ok: result.ok,
+          category: result.category || null,
+          sessionId: result.sessionId || null,
+          requestedModel: options.model,
+          resolvedModel: trace.model,
+          prompt: safeTraceValue(options.prompt),
+          modelResponse: safeTraceValue(trace.modelResponse),
+          finalResponse: safeTraceValue(result.response || ''),
+          execution: result.execution || null,
+          toolEvents: trace.toolEvents,
+          commandResults: safeTraceValue(result.commandResults || []),
+          transcript: transcript.join('')
+        }, null, 2));
+      } else if (!result.ok) { console.error(`\n요청 중단: ${result.category}${result.name ? ` · ${result.name}` : ''}`); process.exitCode = 1; }
+      else console.log(`\n\n응답 완료 · 세션 ${result.sessionId || '확인 불가'}`);
       }
       break;
     }
@@ -1086,7 +1595,10 @@ async function main() {
       console.log('\n[전체 티어 구성]:');
       for (const t of status.tiers) {
         const marker = t.id === status.activeTier.id ? '▶' : ' ';
-        console.log(` ${marker} Tier ${t.tier}: ${t.name} - 잔여한도: ${t.health?.totalRemainingPercent ?? 100}%`);
+        const remaining = Number.isFinite(t.health?.totalRemainingPercent)
+          ? `${t.health.totalRemainingPercent}%`
+          : '확인 안 됨';
+        console.log(` ${marker} Tier ${t.tier}: ${t.name} - 잔여한도: ${remaining}`);
       }
       console.log('');
       break;
@@ -1140,11 +1652,13 @@ async function main() {
 
     case 'exec':
     case 'e': {
-      const prompt = args.slice(1).join(' ');
-      if (!prompt) {
-        console.log('사용법: my-codex exec "<프롬프트>"');
-        process.exit(1);
+      const { isApprovedNewFileWrite, parseRouterExecArgs } = require('../src/cli/routerExecArgs.js');
+      if (args.slice(1).some(arg => arg === '--help' || arg === '-h')) {
+        console.log('사용법: my-codex exec [--router-model MODEL] [--tool-profile file-read|file-search|file-edit|file-write] [--workspace-root ABSOLUTE_DIRECTORY] [--approve-tool edit_file] [--approve-tool write_file --approve-write-path RELATIVE_PATH] "<프롬프트>"');
+        break;
       }
+      const execOptions = parseRouterExecArgs(args.slice(1));
+      const { prompt, routerModel, toolProfile, workspaceRoot, approvedTools, approvedWritePaths } = execOptions;
       const { AgentEngine } = require('../src/core/AgentEngine.js');
       const dataDir = path.join(os.homedir(), '.my-codex');
       const antigravity = process.platform === 'darwin' ? new AntigravityCliAdapter({ dataDir }) : null;
@@ -1153,6 +1667,7 @@ async function main() {
         dataDir,
         watchSkills: false,
         dispatcherAutoStart: false,
+        workspaceDir: workspaceRoot || process.cwd(),
         isTierReady: tier => tier.provider !== 'codex' || codex.getReadiness(tier).connected,
         providerAdapter: (tier, history, hooks, context) => {
           if (tier.provider === 'antigravity-cli' && antigravity) return antigravity.call(tier, history, hooks, context);
@@ -1160,12 +1675,22 @@ async function main() {
           throw new Error(`No local provider adapter is configured for '${tier.provider || tier.id}'.`);
         }
       });
-      agent.initSession();
+      if (workspaceRoot) agent.tools.setWorkspace(workspaceRoot, { sandboxRoot: workspaceRoot });
+      agent.initSession(routerModel ? { model: `account-router:${routerModel}`, provider: 'account-router' } : {});
       console.log('⏳ 응답 생성 중...\n');
+      if (routerModel) console.log(`[고정 경로] AI Account Router · ${routerModel} · 실패 시 대체 모델 호출 안 함`);
       const startedAt = Date.now();
       const toolSummary = createToolSummary();
       const res = await agent.executeTurn(prompt, {
         reasoningEffort: 'low',
+        ...(routerModel ? { accountRouterModelSelection: routerModel } : {}),
+        ...(toolProfile ? { toolProfile } : {}),
+        requestToolApproval: request => request?.name === 'write_file'
+          ? approvedTools.includes('write_file') && isApprovedNewFileWrite(request, {
+            workspaceDir: workspaceRoot || process.cwd(),
+            approvedWritePaths
+          })
+          : approvedTools.includes(request?.name),
         onTierResolved: tier => {
           const rank = Number.isInteger(tier?.tier) ? tier.tier : (Number.isInteger(tier?.priority) ? tier.priority : '?');
           const account = tier?.email || tier?.account || tier?.name || '알 수 없음';
@@ -1199,15 +1724,20 @@ Author: Rogan Kim (GeunHu Kim)
   my-codex app                 My-Codex Mac 전용 데스크톱 앱 창 실행
   my-codex                     대화형 TUI 터미널 모드 실행
   my-codex status              우선순위 체인 및 계정 잔여 한도 확인
+  my-codex priority --main TIER_ID [--enable TIER_ID] [--disable TIER_ID]  Only Chat 모델 우선순위와 활성 상태 변경
   my-codex accounts            등록된 Google/ChatGPT 계정 목록 확인
   my-codex login add <...>     새로운 Google / ChatGPT 계정 등록
   my-codex exec "<프롬프트>"   비대화형 1회성 명령/에이전트 실행
-  my-codex chat [--model MODEL] [--approve-workspace-write ABSOLUTE_PATH] "<프롬프트>"   Only Chat에 요청하고 텍스트 응답 읽기 (턴당 도구 12회 상한, 2분 제한)
-  my-codex goal --duration 3h [--fixed-duration] [--model MODEL] [--approve-workspace-write ABSOLUTE_PATH] "<Goal>"  Only Chat에서 순차 반복 Goal 실행 (회차당 도구 24회 상한, 4분 제한)
+  my-codex exec --router-model MODEL [--tool-profile file-read|file-search|file-edit|file-write] [--approve-tool edit_file] [--approve-tool write_file --approve-write-path RELATIVE_PATH] "<프롬프트>"  AI Router 단일 모델 고정 실행 (실패 시 대체 없음)
+  my-codex chat [--json] [--model MODEL] [--approve-workspace-write ABSOLUTE_PATH] [--approve-command EXACT_COMMAND [--execute-approved-command]] "<프롬프트>"   Only Chat에 요청하고 텍스트/JSON 교환 결과 읽기 (턴당 도구 12회 상한, 2분 제한)
+  my-codex goal --duration 3h [--fixed-duration] [--model MODEL] [--approve-workspace-write ABSOLUTE_PATH] [--approve-command EXACT_COMMAND] "<Goal>"  Only Chat에서 순차 반복 Goal 실행 (회차당 도구 24회 상한, 4분 제한)
     --tool-profile file-edit   로컬 모델 컨텍스트를 위해 read_file/edit_file 도구만 노출
+    --tool-profile file-write  read_file/write_file만 노출; 쓰기는 정확히 승인한 새 파일 경로에서만 허용
     --tool-profile file-read   read_file만 노출하는 읽기 전용 Only Chat 요청
     --approve-tool edit_file   이 세션에서 제한된 파일 편집 승인
+    --approve-tool write_file --approve-write-path RELATIVE_PATH   지정한 새 workspace 파일 하나만 생성하도록 승인
     --approve-workspace-write는 지정한 정확한 폴더에서만 Codex CLI 셸/파일 쓰기를 해당 실행 동안 승인합니다. Full Access는 승인하지 않습니다.
+    --execute-approved-command는 모델이 호출을 빠뜨린 경우 승인된 정확한 명령을 한 번 실행합니다. Only Chat ToolRegistry와 작업공간 lease를 거칩니다.
     이 옵션을 쓰면 각 실행/Goal 회차 전에 Only Chat의 현재 작업공간, agent-coord lease, integration guard, backlog를 읽습니다. 상태 확인에 실패하면 요청을 보내지 않습니다.
   my-codex app-server          Codex 호환 JSON-RPC 2.0 stdio 서버 실행
       `);
@@ -1230,4 +1760,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, createToolSummary, readableModelName, parseGoalDuration, parseChatCommand, safeToolError, loadOnlyChatWorkspaceContext, formatLockEvidenceSummary, formatOnlyChatWorkspaceContext, streamOnlyChatTurn, runOnlyChatGoal };
+module.exports = { main, createToolSummary, readableModelName, parseGoalDuration, parseChatCommand, parsePriorityCommand, configureOnlyChatPriority, requestedEditAnchor, safeToolError, loadOnlyChatWorkspaceContext, formatLockEvidenceSummary, formatOnlyChatWorkspaceContext, executeExactApprovedCommands, streamOnlyChatTurn, runOnlyChatGoal };

@@ -34,8 +34,25 @@ async function manageRouterAccount(adapter, input, fetchImpl = globalThis.fetch)
   });
   const result = await response.json();
   if (!response.ok) throw Object.assign(new Error(result?.error?.message || '계정 작업을 완료하지 못했습니다.'), { status: response.status });
-  // OAuth state and credentials stay in Router. The UI refreshes public account metadata.
-  return { ok: true, pending: action === 'add-chatgpt' || action === 'reauth' };
+  // OAuth state and credentials stay in Router. Only return the short-lived
+  // authorization URL so the user can continue if Router could not open a browser.
+  const resultUrl = typeof result?.authorizationUrl === 'string' ? result.authorizationUrl : '';
+  let authorizationUrl = '';
+  if (resultUrl) {
+    try {
+      const parsed = new URL(resultUrl);
+      if (parsed.protocol === 'https:' && !parsed.username && !parsed.password) authorizationUrl = parsed.toString();
+    } catch {}
+  }
+  return {
+    ok: true,
+    pending: action === 'add-chatgpt' || action === 'reauth',
+    ...(authorizationUrl ? {
+      authorizationUrl,
+      opened: result.opened !== false,
+      openError: typeof result.openError === 'string' ? result.openError.slice(0, 240) : ''
+    } : {})
+  };
 }
 
 module.exports = { manageRouterAccount };

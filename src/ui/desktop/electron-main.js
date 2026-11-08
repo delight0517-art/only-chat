@@ -48,6 +48,9 @@ async function start() {
     return { action: 'deny' };
   });
   await window.loadURL(url);
+  void server.resumeInterruptedTurn().catch(error => {
+    console.error('Only Chat restart recovery failed:', error?.message || error);
+  });
 }
 
 app.whenReady().then(start).catch(error => {

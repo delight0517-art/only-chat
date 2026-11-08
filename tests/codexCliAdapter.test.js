@@ -328,6 +328,131 @@ test('assigned display context validates its CUA session and reports advisory bo
   assert.throws(() => assignedDisplay(['--agent-id', 'only-chat', '--display-id', '0', '--cua-session', 'only-chat:session-1', '--x', '0', '--y', '0', '--width', '1280', '--height', '800']));
 });
 
+test('Codex Full Access requires explicit approval and fails closed otherwise', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-codex-full-access-'));
+  try {
+    const dataDir = path.join(root, 'data');
+    const workspaceDir = path.join(root, 'workspace');
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    createProfile(path.join(dataDir, 'codex-profiles', 'codex-primary'), 'primary@example.com');
+    const tier = { id: 'codex-primary', model: 'gpt-6-luna', email: 'primary@example.com' };
+    const history = [{ role: 'user', content: '파일을 수정해줘.' }];
+    const options = { workspaceDir, reasoningEffort: 'low', fullAccess: true, approvalPolicy: 'on-request' };
+    let spawnCount = 0;
+    let spawnArgs;
+    const fakeSpawn = (_command, args) => {
+      spawnCount++;
+      spawnArgs = args;
+      const child = new EventEmitter();
+      child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+      const outputPath = args[args.indexOf('--output-last-message') + 1];
+      setImmediate(() => { fs.writeFileSync(outputPath, '완료'); child.emit('close', 0); });
+      return child;
+    };
+    const adapter = new CodexCliAdapter({ dataDir, defaultCodexHome: path.join(root, 'empty-home'), command: '/fake/codex', spawn: fakeSpawn });
+    let authorized = false;
+    await adapter.call(tier, history, {}, {
+      ...options,
+      requestWorkspaceWriteApproval: async request => {
+        assert.match(request.reason, /작업공간 밖|시스템 경로|시스템.*경로/,
+          'Full Access approval must explicitly warn about outside-workspace and system-path access');
+        authorized = true;
+        return true;
+      }
+    });
+    assert.equal(authorized, true, 'authorization must be granted before spawn');
+    assert.equal(spawnCount, 1);
+    assert.ok(spawnArgs.includes('--sandbox'));
+    assert.equal(spawnArgs[spawnArgs.indexOf('--sandbox') + 1], 'danger-full-access');
+
+    spawnCount = 0;
+    await assert.rejects(adapter.call(tier, history, {}, {
+      ...options, requestWorkspaceWriteApproval: async () => false
+    }), error => error.category === 'approval_denied');
+    assert.equal(spawnCount, 0, 'denial must prevent spawning');
+
+    await assert.rejects(adapter.call(tier, history, {}, options), error => error.category === 'approval_required');
+    assert.equal(spawnCount, 0, 'missing approval callback must prevent spawning');
+
+    await assert.rejects(adapter.call(tier, history, {}, {
+      ...options, approvalPolicy: 'read-only', requestWorkspaceWriteApproval: async () => true
+    }), error => error.message === '읽기 전용 승인 정책에서는 Full access를 사용할 수 없습니다.');
+    assert.equal(spawnCount, 0, 'read-only policy must reject Full Access without spawning');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Codex routes an Only Chat session to its pinned-SSH guest Cua Driver', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-remote-cua-'));
+  try {
+    const dataDir = path.join(root, 'd');
+    const workspaceDir = path.join(root, 'w');
+    const keyPath = path.join(root, '.ssh', 'ai-vdm', 'only-chat_ed25519');
+    const knownHostsPath = path.join(root, '.ssh', 'ai-vdm', 'only-chat_known_hosts');
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.mkdirSync(path.dirname(keyPath), { recursive: true, mode: 0o700 });
+    createProfile(path.join(dataDir, 'codex-profiles', 'codex-primary'), 'primary@example.com');
+    fs.writeFileSync(keyPath, 'private test key', { mode: 0o600 });
+    fs.writeFileSync(knownHostsPath, 'guest.example ssh-ed25519 test-host-key\n', { mode: 0o600 });
+    const assignmentPath = path.join(dataDir, 'agent-workspaces.json');
+    const route = {
+      agentID: 'only-chat', transport: 'ssh',
+      ssh: {
+        host: 'guest.example', port: 2222, user: 'lume', identityFile: keyPath,
+        knownHostsFile: knownHostsPath, driverPath: '/Users/lume/.local/bin/cua-driver'
+      }
+    };
+    fs.writeFileSync(assignmentPath, JSON.stringify({
+      onlyChatSessionAssignments: { version: 1, default: route, sessions: { 'session-remote': route } }
+    }), { mode: 0o600 });
+    let spawnArgs;
+    const fakeSpawn = (_command, args) => {
+      spawnArgs = args;
+      const child = new EventEmitter();
+      child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+      const outputPath = args[args.indexOf('--output-last-message') + 1];
+      child.stdout.end('', () => { fs.writeFileSync(outputPath, '완료'); child.emit('close', 0); });
+      return child;
+    };
+    const adapter = new CodexCliAdapter({ dataDir, defaultCodexHome: path.join(root, 'empty-home'), command: '/fake/codex', spawn: fakeSpawn });
+    const tier = { id: 'codex-primary', model: 'gpt-6-luna', email: 'primary@example.com' };
+    let approvalReason = '';
+    const common = {
+      workspaceDir, reasoningEffort: 'low', approvalPolicy: 'on-request', sessionId: 'session-remote',
+      requestWorkspaceWriteApproval: async request => { approvalReason = request.reason; return true; }
+    };
+    await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, common);
+    assert.ok(spawnArgs.includes('mcp_servers.onlychat_agent_workspace.enabled=true'));
+    assert.ok(spawnArgs.includes('mcp_servers.onlychat_agent_workspace.command="/usr/bin/ssh"'));
+    const routeConfig = spawnArgs.find(arg => String(arg).startsWith('mcp_servers.onlychat_agent_workspace.args='));
+    assert.ok(routeConfig);
+    assert.deepEqual(JSON.parse(routeConfig.slice(routeConfig.indexOf('=') + 1)), [
+      '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
+      '-o', `UserKnownHostsFile=${knownHostsPath}`, '-i', keyPath, '-p', '2222', 'lume@guest.example',
+      '/Users/lume/.local/bin/cua-driver', 'mcp'
+    ]);
+    assert.match(approvalReason, /배정된 워크스테이션/);
+
+    fs.chmodSync(keyPath, 0o644);
+    await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, {
+      ...common, requestWorkspaceWriteApproval: async () => true
+    });
+    assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_agent_workspace')),
+      'an SSH key readable by other users must not be forwarded to Codex CLI');
+    fs.chmodSync(keyPath, 0o600);
+    route.ssh.port = 0;
+    fs.writeFileSync(assignmentPath, JSON.stringify({
+      onlyChatSessionAssignments: { version: 1, default: route }
+    }), { mode: 0o600 });
+    await adapter.call(tier, [{ role: 'user', content: '작업을 해줘.' }], {}, {
+      ...common, requestWorkspaceWriteApproval: async () => true
+    });
+    assert.ok(!spawnArgs.some(arg => String(arg).includes('onlychat_agent_workspace')),
+      'an out-of-range SSH port must not create a remote route');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('Codex account profiles are not reused across email identities', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'onlychat-codex-profile-test-'));
   try {

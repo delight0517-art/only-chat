@@ -60,6 +60,37 @@ function isMutationToolName(name) {
   return MUTATION_TOOL_NAMES.has(name);
 }
 
+const PATH_SCOPED_DISPATCH_TOOLS = new Set([
+  'read_file', 'search_files', 'list_files', 'write_file', 'edit_file', 'apply_patch'
+]);
+
+function hasPathScopedOwnership(task, record) {
+  if (!task?.registryTaskKey || !task.managerOwnerChatId
+    || record?.taskKey !== task.registryTaskKey
+    || record.ownerChatId !== task.managerOwnerChatId
+    || !['claimed', 'executing'].includes(record.status)
+    || !Number.isFinite(Date.parse(record.leaseExpiresAt))
+    || Date.parse(record.leaseExpiresAt) <= Date.now()) return false;
+  const executorId = String(task.id || '');
+  const executorPrefix = `${task.registryTaskKey}-`;
+  const executorIndex = executorId.startsWith(executorPrefix)
+    && /^\d+$/.test(executorId.slice(executorPrefix.length))
+    ? Number(executorId.slice(executorPrefix.length)) - 1 : -1;
+  const planned = executorIndex >= 0 && record.execution?.tasks?.[executorIndex];
+  const progress = executorIndex >= 0 && record.executionProgress?.[executorIndex];
+  return Boolean(planned
+    && progress?.id === task.id && ['queued', 'running'].includes(progress.status)
+    && JSON.stringify(task.targetFiles) === JSON.stringify(planned.files)
+    && JSON.stringify(task.allowedTools) === JSON.stringify(planned.allowedTools)
+    && Array.isArray(task.targetFiles) && task.targetFiles.length > 0
+    && task.targetFiles.every(file => typeof file === 'string' && file.trim()
+      && file !== '.' && !path.isAbsolute(file) && !file.includes('\\')
+      && !file.split('/').includes('..')
+      && record.leasePaths?.some(scope => scope === '.' || file === scope || file.startsWith(`${scope}/`)))
+    && Array.isArray(task.allowedTools) && task.allowedTools.length > 0
+    && task.allowedTools.every(name => PATH_SCOPED_DISPATCH_TOOLS.has(name)));
+}
+
 function providerFailureCategory(error) {
   if (['approval_required', 'approval_denied'].includes(error?.category)) return error.category;
   const message = String(error?.message || error || '');
@@ -137,7 +168,7 @@ class AgentEngine {
     // Dispatched tasks retain separate sessions; waiting releases the execution slot.
     this.dispatcher = new ParallelDispatcher({
       autoStart: options.dispatcherAutoStart ?? !this.isolated,
-      maxGlobalConcurrency: 1,
+      maxGlobalConcurrency: 3,
       executeTask: task => this._executeDispatchedTask(task),
       recoverTask: (task, result, recoveryOptions) => this._recoverDispatchedTask(task, result, recoveryOptions)
     });
@@ -457,14 +488,21 @@ class AgentEngine {
     const turnCallbacks = callbacks[TURN_EXECUTION_STATE]
       ? callbacks
       : { ...callbacks, [TURN_EXECUTION_STATE]: { mutatingToolStarted: false } };
+    const runTurn = async () => {
+      await this._ensureAccountRouterTier();
+      if (!this.currentSession) this.initSession();
+      return this._executeTurn(userPrompt, turnCallbacks);
+    };
+    const pathScopedParallelism = turnCallbacks.executorMode === true
+      && turnCallbacks.pathScopedConcurrency === true
+      && turnCallbacks.taskOwnershipContext?.origin === 'only-chat-internal'
+      && Array.isArray(turnCallbacks.taskOwnershipContext.allowedPaths)
+      && turnCallbacks.taskOwnershipContext.allowedPaths.length > 0;
+    if (pathScopedParallelism) return runTurn();
     return this.workspaceExecutionLease.run(
       this.workspaceDir,
       this.currentSession?.sessionId || 'router-provider-discovery',
-      async () => {
-        await this._ensureAccountRouterTier();
-        if (!this.currentSession) this.initSession();
-        return this._executeTurn(userPrompt, turnCallbacks);
-      },
+      runTurn,
       { signal: turnCallbacks.signal, onWait: evidence => {
         this.emit('workspace_waiting', evidence);
         turnCallbacks.onWorkspaceWait?.(evidence);
@@ -637,6 +675,7 @@ class AgentEngine {
       authFile: this.auth.authFile,
       providerAdapter: this.providerAdapter,
       commandRunner: this.tools.commandRunner,
+      taskRegistryStore: this.tools.taskRegistryStore,
       isTierReady: tier => this.priorityChain.isTierReady(tier),
       approvalPolicy: this.tools.approvalPolicy,
       // Every dispatched worker needs the strict mutation gate. Registry-backed
@@ -776,10 +815,11 @@ class AgentEngine {
       if (task.resumeSessionId) worker.loadInternalSession(session);
       task.sessionId = session.sessionId;
       let taskOwnershipContext = null;
+      let pathScopedConcurrency = false;
       if (task.registryTaskKey) {
         const store = worker.tools.taskRegistryStore;
         const record = store?.getTask(task.registryTaskKey);
-        if (!store || !record || !task.managerOwnerChatId || session.source !== 'internal'
+        if (!store || !record || !task.managerOwnerChatId
           || record.repositoryPath !== fs.realpathSync(taskWorkspaceDir)) {
           return { status: 'blocked', reason: 'Only Chat 내부 세션·정본 저장소·작업 소유자를 검증할 수 없어 파일 변경을 차단했습니다.', sessionId: session.sessionId, executionEvidence: evidence };
         }
@@ -788,12 +828,14 @@ class AgentEngine {
           taskKey: task.registryTaskKey, ownerChatId: task.managerOwnerChatId,
           repositoryPath: record.repositoryPath, allowedPaths: task.targetFiles
         };
+        pathScopedConcurrency = hasPathScopedOwnership(task, record);
       }
       const manager = await import('../features/admin-manager/v1.mjs');
       const response = await worker.executeTurn(taskPrompt, {
         ...callbacks,
         executorMode: true,
         taskOwnershipContext,
+        pathScopedConcurrency,
         ...(this.dispatcherApprovalHandler
           ? { requestToolApproval: request => this.dispatcherApprovalHandler(task, request) }
           : {}),
@@ -1499,4 +1541,4 @@ class AgentEngine {
   }
 }
 
-module.exports = { AgentEngine, providerFailureCategory };
+module.exports = { AgentEngine, hasPathScopedOwnership, providerFailureCategory };

@@ -10,6 +10,9 @@ const html = fs.readFileSync(path.join(__dirname, '../src/ui/desktop/index.html'
 
 assert.match(app, /modelSelection:\s*selectedModelId/, 'composer requests must carry the visible model choice');
 assert.match(app, /function syncAvailableModelOptions\(\)/, 'model choices must come from configured priority tiers');
+assert.match(app, /priorityStatus\.routerModels[\s\S]*account-router:/, 'explicit models enabled in AI Account Router are offered separately from local priority tiers');
+assert.match(app, /status\.accountRouterReadiness/, 'explicit Router model labels use verified runtime readiness');
+assert.match(app, /function displaySelectedModel\(modelId\)/, 'the selected Router model is visibly distinguished from an identically named local tier');
 assert.match(app, /autoOption\?\.classList\.toggle\('selected', selectedModelId === 'auto'\)/, 'the automatic choice keeps its visual and aria selection state in sync');
 assert.match(app, /function resolveSelectedModelTier\(\)/, 'the displayed account route must match the selected model');
 assert.match(app, /function priorityRouteHealth\(tier\)/, 'provider health is rendered separately from CLI readiness');
@@ -20,6 +23,8 @@ const healthContext = {};
 vm.runInNewContext(`${app.slice(healthHelperStart, healthHelperEnd)}\nglobalThis.resolve = priorityRouteHealth;`, healthContext);
 assert.deepEqual(JSON.parse(JSON.stringify(healthContext.resolve({ providerReady: { connected: true }, health: { quotaState: 'provider-unavailable', throttledReason: 'provider-error' } }))), { label: '최근 생성 실패', className: 'disconnected' }, 'a connected CLI with a failed provider request must show the failure');
 assert.deepEqual(JSON.parse(JSON.stringify(healthContext.resolve({ providerReady: { connected: true }, health: { quotaState: 'available' } }))), { label: '실행 경로 연결됨', className: 'connected' }, 'healthy provider status retains its connected label');
+assert.deepEqual(JSON.parse(JSON.stringify(healthContext.resolve({ provider: 'account-router', providerReady: { connected: true }, health: { quotaState: 'unknown', totalRemainingPercent: null } }))), { label: '실행 연결됨 · 한도 미확인', className: 'connected' }, 'Router connection must not imply that its unknown quota is healthy');
+assert.deepEqual(JSON.parse(JSON.stringify(healthContext.resolve({ provider: 'account-router', providerReady: { connected: true }, health: { quotaState: 'available', totalRemainingPercent: 75 } }))), { label: '실행 경로 연결됨', className: 'connected' }, 'Router with a known quota retains its connected label');
 const connectionLabelStart = app.indexOf('function tierConnectionLabel(tier) {');
 const connectionLabelEnd = app.indexOf('\nfunction tierQuotaCheckedLabel(', connectionLabelStart);
 assert.ok(connectionLabelStart >= 0 && connectionLabelEnd > connectionLabelStart, 'account drawer connection label helper remains independently checkable');
@@ -72,6 +77,8 @@ const status = {
   enabled: true,
   activeTier: first,
   thresholds: { totalRemainingPercent: 10 },
+  routerModels: ['gpt-6.1-sol'],
+  accountRouterReadiness: { available: null, connected: false, verified: false, state: 'unverified', message: 'AI Account Router 계정 자격 증명이 아직 검증되지 않았습니다.' },
   tiers: [first, second, third].map(tier => ({
     ...tier,
     enabled: true,
@@ -81,6 +88,12 @@ const status = {
 };
 assert.equal(context.resolve(status, 'auto'), first);
 assert.equal(context.resolve(status, 'beta-model').id, 'second');
+const routerRoute = context.resolve(status, 'account-router:gpt-6.1-sol');
+assert.equal(routerRoute.provider, 'account-router', 'explicit Router selection resolves to its own route');
+assert.equal(routerRoute.providerReady.connected, false, 'discovering a Router model does not falsely prove provider authentication or a successful request');
+assert.equal(routerRoute.providerReady.state, 'unverified');
+assert.match(routerRoute.providerReady.message, /자격 증명이 아직 검증되지 않았습니다/, 'unverified Router routes explain the actual connection state');
+assert.equal(context.resolve(status, 'account-router:gpt-not-configured'), null, 'unconfigured Router models are not selectable');
 const fantasyStatus = { thresholds: { totalRemainingPercent: 15 } };
 assert.equal(context.fantasyAvailability(fantasyStatus, { enabled: true, providerReady: { connected: true }, health: { totalRemainingPercent: 12 } }).selectable, false, 'fantasy UI must honor the configured routing threshold');
 assert.equal(context.fantasyAvailability(fantasyStatus, { enabled: true, providerReady: { connected: true }, health: { totalRemainingPercent: 15 } }).selectable, false, 'quota at the configured threshold is not selectable');

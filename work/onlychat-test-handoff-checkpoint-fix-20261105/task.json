@@ -1,0 +1,15 @@
+{
+  "task": "onlychat-test-handoff-checkpoint-fix-20261105",
+  "ownerThread": "01a19470-3dc3-7753-86ed-82b9048feb18",
+  "repo": "/Users/rogan/.gemini/antigravity/scratch/my-codex",
+  "branch": "main",
+  "base": "744ae987e20c5ebacaf2e56426c8ffda90c33296",
+  "authorization": "User requests Only Chat to actually perform remaining Mac TODO tasks and continue testing it until operational.",
+  "lease": "b36bb51c-f05c-4f67-818e-b3be12736bbe",
+  "ownedPaths": [
+    "tests/approvalPolicy.test.js"
+  ],
+  "preEditSha256": "d8f1a0b7ff94faad0c93aaaac70e59c8e0bc366604c39b64ade66beab554fa23",
+  "change": "Add the missing updateCheckpoint method to the approvalPolicy test double; no production behavior change.",
+  "validation": "pending"
+}

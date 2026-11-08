@@ -324,6 +324,38 @@ class PriorityChainEngine {
     return true;
   }
 
+  configureMainTier(mainTierId, { enableTierIds = [], disableTierIds = [] } = {}) {
+    if (typeof mainTierId !== 'string' || !mainTierId
+      || !Array.isArray(enableTierIds) || !Array.isArray(disableTierIds)
+      || [...enableTierIds, ...disableTierIds].some(id => typeof id !== 'string' || !id)
+      || new Set([...enableTierIds, ...disableTierIds]).size !== enableTierIds.length + disableTierIds.length) {
+      return { ok: false, error: '주 모델과 활성화/비활성화할 티어 ID를 확인해 주세요.' };
+    }
+    const main = this.chain.tiers.find(tier => tier.id === mainTierId);
+    const known = new Set(this.chain.tiers.map(tier => tier.id));
+    if (!main || [...enableTierIds, ...disableTierIds].some(id => !known.has(id))) {
+      return { ok: false, error: '설정할 모델 티어를 찾을 수 없습니다.' };
+    }
+    if (disableTierIds.includes(mainTierId)) {
+      return { ok: false, error: '주 모델은 비활성화할 수 없습니다.' };
+    }
+    const enable = new Set(enableTierIds);
+    const disable = new Set(disableTierIds);
+    const ordered = [main, ...this.chain.tiers.filter(tier => tier.id !== mainTierId)];
+    this.chain.tiers = ordered.map((tier, index) => ({
+      ...tier,
+      tier: index + 1,
+      enabled: tier.id === mainTierId ? true : disable.has(tier.id) ? false : enable.has(tier.id) ? true : tier.enabled !== false
+    }));
+    this.chain.enabled = true;
+    this.chain.mode = 'priority-first';
+    this.chain.manualTierId = null;
+    this.chain.updatedAt = Date.now();
+    this._save();
+    this._initHealthStates();
+    return { ok: true, mainTierId, tiers: this.chain.tiers.map(({ id, tier, provider, model, enabled }) => ({ id, tier, provider, model, enabled })) };
+  }
+
   setAutomaticPriority(enabled) {
     if (typeof enabled !== 'boolean') return false;
     if (!enabled) {

@@ -29,7 +29,7 @@ async function main() {
       workspaceDir: tempRoot,
       tools: { approvalPolicy: 'read-only' },
       skills: { resolvePromptShortcuts: prompt => ({ text: prompt, injectedSkills: [] }) },
-      handoff: { saveCheckpoint: () => {} },
+      handoff: { saveCheckpoint: () => {}, updateCheckpoint: () => {} },
       sessions: { appendItem: () => {} },
       providerAdapter: async tier => {
         attemptedTiers.push(tier.id);

@@ -43,19 +43,19 @@ async function verifyDecision(decision) {
   assert.equal(panel.attributes.role, 'group');
   assert.match(panel.attributes['aria-label'], /Codex 요청 실행 범위 승인/);
   const heading = panel.children[0];
-  const approve = panel.children[2];
-  const reject = panel.children[3];
+  const approve = panel.children[3];
+  const reject = panel.children[6];
   assert.equal(heading.attributes.role, 'status');
   assert.equal(heading.attributes['aria-live'], 'polite');
-  assert.equal(approve.attributes['aria-label'], 'Codex 요청 실행 범위 승인 승인');
+  assert.equal(approve.attributes['aria-label'], 'Codex 요청 실행 범위 승인 이번 요청만 허용');
   assert.equal(reject.attributes['aria-label'], 'Codex 요청 실행 범위 승인 거절');
-  await panel.children[decision === 'approve' ? 2 : 3].listeners.click();
+  await panel.children[decision === 'approve' ? 3 : 6].listeners.click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(submitted.decision, decision);
   assert.equal(approve.removed, true);
   assert.equal(reject.removed, true);
   assert.equal(document.activeElement, heading, 'focus returns to the announced decision result');
-  assert.match(heading.textContent, decision === 'approve' ? /승인됨/ : /거절됨/);
+  assert.match(heading.textContent, decision === 'approve' ? /허용됨/ : /거절됨/);
 }
 
 (async () => {

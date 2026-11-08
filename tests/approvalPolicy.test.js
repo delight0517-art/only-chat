@@ -35,6 +35,20 @@ async function main() {
     ]) await assert.rejects(registry[method](...args), /read-only/);
     assert.equal(await registry.readFile(target), 'original');
 
+    const largeText = Array.from({ length: 800 }, (_, index) => `line-${index + 1} ${'x'.repeat(400)}`).join('\n');
+    fs.writeFileSync(path.join(dir, 'large.txt'), largeText);
+    const boundedRead = await registry.readFile('large.txt');
+    assert.ok(boundedRead.length <= 25_000, 'large file reads stay within a bounded output size');
+    assert.ok(boundedRead.startsWith('line-1 '), 'bounded reads retain the file beginning');
+    assert.ok(boundedRead.includes('line-800 '), 'bounded reads retain the file ending');
+    assert.match(boundedRead, /omitted \d+ middle lines/);
+    assert.equal(await registry.readFile('large.txt', 790, 792), largeText.split('\n').slice(789, 792).join('\n'),
+      'an explicit line range returns the requested full range');
+    await assert.rejects(registry.readFile('large.txt', 151, 2), /end_line must be an inclusive.*greater than or equal to start_line/,
+      'an inverted model-provided range must fail instead of looking like a successful empty read');
+    await assert.rejects(registry.readFile('large.txt', 0, 2), /start_line must be a positive 1-based/);
+    await assert.rejects(registry.readFile('large.txt', 801, 802), /start_line exceeds file length/);
+
     const engine = Object.create(AgentEngine.prototype);
     engine.tools = { approvalPolicy: 'on-request', isNotionMcpReadOnlyCall: () => false };
     engine.currentSession = { sessionId: 'session-a' };
@@ -64,7 +78,7 @@ async function main() {
       testEngine.workspaceDir = dir;
       testEngine.isolated = true;
       testEngine.skills = { resolvePromptShortcuts: prompt => ({ text: prompt, injectedSkills: [] }) };
-      testEngine.handoff = { saveCheckpoint() {} };
+      testEngine.handoff = { saveCheckpoint() {}, updateCheckpoint() {} };
       testEngine.sessions = { appendItem() {} };
       testEngine.priorityChain = {
         chain: { tiers: [{}], enabled: true },
@@ -86,6 +100,13 @@ async function main() {
       testEngine.workspaceExecutionLease = { run: (_workspace, _session, task) => task() };
       return testEngine;
     };
+    const fileReadEngine = makeEngine('on-request', { id: 'read-profile-command', name: 'exec_command', args: { command: 'true' } });
+    let fileReadProfileDispatches = 0;
+    fileReadEngine._executeToolCall = async () => { fileReadProfileDispatches++; return { exitCode: 0 }; };
+    await fileReadEngine._executeTurn('Read only', { toolProfile: 'file-read' });
+    fileReadEngine.assertProviderFixtureCompleted();
+    assert.equal(fileReadProfileDispatches, 0, 'file-read profile must block an unexpected command tool before dispatch');
+
     const scopeEngine = makeEngine('on-request', { content: 'done', toolCalls: [] });
     let requestedScope;
     scopeEngine._callProviderWithFallback = async (_tier, _history, _hooks, options) => {
