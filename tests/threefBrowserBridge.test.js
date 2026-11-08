@@ -29,6 +29,14 @@ async function main() {
     const guardedResult = await guardedQA.verifiedQaRequest('POST', '/v1/navigate', { url: 'https://safe.test/' });
     assert.equal(guardedResult.unavailable, true);
     assert.equal(qaCommandCalls, 1, 'identity status is checked and failed before command delivery');
+    const DesktopServer = require('../src/ui/desktop/server.js').DesktopServer;
+    const qaServer = Object.create(DesktopServer.prototype);
+    qaServer.threefQaTarget = { ...qaIdentity, descriptorPath: qaDescriptorPath };
+    qaServer.threefBridge = qaBridge;
+    qaServer.isThreefControlEnabled = () => true;
+    const routedQAStatus = await qaServer.dispatchThreefQACommand({ action: 'status' });
+    assert.equal(routedQAStatus.bundleIdentifier, qaIdentity.bundleIdentifier, 'explicit QA route returns verified QA status');
+    await assert.rejects(() => qaServer.dispatchThreefQACommand({ action: 'act' }), /Unsupported QA browser command/);
     const outsideDescriptor = path.join(descriptorRoot, 'outside.json');
     fs.writeFileSync(outsideDescriptor, fs.readFileSync(descriptorPath));
     fs.unlinkSync(descriptorPath);

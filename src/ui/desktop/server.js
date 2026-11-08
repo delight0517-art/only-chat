@@ -2882,21 +2882,26 @@ class DesktopServer {
     });
   }
 
+  async dispatchThreefQACommand(command) {
+    if (!this.threefQaTarget) throw new Error('QA target is not explicitly configured');
+    const routes = {
+      status: ['GET', '/v1/status'],
+      navigate: ['POST', '/v1/navigate', { url: command.url }],
+      read: ['GET', '/v1/read'],
+      aria: ['GET', '/v1/aria']
+    };
+    const route = routes[command?.action];
+    if (!route) throw new Error('Unsupported QA browser command');
+    const result = await this.threefBridge.verifiedQaRequest(route[0], route[1], route[2]);
+    if (result.unavailable || result.status < 200 || result.status >= 300) {
+      throw new Error(result.error || result.data?.error || 'QA target identity verification failed');
+    }
+    return result.data;
+  }
+
   async _dispatchEmbeddedBrowserCommand(command) {
     if (!this.isThreefControlEnabled()) throw new Error('3F Browser 제어가 꺼져 있습니다.');
-    if (this.threefQaTarget) {
-      const request = command?.action === 'status' ? ['GET', '/v1/status']
-        : command?.action === 'navigate' ? ['POST', '/v1/navigate', { url: command.url }]
-          : command?.action === 'read' ? ['GET', '/v1/read']
-            : command?.action === 'aria' ? ['GET', '/v1/aria']
-              : ['POST', '/v1/' + String(command?.action || '')];
-      if (!['GET', 'POST'].includes(request[0]) || !/^\/v1\/(status|navigate|read|aria)$/.test(request[1])) {
-        throw new Error('Unsupported QA browser command');
-      }
-      const result = await this.threefBridge.verifiedQaRequest(request[0], request[1], request[2]);
-      if (result.unavailable || result.status < 200 || result.status >= 300) throw new Error(result.error || result.data?.error || 'QA target identity verification failed');
-      return result.data;
-    }
+    if (this.threefQaTarget) return this.dispatchThreefQACommand(command);
     if (this.browserCommandWaiters.length >= 16) return Promise.reject(new Error('3F Browser 명령 대기열이 가득 찼습니다.'));
     const id = `threef-${++this.browserCommandSequence}`;
     return new Promise((resolve, reject) => {
