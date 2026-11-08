@@ -4103,14 +4103,14 @@ function renderProjectGroups(container, projects) {
 }
 
 async function loadSession(sessionId, title, source = null) {
-  if (activeGoal) {
-    cancelActiveGoal('다른 대화로 전환하여 이전 목표 추구를 중단했습니다.');
-  }
   const hasComposerDraft = String(composerInput.value || '').trim().length > 0;
   if (sessionResumePendingCount === 0 && (hasComposerDraft || currentAbortController || isGenerating || isRecording)) {
     const status = document.getElementById('sessionListStatus');
     if (status) status.textContent = '초안·음성 입력·진행 중인 응답을 보존하려고 세션을 전환하지 않았습니다. 현재 작업을 마친 뒤 다시 열어 주세요.';
     return false;
+  }
+  if (activeGoal) {
+    cancelActiveGoal('다른 대화로 전환하여 이전 목표 추구를 중단했습니다.');
   }
   const requestId = ++sessionLoadRequestId;
   let resumedSession = null;

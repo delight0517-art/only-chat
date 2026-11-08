@@ -36,22 +36,27 @@ function makeHarness(fetch, initialDraft = '') {
     btnMicrophone,
     appendUserMessage() {},
     createAssistantContainer() { return { content: { appendChild() {} }, row: {} }; },
+    goalCancelReasons: [],
     async loadSessions() { context.sessionListLoads++; },
     sessionListLoads: 0,
     async refreshPriorityStatus() { context.priorityStatusRefreshes++; },
     priorityStatusRefreshes: 0
   };
-  vm.runInNewContext(`let currentSessionId = 'existing'; let currentCodexThreadId = null; let sessionLoadRequestId = 0; let sessionResumeQueue = Promise.resolve(); let sessionResumePendingCount = 0; let sessionResumeOriginalComposerReadOnly = false; let sessionResumeOriginalMicrophoneDisabled = false; let currentAbortController = null; let isGenerating = false; let isRecording = false; ${source.slice(start, end)}; globalThis.openSession = loadSession; globalThis.currentId = () => currentSessionId; globalThis.currentCodexId = () => currentCodexThreadId; globalThis.setActivity = values => { if ('isGenerating' in values) isGenerating = values.isGenerating; if ('isRecording' in values) isRecording = values.isRecording; if ('hasAbortController' in values) currentAbortController = values.hasAbortController ? {} : null; };`, context);
+  vm.runInNewContext(`let currentSessionId = 'existing'; let currentCodexThreadId = null; let activeGoal = null; let sessionLoadRequestId = 0; let sessionResumeQueue = Promise.resolve(); let sessionResumePendingCount = 0; let sessionResumeOriginalComposerReadOnly = false; let sessionResumeOriginalMicrophoneDisabled = false; let currentAbortController = null; let isGenerating = false; let isRecording = false; function cancelActiveGoal(reason) { if (!activeGoal) return; activeGoal = null; globalThis.goalCancelReasons.push(reason); } ${source.slice(start, end)}; globalThis.openSession = loadSession; globalThis.currentId = () => currentSessionId; globalThis.currentCodexId = () => currentCodexThreadId; globalThis.setActiveGoal = goal => { activeGoal = goal; }; globalThis.getActiveGoal = () => activeGoal; globalThis.setActivity = values => { if ('isGenerating' in values) isGenerating = values.isGenerating; if ('isRecording' in values) isRecording = values.isRecording; if ('hasAbortController' in values) currentAbortController = values.hasAbortController ? {} : null; };`, context);
   return { context, status, timeline, titlebarThreadTitle, emptyState, composerInput, btnMicrophone };
 }
 
 async function run() {
   const draftBlocked = makeHarness(async () => { assert.fail('a dirty composer must not switch sessions'); });
   draftBlocked.composerInput.value = 'unsent draft';
+  const protectedGoal = { sessionId: 'existing', iteration: 2 };
+  draftBlocked.context.setActiveGoal(protectedGoal);
   assert.equal(await draftBlocked.context.openSession('ses_1111111111111111', 'New session', 'internal'), false);
   assert.equal(draftBlocked.context.currentId(), 'existing');
   assert.equal(draftBlocked.timeline.clearCount, 0);
   assert.equal(draftBlocked.composerInput.value, 'unsent draft');
+  assert.equal(draftBlocked.context.getActiveGoal(), protectedGoal, 'a rejected session switch must preserve the active Goal');
+  assert.deepEqual(draftBlocked.context.goalCancelReasons, [], 'do not cancel a Goal before the draft guard rejects the switch');
   assert.match(draftBlocked.status.textContent, /초안·음성 입력·진행 중인 응답/);
 
   const protectedWork = makeHarness(async () => { assert.fail('active work must not switch sessions'); });
@@ -119,7 +124,10 @@ async function run() {
     status: 200,
     async json() { return { ok: true, session: { id: 'ses_4444444444444444', sessionId: 'ses_4444444444444444', source: 'codex', title: 'Imported Codex', turns: [] } }; }
   }));
+  external.context.setActiveGoal({ sessionId: 'existing', iteration: 1 });
   assert.equal(await external.context.openSession('codex_external-thread', 'External', 'codex'), true);
+  assert.equal(external.context.getActiveGoal(), null, 'a successful session switch still stops the previous Goal');
+  assert.equal(external.context.goalCancelReasons.length, 1);
   assert.equal(external.context.currentId(), 'ses_4444444444444444', 'the UI continues against the imported local session ID');
   assert.equal(external.context.currentCodexId(), 'external-thread', 'the original Codex thread ID remains available to match its queued work');
   assert.equal(external.titlebarThreadTitle.textContent, 'Imported Codex (Codex 재개됨)');
