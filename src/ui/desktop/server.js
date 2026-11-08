@@ -2882,9 +2882,21 @@ class DesktopServer {
     });
   }
 
-  _dispatchEmbeddedBrowserCommand(command) {
-    if (this.threefQaTarget) return Promise.reject(new Error('QA target requires standalone identity-verified 3F routing.'));
-    if (!this.isThreefControlEnabled()) return Promise.reject(new Error('3F Browser 제어가 꺼져 있습니다.'));
+  async _dispatchEmbeddedBrowserCommand(command) {
+    if (!this.isThreefControlEnabled()) throw new Error('3F Browser 제어가 꺼져 있습니다.');
+    if (this.threefQaTarget) {
+      const request = command?.action === 'status' ? ['GET', '/v1/status']
+        : command?.action === 'navigate' ? ['POST', '/v1/navigate', { url: command.url }]
+          : command?.action === 'read' ? ['GET', '/v1/read']
+            : command?.action === 'aria' ? ['GET', '/v1/aria']
+              : ['POST', '/v1/' + String(command?.action || '')];
+      if (!['GET', 'POST'].includes(request[0]) || !/^\/v1\/(status|navigate|read|aria)$/.test(request[1])) {
+        throw new Error('Unsupported QA browser command');
+      }
+      const result = await this.threefBridge.verifiedQaRequest(request[0], request[1], request[2]);
+      if (result.unavailable || result.status < 200 || result.status >= 300) throw new Error(result.error || result.data?.error || 'QA target identity verification failed');
+      return result.data;
+    }
     if (this.browserCommandWaiters.length >= 16) return Promise.reject(new Error('3F Browser 명령 대기열이 가득 찼습니다.'));
     const id = `threef-${++this.browserCommandSequence}`;
     return new Promise((resolve, reject) => {

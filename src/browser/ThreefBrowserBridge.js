@@ -64,7 +64,8 @@ class ThreefBrowserBridge {
         || typeof descriptor.token !== 'string' || !/^[a-f0-9]{96}$/i.test(descriptor.token)) return null;
       if (this.qaTarget && (descriptor.bundleIdentifier !== this.qaTarget.bundleIdentifier
         || descriptor.executablePath !== this.qaTarget.executablePath
-        || !Number.isInteger(descriptor.processIdentifier) || descriptor.processIdentifier <= 0)) return null;
+        || !Number.isInteger(descriptor.processIdentifier) || descriptor.processIdentifier <= 0
+        || descriptor.qaProfilePath !== this.qaTarget.profilePath)) return null;
       return descriptor;
     } catch (_) { return null; }
   }
@@ -96,11 +97,13 @@ class ThreefBrowserBridge {
     if (response.unavailable || response.status !== 200
       || response.data?.bundleIdentifier !== this.qaTarget.bundleIdentifier
       || response.data?.executablePath !== this.qaTarget.executablePath
-      || response.data?.processIdentifier !== descriptor.processIdentifier) {
+      || response.data?.processIdentifier !== descriptor.processIdentifier
+      || response.data?.qaProfilePath !== this.qaTarget.profilePath) {
       return { ok: false, error: 'QA 3F runtime identity mismatch' };
     }
     return { ok: true, mode: 'qa', bundleIdentifier: descriptor.bundleIdentifier,
-      executablePath: descriptor.executablePath, processIdentifier: descriptor.processIdentifier };
+      executablePath: descriptor.executablePath, processIdentifier: descriptor.processIdentifier,
+      qaProfilePath: descriptor.qaProfilePath };
   }
 
   async _waitForRequestedPage(url) {
@@ -113,6 +116,13 @@ class ThreefBrowserBridge {
       await this.sleep(Math.min(this.startupProbeIntervalMs, deadline - Date.now()));
     } while (Date.now() <= deadline);
     return null;
+  }
+
+  async verifiedQaRequest(method, pathname, body) {
+    if (!this.qaTarget) return { unavailable: true, error: 'QA target not explicitly configured' };
+    const identity = await this.verifyTarget();
+    if (!identity.ok) return { unavailable: true, error: identity.error };
+    return this._request(method, pathname, body);
   }
 
   async _checkCurrentPage() {
